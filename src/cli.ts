@@ -1010,7 +1010,7 @@ function cmdHook(args: Args): void {
   const which = args.positional[1];
   const store = Store.open();
   if (!store.exists) {
-    if (which === 'session-start') emitSessionStart('');
+    if (which === 'session-start') emitSessionStart('', args.flags.raw === true);
     return;
   }
   const tasks = store.loadTasks(false);
@@ -1089,7 +1089,7 @@ function cmdHook(args: Args): void {
         'Before opening one: `dolly board --all` to check nothing already covers it, and `dolly related --files <the files you expect to touch>` to find who has been in that code and what they decided.',
       );
     }
-    emitSessionStart(lines.join('\n'));
+    emitSessionStart(lines.join('\n'), args.flags.raw === true);
     return;
   }
 
@@ -1151,8 +1151,14 @@ function tailLines(text: string, n: number): string {
   return lines.slice(-n).join('\n');
 }
 
-function emitSessionStart(context: string): void {
+function emitSessionStart(context: string, raw = false): void {
   if (!context.trim()) return;
+  // raw: plain text for non-Claude harnesses (e.g. the pi extension) that do
+  // not speak Claude Code's hook envelope. Default: the Claude JSON envelope.
+  if (raw) {
+    process.stdout.write(`${context}\n`);
+    return;
+  }
   process.stdout.write(
     `${JSON.stringify({
       hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: context },

@@ -154,6 +154,43 @@ test('install pi --global resolves skills under ~/.pi/agent/skills', (t) => {
   assert.match(out, /[/\\]\.pi[/\\]agent[/\\]skills[/\\]dolly\b/);
 });
 
+test('install pi --global writes the auto-inject extension', (t) => {
+  const sb = sandbox();
+  t.after(sb.cleanup);
+  Store.open().init();
+  const fakeHome = path.join(sb.dir, 'home');
+  fs.mkdirSync(path.join(fakeHome, '.pi', 'agent'), { recursive: true });
+
+  dolly(sb.dir, ['install', 'pi', '--global'], { DOLLY_DIR: sb.store, HOME: fakeHome });
+
+  const ext = path.join(fakeHome, '.pi', 'agent', 'extensions', 'dolly.ts');
+  assert.ok(fs.existsSync(ext), 'extension written to ~/.pi/agent/extensions/dolly.ts');
+
+  const body = fs.readFileSync(ext, 'utf8');
+  // registers the injection hook and shells the existing dolly command
+  assert.match(body, /before_agent_start/);
+  // shells the raw variant so pi gets plain text, not Claude's JSON envelope
+  assert.match(body, /hook.*session-start.*--raw/s);
+  assert.doesNotMatch(body, /hookSpecificOutput/);
+  // returns the prompt augmented, never blocks: wrapped in try/catch
+  assert.match(body, /try\s*\{/);
+  assert.match(body, /systemPrompt/);
+  // no hard dependency on a specific pi package name
+  assert.doesNotMatch(body, /pi-coding-agent/);
+});
+
+test('install pi extension is idempotent on rerun', (t) => {
+  const sb = sandbox();
+  t.after(sb.cleanup);
+  Store.open().init();
+  const fakeHome = path.join(sb.dir, 'home');
+  fs.mkdirSync(path.join(fakeHome, '.pi', 'agent'), { recursive: true });
+
+  dolly(sb.dir, ['install', 'pi', '--global'], { DOLLY_DIR: sb.store, HOME: fakeHome });
+  const second = dolly(sb.dir, ['install', 'pi', '--global'], { DOLLY_DIR: sb.store, HOME: fakeHome });
+  assert.match(second, /up-to-date .*extensions[/\\]dolly\.ts/);
+});
+
 test('install pi is idempotent on rerun', (t) => {
   const sb = sandbox();
   t.after(sb.cleanup);

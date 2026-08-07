@@ -168,3 +168,19 @@ test('session-start injects an index that points at the full read', (t) => {
   assert.match(ctx, /dolly context 0001/);
   assert.match(ctx, /what you understood and did/);
 });
+
+test('session-start --raw emits plain context, no Claude JSON envelope', (t) => {
+  const sb = sandbox();
+  t.after(sb.cleanup);
+  const store = Store.open();
+  const task = createTask(store, { title: 'Injected', specShort: 'do the thing well' });
+  setStatus(store, task, 'working');
+
+  const out = dolly(sb.dir, ['hook', 'session-start', '--raw'], { DOLLY_DIR: sb.store });
+  // no envelope — harnesses that are not Claude consume the text directly
+  assert.doesNotMatch(out, /hookSpecificOutput/);
+  // the same context that would have been wrapped, as-is
+  assert.match(out, /Active task 0001 "Injected" \(working\)/);
+  assert.match(out, /do the thing well/);
+  assert.match(out, /index, not the record/);
+});
