@@ -4,6 +4,7 @@ import {
   appendBlock,
   appendToSection,
   getBlock,
+  countSections,
   getSection,
   listBlocks,
   removeBlock,
@@ -124,7 +125,23 @@ function logLine(user: string, text: string, trailers: string[] = []): string {
 }
 
 function appendLog(task: Task, user: string, text: string, trailers: string[] = []): void {
+  assertOneSection(task, SEC_LOG);
   task.body = appendToSection(task.body, SEC_LOG, logLine(user, text, trailers), true);
+}
+
+/**
+ * Guard against prose impersonating structure. Section lookup takes the first
+ * match, so a second `## Log` — easily written by a spec that discusses the
+ * format — would silently redirect every step into the spec section.
+ */
+function assertOneSection(task: Task, name: string): void {
+  const n = countSections(task.body, name);
+  if (n > 1) {
+    throw new Error(
+      `task ${task.meta.id} has ${n} "## ${name}" headings in task.md, so dolly cannot tell which one it owns. ` +
+        `Remove the duplicate from the prose (most likely inside the Spec section) and retry.`,
+    );
+  }
 }
 
 /** how the short log points at a step's full context */
@@ -157,10 +174,17 @@ const CONTEXT_INDEX = [
   '- planning interview, when the task was planned: `context/plan.md`',
 ].join('\n');
 
+/** frontmatter is line-oriented, so a title can never contain a newline */
+export function cleanTitle(raw: string): string {
+  return raw.replace(/\s+/g, ' ').trim();
+}
+
 export function createTask(store: Store, opts: CreateOpts): Task {
   store.init();
+  const title = cleanTitle(opts.title);
+  if (!title) throw new Error('a task needs a title');
   const id = store.nextId();
-  const slug = slugify(opts.title);
+  const slug = slugify(title);
   const dir = path.join(store.tasksDir, `${id}-${slug}`);
   if (exists(dir)) throw new Error(`task dir already exists: ${dir}`);
   const now = nowIso();
@@ -169,7 +193,7 @@ export function createTask(store: Store, opts: CreateOpts): Task {
   const meta: TaskMeta = {
     id,
     slug,
-    title: opts.title,
+    title,
     status: opts.status ?? 'todo',
     owner: user,
     collaborators: [user],
@@ -186,7 +210,7 @@ export function createTask(store: Store, opts: CreateOpts): Task {
     : '- [ ] _TBD_';
 
   const body = [
-    `# ${id} · ${opts.title}`,
+    `# ${id} · ${title}`,
     '',
     '<!-- dolly:header -->',
     headerLine(meta),
@@ -353,9 +377,11 @@ export function updateSpec(store: Store, task: Task, up: SpecUpdate): number {
   }
 
   if (up.short && up.short.trim()) {
+    assertOneSection(task, SEC_SPEC);
     task.body = setSection(task.body, SEC_SPEC, up.short.trim());
   }
   if (up.criteria?.length) {
+    assertOneSection(task, SEC_CRITERIA);
     task.body = setSection(
       task.body,
       SEC_CRITERIA,

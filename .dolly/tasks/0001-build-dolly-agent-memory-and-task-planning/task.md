@@ -6,17 +6,17 @@ status: validating
 owner: nick-delirium
 collaborators: [nick-delirium]
 tags: []
-steps: 12
+steps: 13
 spec_version: 2
 created: 2026-08-07T08:50:48Z
-updated: 2026-08-07T10:26:08Z
+updated: 2026-08-07T10:43:02Z
 sessions: [faa33f88-d19e-451a-8321-307f7d37483e]
 ---
 
 # 0001 · Build dolly: agent memory and task planning
 
 <!-- dolly:header -->
-`validating` · spec v2 · @nick-delirium · 12 steps · updated 2026-08-07 10:26Z
+`validating` · spec v2 · @nick-delirium · 13 steps · updated 2026-08-07 10:43Z
 <!-- /dolly:header -->
 
 ## Spec
@@ -73,4 +73,6 @@ Task memory and planning for coding agents, as plain markdown in the repo. Board
 - `2026-08-07 09:31Z` @nick-delirium: status validating → validating. review the big-repo work: project brief for this repo, dolly related, code-map detection, repo-first prompting. 61 tests pass.
 - `2026-08-07 10:26Z` @nick-delirium: Fixed silent corruption of any flag value starting with a dash: markdown bullet lists were parsed as short-flag bundles, and the t->text alias appended one literal "true" per letter t. That is why four project-brief sections were rows of true. Parser now uses one strict looksLikeFlag test at both decision points; brief rewritten through the fixed CLI as the end-to-end proof.
   files: `src/core/args.ts`, `tests/args.test.mjs` · full: `steps.md#0012`
+- `2026-08-07 10:43Z` @nick-delirium: Applied the mechanical half of the review: identity split out of the shared config (it was misattributing every teammate), MCP context gap, hook session pinning, one log parser fixing both related-tasks gaps, title sanitising, auto-housekeep no longer archiving live work, non-destructive pruning default, and 9 slash commands reduced to thin wrappers to stop rule drift.
+  files: `commands/adopt.md`, `commands/board.md`, `commands/housekeep.md`, `commands/plan.md`, `commands/resume.md`, `commands/spec.md` +15 more · full: `steps.md#0013`
 

@@ -12,9 +12,56 @@ import type { Store } from './store.js';
 import type { Task } from './types.js';
 import { logSection, stepEntries } from './task.js';
 
-/** files a task's steps recorded, from the `- files:` line of each entry */
+/**
+ * One parsed entry of the `task.md` log.
+ *
+ * The log is the complete record — every step, status move and spec bump, with
+ * its files. `steps.md` only holds the ones that carried a detail note, so
+ * reading files or outcomes from there misses summary-only steps entirely.
+ */
+export interface LogEntry {
+  kind: 'step' | 'status' | 'spec' | 'note';
+  at: string;
+  user: string;
+  text: string;
+  files: string[];
+}
+
+const LINE = /^- `([^`]*)`\s*@(\S+?):\s*(.*)$/;
+
+export function parseLog(task: Task): LogEntry[] {
+  const out: LogEntry[] = [];
+  for (const raw of logSection(task).split('\n')) {
+    const m = LINE.exec(raw.trim());
+    if (m) {
+      const text = m[3].trim();
+      out.push({ kind: classify(text), at: m[1], user: m[2], text, files: [] });
+      continue;
+    }
+    // indented trailer belonging to the entry above: `files: …` / `full: …`
+    const last = out[out.length - 1];
+    if (!last) continue;
+    const files = /(?:^|·\s*)files:\s*(.+?)(?:\s*·\s*full:|$)/.exec(raw.trim())?.[1];
+    if (!files) continue;
+    for (const f of files.matchAll(/`([^`]+)`/g)) {
+      if (!last.files.includes(f[1])) last.files.push(f[1]);
+    }
+  }
+  return out;
+}
+
+function classify(text: string): LogEntry['kind'] {
+  if (/^status \S+ → \S+/.test(text)) return 'status';
+  if (/^spec → v\d+/.test(text)) return 'spec';
+  if (/^(archived|restored|housekeeping|retitled)\b/.test(text)) return 'note';
+  return 'step';
+}
+
+/** every file any log entry recorded — the complete set, not just detailed steps */
 export function filesOfTask(task: Task): string[] {
   const out = new Set<string>();
+  for (const e of parseLog(task)) for (const f of e.files) out.add(f);
+  // pre-0.3 stores kept files only inside step entries; keep reading those too
   for (const entry of stepEntries(task.dir)) {
     const line = /^- files:\s*(.+)$/m.exec(entry.text)?.[1];
     if (!line || /^none$/i.test(line.trim())) continue;
@@ -23,14 +70,20 @@ export function filesOfTask(task: Task): string[] {
   return [...out].sort();
 }
 
-/** the last thing anyone said happened on a task — its most recent log line */
+/**
+ * What actually happened on a task, most recent first choice. Prefers a real
+ * step: a status move or spec bump is the last *line* but tells you nothing
+ * about the work, and this is read as "what did they conclude".
+ */
 export function latestOutcome(task: Task, max = 200): string {
-  const lines = logSection(task)
-    .split('\n')
-    .filter((l) => l.trim().startsWith('- `'));
-  const last = lines[lines.length - 1] ?? '';
-  const text = last.replace(/^- `[^`]*`\s*@\S+:\s*/, '').trim();
-  return text.length > max ? `${text.slice(0, max - 1).trimEnd()}…` : text || '_no steps yet_';
+  const entries = parseLog(task);
+  const step = [...entries].reverse().find((e) => e.kind === 'step');
+  const chosen = step ?? entries[entries.length - 1];
+  if (!chosen) return '_no steps yet_';
+  const text = chosen.text;
+  const clipped = text.length > max ? `${text.slice(0, max - 1).trimEnd()}…` : text;
+  // say so when the newest thing is not a step, rather than implying it is
+  return step ? clipped : `(no step logged yet) ${clipped}`;
 }
 
 export interface RelatedTask {

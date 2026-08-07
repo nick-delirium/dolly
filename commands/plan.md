@@ -6,16 +6,13 @@ allowed-tools: Bash(dolly:*), Read, Grep, Glob
 
 User wants: **$ARGUMENTS**
 
-Run the dolly planning flow. Use the `dolly-planning` skill for the full rules.
+Follow the **dolly-planning** skill. Read the repo first — `dolly project`, `dolly related --files <expected files>`, and the code itself — then:
 
-1. Grep/read the codebase first — never ask what the code already answers.
-2. `dolly plan start "<short title>" --brief "$ARGUMENTS"`
-3. `dolly plan check <ref>` → that's your agenda.
-4. Ask the user the open items in ONE batch, grouped by section, each with concrete options and your recommendation. Stop and wait.
-5. Record answers: `dolly plan qa <ref> -q "..." -a "..."`, fill sections: `dolly plan set <ref> "<Section>" --text "..."`.
-6. Loop 3-5 until `dolly plan check` says complete.
-7. `dolly plan finalize <ref>` → spec written, status `todo`.
+```
+dolly plan start "<short title>" --brief "$ARGUMENTS"
+dolly plan check <ref>          # your interview agenda
+```
 
-Do not start writing implementation code during planning. Do not invent answers to Open Questions.
+Ask the user the open items in ONE batch with concrete options and a recommendation. Record answers with `dolly plan qa`, fill sections with `dolly plan set`, loop until `plan check` passes, then `dolly plan finalize <ref>`.
 
-If the request is a small bounded fix, skip all this: `dolly new "<title>" --short "<spec>"` and say so.
+Never invent an answer. Never write implementation code during planning. Small bounded fix → `dolly new` instead, and say so.

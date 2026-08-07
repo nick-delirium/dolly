@@ -26,12 +26,19 @@ function fromGh(): string | null {
 }
 
 /** git remote URLs carry the owner, not the author — only used as a weak hint */
-function fromGitEmail(cwd: string): string | null {
+function fromGit(cwd: string): string | null {
   const email = gitConfig('user.email', cwd);
-  if (!email) return null;
-  const m = /^([^@]+)@users\.noreply\.github\.com$/.exec(email);
-  if (m) return m[1].replace(/^\d+\+/, '');
-  return email.split('@')[0] || null;
+  if (email) {
+    // github noreply addresses carry the handle: 12345+handle@users.noreply...
+    const m = /^([^@]+)@users\.noreply\.github\.com$/.exec(email);
+    if (m) return m[1].replace(/^\d+\+/, '');
+    const local = email.split('@')[0];
+    if (local) return local;
+  }
+  // no email configured: a name is still better than $USER, which is often
+  // just the laptop's account and identical across a team's CI
+  const name = gitConfig('user.name', cwd);
+  return name ? name.trim().replace(/\s+/g, '-').toLowerCase() : null;
 }
 
 export interface Identity {
@@ -57,7 +64,7 @@ export function resolveIdentity(cwd: string, configUser?: string | null): Identi
     writeJson(CACHE, { user: gh, source: 'gh', at: new Date().toISOString() });
     return { user: gh, source: 'gh' };
   }
-  const git = fromGitEmail(cwd);
+  const git = fromGit(cwd);
   if (git) return { user: git, source: 'git' };
   return { user: process.env.USER || process.env.USERNAME || 'unknown', source: 'os' };
 }

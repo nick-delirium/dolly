@@ -673,3 +673,68 @@ Rewrote all four sections through the fixed CLI, which doubles as the end-to-end
 
 This is the third bug in this class: text flowing through a parser that was written assuming well-behaved input. Marker injection (step 0009), migration rewriting prose (step 0010), now arg parsing. The pattern to watch: dolly's inputs are human and agent prose, and prose contains every character the parsers treat as structure.
 <!-- /dolly:step 0012 -->
+
+<!-- dolly:step 0013 -->
+## 0013 · 2026-08-07T10:43:02Z · @nick-delirium
+
+- task status: validating
+- files: `commands/adopt.md`, `commands/board.md`, `commands/housekeep.md`, `commands/plan.md`, `commands/resume.md`, `commands/spec.md`, `commands/step.md`, `commands/update.md`, `commands/validate.md`, `src/cli.ts`, `src/core/housekeep.ts`, `src/core/identity.ts`, `src/core/md.ts`, `src/core/related.ts`, `src/core/store.ts`, `src/core/task.ts`, `src/core/types.ts`, `src/mcp.ts`, `src/migrate.ts`, `tests/migrate.test.mjs`, `tests/project.test.mjs`
+
+## What landed
+
+The mechanical half of the review. Eight fixes; the structural half is parked as task 0002.
+
+## 1. Identity was shared, so every teammate was misattributed
+
+`config.json` is committed and held `user`, which `resolveIdentity` preferred over git. Anyone cloning got their steps stamped `@nick-delirium` — quietly destroying the attribution the store exists to provide.
+
+Split: `config.json` = shared policy; `.dolly/local.json` = per-person, gitignored. A `user` in the shared file is now **ignored**, not honoured, and `saveConfig()` strips it so it cannot come back. `dolly config set user` writes local. Identity order: `DOLLY_USER` → local.json → gh (cached) → git noreply handle → git email local-part → git user.name → `$USER`.
+
+`dolly migrate` moves a leaked user across and reports it. Second-order bug caught while testing: migrate did not call `store.init()`, so the `.gitignore` never gained `local.json` and the identity would have been recommitted on the next `git add`. Migrate now refreshes the scaffolding first, with a test that asserts it.
+
+## 2. Duplicate `## Log` heading — interim guard, not the real fix
+
+`sectionRange` takes the first match, so a spec whose prose contains `## Log` swallowed every step. Reproduced before fixing.
+
+Deliberately did NOT build marker-fencing for the managed sections: task 0002 makes `task.md` a generated rendering, and a file that is never parsed back cannot have this bug. Building fences now means deleting them in a week. Instead `assertOneSection` throws with a message naming the likely culprit — the silent misplacement, which was the actual harm, is gone.
+
+## 3. MCP was missing the whole repo-context feature
+
+`dolly_context` called `renderContext` without the store, so the project brief, related tasks and file list — the entire big-repo feature — were invisible to the *recommended* integration. Also unified the default step count (was 5 there, 3 in the CLI).
+
+## 4. Auto-log could import another conversation
+
+The Stop hook resolved the transcript by newest-mtime, so a second Claude session in the same repo could get its turns logged onto this task. `currentSessionId()` already existed and was used only in `task.ts`; the hook now passes it, falling back to mtime only when unset.
+
+## 5 + 6. One parser instead of two fixes
+
+Both bugs were the same root: nothing read the `task.md` log lines, which are the complete record. `steps.md` only holds steps that carried a detail note.
+
+`parseLog()` classifies every entry (step / status / spec / note) and extracts its files from the indented trailer. `filesOfTask` now unions log files with legacy step-entry files, so summary-only steps are visible to `dolly related` — verified: `src/core/args.ts` from a detail-less step now links. `latestOutcome` prefers the newest **step** over the newest line, and when a task has no step yet it says `(no step logged yet)` rather than passing a status move off as an outcome.
+
+## 7. Titles
+
+`cleanTitle()` collapses whitespace; a newline in a title used to emit a bare frontmatter line that parsed back as a dropped field, or worse swallowed the next key.
+
+## 11. Auto-housekeep no longer touches the active task
+
+It fires on every write, so it could archive the task being worked on mid-session. Automatic runs now skip the current task; an explicit `dolly housekeep` still may.
+
+## 12. Store README kept
+
+Conceded — it is self-documentation for anyone opening the repo. The real gripe was `migrate` regenerating it on every run, which was pure diff churn. That is what stopped.
+
+## C. keepFullStepsPerTask: 40 -> 0
+
+The old default deleted step bodies once a task passed 40 steps, directly contradicting the store's own stated invariant: never destructive by default, deletion is opt-in. Pruning is now opt-in.
+
+## 9. Prompt consolidation
+
+592 lines across 12 files restating the same rules, already drifted: the central "summary is an outcome, not the request" rule was missing from `commands/step.md` — the actual step-logging command — and `resume.md` hardcoded `-n 5` against a CLI default of 3.
+
+Rules now live in the skills and `instructions.ts` only. All nine commands rewritten as thin wrappers: run the CLI, show output, defer to the named skill. 592 -> 520 lines total with commands down to 136, and there is now one place to change a rule.
+
+## Next
+
+Task 0002 holds the structural half: generated `task.md` from an append-only `log.jsonl`, collision-free `NNNN-user` step ids, derived `steps`/`spec_version`. That is where bug 2 gets its real fix and where concurrent teammates stop conflicting.
+<!-- /dolly:step 0013 -->

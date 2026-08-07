@@ -9,14 +9,14 @@
  *             context/steps.md holding every step entry
  */
 import path from 'node:path';
-import { exists, isDir, listFiles, move, readTextOr, rmrf, writeText } from './core/fsx.js';
+import { exists, isDir, listFiles, move, readJson, readTextOr, rmrf, writeJson, writeText } from './core/fsx.js';
 import { appendBlock } from './core/md.js';
-import { LEGACY_STORE_DIRNAME, STORE_DIRNAME, Store } from './core/store.js';
+import { LEGACY_STORE_DIRNAME, LOCAL_CONFIG, STORE_DIRNAME, Store, sharedUserLeak } from './core/store.js';
 import { contextDir, readSpecDoc, saveTask, specFile, stepsFile } from './core/task.js';
 import type { Task } from './core/types.js';
 
 export interface MigrateAction {
-  kind: 'steps' | 'spec' | 'store-rename' | 'markers';
+  kind: 'steps' | 'spec' | 'store-rename' | 'markers' | 'config-split';
   task: string;
   detail: string;
 }
@@ -131,13 +131,26 @@ function migrateMarkers(store: Store, dryRun: boolean, actions: MigrateAction[])
     if (dryRun) continue;
     for (const f of stale) writeText(f, rewriteMarkers(readTextOr(f)));
   }
-  // the store's own README is generated text, so it may be rewritten wholesale
-  const readme = path.join(store.root, 'README.md');
-  const src = readTextOr(readme);
-  if (src.includes('dollie')) {
-    if (!dryRun) writeText(readme, src.replace(/dollie/g, 'dolly').replace(/Dollie/g, 'Dolly'));
-    actions.push({ kind: 'markers', task: '(store)', detail: 'README.md renamed' });
-  }
+}
+
+/**
+ * A `user` in the shared config stamps every teammate's steps with one handle.
+ * Move it to the gitignored local config, where identity belongs.
+ */
+function splitIdentity(store: Store, dryRun: boolean, actions: MigrateAction[]): void {
+  const leaked = sharedUserLeak(store.root);
+  if (!leaked) return;
+  actions.push({
+    kind: 'config-split',
+    task: '(store)',
+    detail: `user "${leaked}" moved out of the shared config.json into ${LOCAL_CONFIG} (gitignored) — it was attributing every teammate's steps to one handle`,
+  });
+  if (dryRun) return;
+  const shared = readJson<Record<string, unknown>>(store.configPath, {});
+  delete shared.user;
+  writeJson(store.configPath, shared);
+  const local = readJson<Record<string, unknown>>(store.localConfigPath, {});
+  if (!local.user) store.saveLocal({ user: leaked });
 }
 
 export function migrate(store: Store, opts: { dryRun?: boolean } = {}): MigrateReport {
@@ -145,7 +158,12 @@ export function migrate(store: Store, opts: { dryRun?: boolean } = {}): MigrateR
   const actions: MigrateAction[] = [];
 
   store = renameStore(store, dryRun, actions);
+  // Refresh the store's own scaffolding first. `init` merges any newly required
+  // .gitignore entries, and migrating identity into local.json is worthless if
+  // local.json is still tracked.
+  if (!dryRun) store.init();
   migrateMarkers(store, dryRun, actions);
+  splitIdentity(store, dryRun, actions);
 
   for (const task of store.loadTasks(true)) {
     const label = `${task.meta.id} ${task.meta.slug}`;

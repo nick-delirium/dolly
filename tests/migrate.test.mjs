@@ -247,8 +247,9 @@ test('migrate moves the store, renames markers and keeps every step readable', (
   // prose is a record of what someone wrote — it must NOT be rewritten
   assert.match(steps, /mentions dollie in prose on purpose/);
 
-  // the generated store README is regenerated text, so it does get renamed
-  assert.doesNotMatch(fs.readFileSync(path.join(sb.dir, '.dolly', 'README.md'), 'utf8'), /dollie/);
+  // the store README is left alone: rewriting it on every migrate was pure
+  // diff churn, and it is documentation rather than parsed structure
+  assert.match(fs.readFileSync(path.join(sb.dir, '.dolly', 'README.md'), 'utf8'), /dollie/);
 
   assert.equal(migrate(Store.open(sb.dir)).actions.length, 0, 'idempotent');
   process.env.DOLLY_DIR = sb.store;

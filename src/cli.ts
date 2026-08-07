@@ -41,7 +41,7 @@ import {
   type ReindexOpts,
 } from './reindex.js';
 import { listSessions } from './core/transcript.js';
-import { insideClaudeCode, resumeCommand } from './core/session.js';
+import { currentSessionId, insideClaudeCode, resumeCommand } from './core/session.js';
 import {
   codeMapLine,
   ensureProject,
@@ -118,9 +118,13 @@ INTEGRATION
 REFS
   <ref> = id (3 | 0003) | slug | unique substring | current | @
 
-Every step is stamped with your GitHub handle (gh -> git email -> $USER).
-Override with DOLLY_USER. Store location: DOLLY_DIR, else nearest .dolly/,
-else <repo-root>/.dolly, else ~/.dolly/projects/<name>-<hash>.`;
+Every step is stamped with your handle: DOLLY_USER -> .dolly/local.json ->
+gh api user -> git user.email / user.name -> $USER. Identity lives in
+local.json, which is gitignored — a handle in the shared config.json would
+attribute every teammate's steps to one person, so it is ignored.
+
+Store location: DOLLY_DIR, else nearest .dolly/, else <repo-root>/.dolly,
+else ~/.dolly/projects/<name>-<hash>.`;
 
 function fail(msg: string): never {
   process.stderr.write(`dolly: ${msg}\n`);
@@ -846,9 +850,19 @@ function cmdConfig(args: Args): void {
     const key = args.positional[2];
     const raw = args.positional.slice(3).join(' ');
     if (!key || raw === '') fail('usage: dolly config set <key> <value>');
+    // identity is per-person: it goes to the gitignored local config, never to
+    // the shared one where it would stamp every teammate with the same handle
+    if (key === 'user') {
+      const value = String(coerce(raw));
+      store.saveLocal({ user: value });
+      process.stderr.write(
+        color.dim(`written to ${store.localConfigPath} (gitignored — identity is per-person)\n`),
+      );
+      return jsonOut(value);
+    }
     const next = JSON.parse(JSON.stringify(store.config));
     setDeep(next, key, coerce(raw));
-    writeJson(store.configPath, next);
+    store.saveConfig(next);
     return jsonOut(dig(next, key));
   }
   fail(`unknown config subcommand "${sub}" — use get|set`);
@@ -1026,7 +1040,11 @@ function cmdHook(args: Args): void {
     if (hk.autoLog && (working || !hk.autoLogOnlyWhenWorking)) {
       const before = active.meta.updated;
       try {
+        // Pin to the running conversation. Resolving by newest-mtime meant a
+        // second Claude session in the same repo could get its turns logged
+        // onto this task.
         const transcript = loadTranscript(store.project, {
+          session: currentSessionId() ?? undefined,
           includeThinking: hk.includeThinking,
         });
         const res = applyReindex(store, transcript, {

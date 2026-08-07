@@ -162,6 +162,18 @@ export function hasSection(body: string, name: string): boolean {
   return sectionRange(body, name) !== null;
 }
 
+/**
+ * How many `## Name` headings the document has.
+ *
+ * Section lookup takes the first match, so a duplicate means writes land in the
+ * wrong place — a spec whose prose contains `## Log` swallowed the step log
+ * silently. Callers that manage a section use this to fail loudly instead.
+ */
+export function countSections(body: string, name: string): number {
+  const re = new RegExp(`^##[ \\t]+${escapeRe(name)}[ \\t]*$`, 'gmi');
+  return [...body.matchAll(re)].length;
+}
+
 export function getSection(body: string, name: string): string | null {
   const r = sectionRange(body, name);
   if (!r) return null;

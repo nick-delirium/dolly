@@ -112,7 +112,9 @@ export const DEFAULT_CONFIG: Config = {
     archiveDoneAfterDays: 14,
     staleAfterDays: 60,
     deleteArchivedAfterDays: 0,
-    keepFullStepsPerTask: 40,
+    // 0 = keep everything. Pruning deletes step bodies, and "never destructive
+    // by default" is a stated invariant of the store — so this is opt-in.
+    keepFullStepsPerTask: 0,
     keepSpecVersions: 0,
     auto: true,
     autoEveryHours: 24,

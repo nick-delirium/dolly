@@ -17,6 +17,12 @@ import { repoRoot } from './git.js';
 import { resolveIdentity, type Identity } from './identity.js';
 
 export const STORE_DIRNAME = '.dolly';
+/**
+ * Per-person settings, gitignored. Identity lives here and never in the shared
+ * config: a committed `user` stamps every teammate's steps with one handle,
+ * which quietly destroys the attribution the store exists to provide.
+ */
+export const LOCAL_CONFIG = 'local.json';
 /** pre-rename directory name; still discovered so `dolly migrate` can move it */
 export const LEGACY_STORE_DIRNAME = '.dollie';
 export const TASKS = 'tasks';
@@ -125,6 +131,16 @@ export class Store {
     return path.join(this.root, 'config.json');
   }
 
+  /** gitignored, per-machine. Identity and anything else that must not be shared. */
+  get localConfigPath(): string {
+    return path.join(this.root, LOCAL_CONFIG);
+  }
+
+  saveLocal(patch: Record<string, unknown>): void {
+    const cur = readJson<Record<string, unknown>>(this.localConfigPath, {});
+    writeJson(this.localConfigPath, { ...cur, ...patch });
+  }
+
   get tasksDir(): string {
     return path.join(this.root, TASKS);
   }
@@ -151,7 +167,7 @@ export class Store {
     // per-user settings inside whatever directory they are pointed at.
     // Merged rather than overwritten so an older store gains new entries.
     const ignore = path.join(this.root, '.gitignore');
-    const want = ['.housekeep.json', '*.tmp-*', '.claude/', '.cursor/', '.codex/'];
+    const want = ['.housekeep.json', LOCAL_CONFIG, '*.tmp-*', '.claude/', '.cursor/', '.codex/'];
     const have = readTextOr(ignore).split('\n').map((l) => l.trim());
     const missing = want.filter((l) => !have.includes(l));
     if (missing.length) {
@@ -163,7 +179,10 @@ export class Store {
   }
 
   saveConfig(next: Config): void {
-    writeJson(this.configPath, next);
+    // `user` is per-person and lives in the gitignored local config; writing it
+    // here would reintroduce the misattribution this split exists to prevent
+    const { user: _user, ...shared } = next;
+    writeJson(this.configPath, shared);
   }
 
   /** every task dir under tasks/ plus, when asked, archive/<bucket>/ */
@@ -243,6 +262,9 @@ export class Store {
 
 export function loadConfig(root: string): Config {
   const raw = readJson<Partial<Config>>(path.join(root, 'config.json'), {});
+  const local = readJson<Partial<Config>>(path.join(root, LOCAL_CONFIG), {});
+  // A `user` in the shared config is ignored on purpose — see LOCAL_CONFIG.
+  // `dolly migrate` moves a stale one out and reports it.
   return {
     ...DEFAULT_CONFIG,
     ...raw,
@@ -251,7 +273,14 @@ export function loadConfig(root: string): Config {
     reindex: { ...DEFAULT_CONFIG.reindex, ...(raw.reindex ?? {}) },
     statuses: raw.statuses?.length ? raw.statuses : DEFAULT_CONFIG.statuses,
     planSections: raw.planSections?.length ? raw.planSections : DEFAULT_CONFIG.planSections,
+    user: local.user ?? null,
   };
+}
+
+/** a `user` sitting in the shared config, which would misattribute teammates */
+export function sharedUserLeak(root: string): string | null {
+  const raw = readJson<Partial<Config>>(path.join(root, 'config.json'), {});
+  return typeof raw.user === 'string' && raw.user.trim() ? raw.user.trim() : null;
 }
 
 export function readTaskDir(dir: string, rel: string, archived: boolean): Task | null {

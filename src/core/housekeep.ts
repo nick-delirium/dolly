@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { move, readJson, rmrf, writeJson } from './fsx.js';
-import { readTaskDir, type Store } from './store.js';
+import { currentTask, readTaskDir, type Store } from './store.js';
 import type { Task } from './types.js';
 import {
   dropStepEntries,
@@ -50,10 +50,17 @@ export function housekeep(
   const dryRun = Boolean(opts.dryRun);
   const hk = store.config.housekeep;
   const actions: HkAction[] = [];
+  // Automatic runs fire on every write, so they must never move the task
+  // somebody is in the middle of. An explicit `dolly housekeep` still may.
+  const protectedId = opts.auto
+    ? currentTask(store.loadTasks(false), store.config)?.meta.id
+    : undefined;
 
   for (const task of store.loadTasks(false)) {
     const age = daysSince(task.meta.updated || task.meta.created);
     const isDone = task.meta.status === store.config.doneStatus;
+
+    if (task.meta.id === protectedId) continue;
 
     if (isDone && hk.archiveDoneAfterDays > 0 && age >= hk.archiveDoneAfterDays) {
       actions.push({

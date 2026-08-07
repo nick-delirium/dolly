@@ -94,12 +94,14 @@ const TOOLS: Tool[] = [
       type: 'object',
       properties: {
         ref: REF,
-        steps: { type: 'number', description: 'How many recent steps to include in full. Default 5, 0 = all.' },
+        steps: { type: 'number', description: 'How many recent steps to include in full. Default 3, 0 = all.' },
       },
     },
     run(a) {
-      const { t } = open(a.ref ?? 'current');
-      return renderContext(t, { steps: a.steps ?? 5 });
+      const { s, t } = open(a.ref ?? 'current');
+      // the store is what adds the project brief, related tasks and file list —
+      // omitting it made the recommended integration the impoverished one
+      return renderContext(t, { steps: a.steps ?? 3, store: s });
     },
   },
   {

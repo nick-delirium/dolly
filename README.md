@@ -51,7 +51,7 @@ npm install -g .     # or `npm link` if you want edits to take effect live
 ```bash
 git clone https://github.com/nick-delirium/dolly.git && cd dolly
 npm install && npm link
-npm test             # 61 tests
+npm test             # 72 tests
 ```
 
 Undo with `npm unlink -g dolly`. Requires Node ≥ 18 and nothing else — there are no runtime dependencies, and TypeScript is the only devDependency.
@@ -420,7 +420,7 @@ Runs automatically at most once a day on any write. Defaults in `.dolly/config.j
 | `archiveDoneAfterDays` | 14 | `done` tasks untouched this long → `archive/YYYY-MM/` |
 | `staleAfterDays` | 60 | unfinished tasks untouched this long → flagged `stale` |
 | `deleteArchivedAfterDays` | 0 | delete archived dirs after N days. 0 = keep forever |
-| `keepFullStepsPerTask` | 40 | drop oldest entries from `steps.md` past this. Short summaries always survive |
+| `keepFullStepsPerTask` | 0 | 0 = keep every step body. Set >0 to drop the oldest past that count; the one-line summaries always survive |
 | `keepSpecVersions` | 0 | 0 = keep every superseded spec version in `spec.md` |
 | `auto` | true | run automatically |
 | `autoEveryHours` | 24 | how often auto may run |
@@ -430,11 +430,17 @@ dolly config set housekeep.archiveDoneAfterDays 30
 dolly config get housekeep
 ```
 
-Nothing is destroyed by default: archiving moves directories, pruning only drops full step entries (the one-line summaries stay, with `full: _pruned by housekeeping_`), and every spec version is kept.
+Nothing is destroyed by default: pruning and archive-deletion are both off unless you turn them on, archiving moves directories rather than removing them, and every spec version is kept. Automatic runs also never touch the task you are currently working on.
 
 ## Sharing and attribution
 
-Each step and status change is stamped with your handle, resolved once and cached: `DOLLY_USER` → `.dolly/config.json` `user` → `gh api user` → git email → `$USER`.
+Each step and status change is stamped with your handle, resolved in this order:
+
+```
+DOLLY_USER  →  .dolly/local.json  →  gh api user (cached)  →  git user.email / user.name  →  $USER
+```
+
+`.dolly/` holds two config files and the split matters: **`config.json` is shared policy** (statuses, plan sections, housekeeping) and is committed; **`local.json` is per-person** and gitignored. Identity belongs in `local.json` — `dolly config set user` writes there. A `user` in the shared `config.json` is deliberately **ignored**, because a committed handle stamps every teammate's steps with one name and destroys the attribution the store exists to provide. `dolly migrate` moves a stale one out and reports it.
 
 Because it's all files in the repo, two people working the same feature see each other's steps on `git pull`, and a step log shows up in PR diffs as a readable narrative of how the change happened. `collaborators` in the frontmatter accumulates everyone who touched the task.
 
@@ -502,7 +508,7 @@ git clone https://github.com/nick-delirium/dolly.git
 cd dolly
 npm install     # installs TypeScript, then `prepare` builds dist/
 npm link        # puts `dolly` on your PATH, pointing at this checkout
-npm test        # 61 tests
+npm test        # 72 tests
 ```
 
 `npm install` first is **not optional**: `npm link` runs the `prepare` script, and on a fresh clone with no `node_modules` that fails with `tsc: command not found`.
