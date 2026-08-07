@@ -26,7 +26,6 @@
     "bin/",
     "skills/",
     "commands/",
-    "agents/",
     ".claude-plugin/",
     "README.md",
     "LICENSE"
@@ -35,7 +34,7 @@
     "build": "tsc -p tsconfig.json && node -e \"require('fs').chmodSync('dist/cli.js', 0o755)\"",
     "dev": "tsc -w -p tsconfig.json",
     "test": "npm run build && node --test tests/*.test.mjs",
-    "prepublishOnly": "npm run build"
+    "prepare": "npm run build"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
