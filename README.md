@@ -519,6 +519,18 @@ After editing `src/`, rebuild — the global `dolly` resolves to `dist/cli.js`, 
 npm run build   # or `npm run dev` to watch, or just `npm test` (it builds first)
 ```
 
+### After a `git pull`
+
+```bash
+npm install     # that's it
+```
+
+The link itself survives a pull: it points at the checkout *directory*, not at a snapshot. But `dist/` is gitignored, so **a pull never updates the compiled output** — your `dolly` keeps running the previous build until you rebuild. `npm install` covers both cases, since `prepare` recompiles and you can't tell from a pull whether devDependencies changed. `npm run build` alone is enough when they haven't.
+
+This one bites silently: the symptom is a fix that "doesn't work" because you're still running a stale `dist/`.
+
+**Re-run `npm link` only if `package.json`'s `bin` changed.** npm materialises one symlink per bin entry at link time, so a newly added or renamed binary won't be on your PATH until you link again.
+
 Undo the link with `npm unlink -g dolly`.
 
 The clone ships dolly's own `.claude/`, `.mcp.json`, `CLAUDE.md` and `.dolly/`, so once `dolly` is on your PATH a Claude Code session in the checkout gets the skills, slash commands, MCP server and hooks automatically — and `dolly board` shows the project's real task history. dolly is developed with dolly.
