@@ -2,20 +2,20 @@
 id: "0003"
 slug: support-pi-as-an-install-target
 title: support pi as an install target
-status: working
+status: validating
 owner: rjshrjndrn
 collaborators: [rjshrjndrn]
 tags: []
-steps: 1
+steps: 2
 spec_version: 2
 created: 2026-08-07T19:27:58Z
-updated: 2026-08-07T19:45:14Z
+updated: 2026-08-07T20:04:49Z
 ---
 
 # 0003 · support pi as an install target
 
 <!-- dolly:header -->
-`working` · spec v2 · @rjshrjndrn · 1 step · updated 2026-08-07 19:45Z
+`validating` · spec v2 · @rjshrjndrn · 2 steps · updated 2026-08-07 20:04Z
 <!-- /dolly:header -->
 
 ## Spec
@@ -52,4 +52,7 @@ Plan complete. Status → todo.
 - `2026-08-07 19:40Z` @rjshrjndrn: status todo → working.
 - `2026-08-07 19:45Z` @rjshrjndrn: pi install target lands as a TARGETS[] entry mirroring claude minus commands/hooks; reuses all helpers, no template changes. 3 RED tests first, suite 90/90.
   files: `.gemini/settings.json`, `.pi/git-root.cache`, `.pi/memory.db`, `.pi/memory.db-shm`, `.pi/memory.db-wal`, `.windsurf/rules/dolly.md` +6 more · full: `steps.md#0001`
+- `2026-08-07 19:47Z` @rjshrjndrn: status working → validating. run `dolly install pi --global` (drops the --dry-run), restart pi, confirm the dolly_* MCP tools + dolly/dolly-planning skills are visible. Also decide: keep repo-scoped .pi/agent skills or force --global for pi.
+- `2026-08-07 20:04Z` @rjshrjndrn: pi skill path is scope-dependent: pi scans ~/.pi/agent/skills (global) but <repo>/.pi/skills (local, no agent/ segment). First cut wrote local skills to the unscanned .pi/agent/skills. Branch by scope; verified against pi docs. Suite 91/91.
+  files: `.gemini/settings.json`, `.pi/git-root.cache`, `.pi/memory.db`, `.pi/memory.db-shm`, `.pi/memory.db-wal`, `.windsurf/rules/dolly.md` +6 more · full: `steps.md#0002`
 

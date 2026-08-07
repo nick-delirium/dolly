@@ -291,21 +291,26 @@ export const TARGETS: Target[] = [
   {
     id: 'pi',
     label: 'pi',
-    detect: (p) => isDir(path.join(home, '.pi', 'agent')) || isDir(path.join(p, '.pi', 'agent')),
+    detect: (p) => isDir(path.join(home, '.pi', 'agent')) || isDir(path.join(p, '.pi')),
     install(project, opts) {
-      const base = opts.global ? path.join(home, '.pi', 'agent') : path.join(project, '.pi', 'agent');
-      const out: string[] = cleanLegacy(project, base, opts.dryRun);
-      out.push(copyTree(path.join(PKG_ROOT, 'skills', 'dolly'), path.join(base, 'skills', 'dolly'), opts.dryRun));
+      // pi's skill discovery differs by scope: global lives under
+      // ~/.pi/agent/skills, but a trusted project is scanned at .pi/skills
+      // (NOT .pi/agent/skills). Instructions + MCP use the usual repo files.
+      const skills = opts.global
+        ? path.join(home, '.pi', 'agent', 'skills')
+        : path.join(project, '.pi', 'skills');
+      const out: string[] = [];
+      out.push(copyTree(path.join(PKG_ROOT, 'skills', 'dolly'), path.join(skills, 'dolly'), opts.dryRun));
       out.push(
         copyTree(
           path.join(PKG_ROOT, 'skills', 'dolly-planning'),
-          path.join(base, 'skills', 'dolly-planning'),
+          path.join(skills, 'dolly-planning'),
           opts.dryRun,
         ),
       );
       out.push(
         writeBlock(
-          opts.global ? path.join(base, 'SYSTEM.md') : path.join(project, 'AGENTS.md'),
+          opts.global ? path.join(home, '.pi', 'agent', 'SYSTEM.md') : path.join(project, 'AGENTS.md'),
           AGENT_BLOCK,
           opts.dryRun,
         ),
@@ -313,7 +318,7 @@ export const TARGETS: Target[] = [
       if (opts.mcp) {
         out.push(
           mergeMcpJson(
-            opts.global ? path.join(base, 'mcp.json') : path.join(project, '.mcp.json'),
+            opts.global ? path.join(home, '.pi', 'agent', 'mcp.json') : path.join(project, '.mcp.json'),
             'mcpServers',
             opts.dryRun,
           ),

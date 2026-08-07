@@ -120,13 +120,18 @@ test('install pi wires skills, instructions, and mcp (local)', (t) => {
   const out = dolly(sb.dir, ['install', 'pi', '--local'], { DOLLY_DIR: sb.store });
   assert.match(out, /scope: local/);
 
+  // pi scans PROJECT skills at .pi/skills (NOT .pi/agent/skills)
   assert.ok(
-    fs.existsSync(path.join(sb.dir, '.pi', 'agent', 'skills', 'dolly', 'SKILL.md')),
-    'dolly skill copied under pi base',
+    fs.existsSync(path.join(sb.dir, '.pi', 'skills', 'dolly', 'SKILL.md')),
+    'dolly skill copied into project .pi/skills',
   );
   assert.ok(
-    fs.existsSync(path.join(sb.dir, '.pi', 'agent', 'skills', 'dolly-planning', 'SKILL.md')),
-    'dolly-planning skill copied under pi base',
+    fs.existsSync(path.join(sb.dir, '.pi', 'skills', 'dolly-planning', 'SKILL.md')),
+    'dolly-planning skill copied into project .pi/skills',
+  );
+  assert.ok(
+    !fs.existsSync(path.join(sb.dir, '.pi', 'agent', 'skills')),
+    '.pi/agent/skills is a global-only path, never written for a local install',
   );
   assert.ok(fs.existsSync(path.join(sb.dir, 'AGENTS.md')), 'local instructions in AGENTS.md');
   assert.ok(fs.existsSync(path.join(sb.dir, '.mcp.json')), 'local mcp in .mcp.json');
@@ -137,6 +142,16 @@ test('install pi wires skills, instructions, and mcp (local)', (t) => {
   const agents = fs.readFileSync(path.join(sb.dir, 'AGENTS.md'), 'utf8');
   assert.match(agents, /<!-- dolly:instructions -->/);
   assert.match(agents, /dolly context current/);
+});
+
+test('install pi --global resolves skills under ~/.pi/agent/skills', (t) => {
+  const sb = sandbox();
+  t.after(sb.cleanup);
+  Store.open().init();
+  // dry-run so the real home directory is never touched
+  const out = dolly(sb.dir, ['install', 'pi', '--global', '--dry-run'], { DOLLY_DIR: sb.store });
+  assert.match(out, /scope: global/);
+  assert.match(out, /[/\\]\.pi[/\\]agent[/\\]skills[/\\]dolly\b/);
 });
 
 test('install pi is idempotent on rerun', (t) => {

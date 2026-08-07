@@ -36,3 +36,41 @@ expected ~/.pi/agent paths.
 Next: manual verify (real install + pi restart, confirm dolly_* MCP tools +
 skill visible), then move 0003 to validating. Hook extension = follow-up task.
 <!-- /dolly:step 0001 -->
+
+<!-- dolly:step 0002 -->
+## 0002 · 2026-08-07T20:04:49Z · @rjshrjndrn
+
+- task status: validating
+- files: `.gemini/settings.json`, `.pi/git-root.cache`, `.pi/memory.db`, `.pi/memory.db-shm`, `.pi/memory.db-wal`, `.windsurf/rules/dolly.md`, `AGENTS.md`, `GEMINI.md`, `opencode.json`, `package-lock.json`, `src/install.ts`, `tests/install.test.mjs`
+
+## Fix: pi skill discovery path differs by scope
+
+Symptom: after install, no dolly skill appeared in pi even though
+files existed under <repo>/.pi/agent/skills.
+
+Root cause (confirmed against pi.dev/docs/latest/skills "Locations"):
+pi scans skills from
+  - GLOBAL:  ~/.pi/agent/skills/  (and ~/.agents/skills/)
+  - PROJECT: <repo>/.pi/skills/   (NOT <repo>/.pi/agent/skills — no
+             agent/ segment) and <repo>/.agents/skills/
+My first cut used base=~/.pi/agent for global and <repo>/.pi/agent for
+local, then base/skills for both. Global resolved right by luck; local
+wrote to .pi/agent/skills, a path pi never scans → skill invisible.
+
+Fix: branch the skills dir on scope —
+  global → ~/.pi/agent/skills
+  local  → <repo>/.pi/skills
+Instructions and MCP unchanged (SYSTEM.md/mcp.json global, AGENTS.md/
+.mcp.json local). Dropped cleanLegacy (pi never had a dollie install).
+detect local signal broadened to isDir(<repo>/.pi).
+
+Tests: updated the local test to assert .pi/skills (and to assert
+.pi/agent/skills is NEVER written locally); added a --global --dry-run
+test asserting the ~/.pi/agent/skills path resolves. Suite 91/91.
+
+Ran the real `dolly install pi --global`: skills, SYSTEM.md block, and
+mcp.json dolly server all land. Removed the stale <repo>/.pi/agent/skills
+left by the earlier buggy local install.
+
+Human still needs to restart pi to confirm the dolly skill loads.
+<!-- /dolly:step 0002 -->
