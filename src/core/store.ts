@@ -286,14 +286,21 @@ function toStrArray(v: unknown): string[] {
   return [];
 }
 
+/**
+ * Newest activity first. Timestamps are second-precision, so events inside the
+ * same second tie — break by id descending so ordering is deterministic rather
+ * than dependent on directory read order.
+ */
+export function byRecency(a: Task, b: Task): number {
+  return b.meta.updated.localeCompare(a.meta.updated) || b.meta.id.localeCompare(a.meta.id);
+}
+
 /** the task an agent is presumed to be working on right now */
 export function currentTask(tasks: Task[], config: Config): Task | null {
   const priority = ['working', 'validating', 'planning'];
   const live = tasks.filter((t) => !t.archived && t.meta.status !== config.doneStatus);
   for (const status of priority) {
-    const hits = live
-      .filter((t) => t.meta.status === status)
-      .sort((a, b) => b.meta.updated.localeCompare(a.meta.updated));
+    const hits = live.filter((t) => t.meta.status === status).sort(byRecency);
     if (hits.length) return hits[0];
   }
   return null;

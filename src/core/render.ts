@@ -1,3 +1,5 @@
+import { codeMapLine, projectDigest } from './project.js';
+import { filesOfTask, relatedToTask, renderRelated } from './related.js';
 import type { Store } from './store.js';
 import type { Task } from './types.js';
 import {
@@ -136,7 +138,7 @@ export function renderShow(task: Task, opts: { full?: boolean } = {}): string {
  */
 export function renderContext(
   task: Task,
-  opts: { steps?: number; plan?: boolean; brief?: boolean } = {},
+  opts: { steps?: number; plan?: boolean; brief?: boolean; store?: Store } = {},
 ): string {
   const steps = opts.brief ? 0 : (opts.steps ?? 3);
   const out: string[] = [];
@@ -154,6 +156,32 @@ export function renderContext(
       `- dir: ${task.dir}`,
     ].join('\n'),
   );
+  // Repo before task: this is one slice of an ongoing codebase, and an agent
+  // that does not know that will happily reinvent its conventions.
+  if (opts.store) {
+    const brief = projectDigest(opts.store);
+    if (brief) out.push('', '## Project brief (repo-level, task-independent)', '', brief);
+    const maps = codeMapLine(opts.store.project);
+    if (maps) {
+      out.push('', '## Code map available — use it before grepping', '', maps);
+    }
+    const related = relatedToTask(opts.store, task);
+    if (related.length) {
+      out.push(
+        '',
+        '## Other tasks in this code',
+        '',
+        'These touched the same files. Read their outcomes before changing shared code —',
+        'they may have decided something you are about to undo.',
+        '',
+        renderRelated(related),
+      );
+    }
+    const files = filesOfTask(task);
+    if (files.length) {
+      out.push('', `## Files this task has touched (${files.length})`, '', files.map((f) => `- \`${f}\``).join('\n'));
+    }
+  }
   out.push('', '## Spec (short)', '', shortSpec(task) || '_empty_');
   out.push('', '## Success Criteria', '', criteria(task) || '_empty_');
   const full = fullSpec(task);

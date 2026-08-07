@@ -42,6 +42,22 @@ import {
 } from './reindex.js';
 import { listSessions } from './core/transcript.js';
 import { insideClaudeCode, resumeCommand } from './core/session.js';
+import {
+  codeMapLine,
+  ensureProject,
+  projectDigest,
+  projectFile,
+  projectStatus,
+  setProjectSection,
+} from './core/project.js';
+import {
+  latestOutcome,
+  overlappingTasks,
+  recentlyFinished,
+  relatedByFiles,
+  relatedToTask,
+  renderRelated,
+} from './core/related.js';
 
 const VERSION = '0.1.0';
 
@@ -56,6 +72,8 @@ BOARD
   board | list [--all] [--status s] [--mine]  task board grouped by status
   show <ref> [--full] [--json]                one task
   context <ref|current> [-n N] [--brief]      rehydrate payload for an agent
+  project [show | set "<Section>" --text t]    repo-level brief: what is true here
+  related [<ref> | --files a,b]               tasks that touched the same files
   current                                     alias for: context current
   continue <ref> [--fork] [--print]           reopen the Claude Code conversation
                                               this task was worked in
@@ -266,11 +284,11 @@ function cmdContext(args: Args, refOverride?: string): void {
       ...taskJson(task),
       spec_full: fullSpec(task),
       plan: readPlan(task) || null,
-      markdown: renderContext(task, { steps, brief }),
+      markdown: renderContext(task, { steps, brief, store }),
     });
     return;
   }
-  process.stdout.write(`${renderContext(task, { steps, brief })}\n`);
+  process.stdout.write(`${renderContext(task, { steps, brief, store })}\n`);
 }
 
 function cmdNew(args: Args): void {
@@ -280,6 +298,7 @@ function cmdNew(args: Args): void {
   if (!title) fail('usage: dolly new "<title>"');
   const short = textFrom(args, { inline: 'short' });
   const full = textFrom(args, { inline: 'full', file: 'file' }) ?? pipedStdin();
+  warnOverlap(store, title);
   const task = createTask(store, {
     title,
     status: str(args, 'status'),
@@ -408,6 +427,7 @@ function cmdPlan(args: Args): void {
     const title = args.positional.slice(2).join(' ').trim();
     if (!title) fail('usage: dolly plan start "<title>" [--brief t]');
     const brief = textFrom(args, { inline: 'brief', file: 'brief-file' }) ?? pipedStdin() ?? '';
+    warnOverlap(store, title);
     const task = startPlan(store, title, brief);
     afterWrite(store);
     if (bool(args, 'json')) {
@@ -415,6 +435,11 @@ function cmdPlan(args: Args): void {
     }
     process.stdout.write(`${color.bold(task.meta.id)} ${task.meta.title} → planning\n`);
     process.stdout.write(`${color.dim(path.join(task.dir, 'context', 'plan.md'))}\n\n`);
+    const maps = codeMapLine(store.project);
+    process.stdout.write(
+      `${color.bold('Before asking anything')}: read the project brief (\`dolly project\`), check \`dolly related --files <expected files>\` for tasks already in that code, and read the code itself` +
+        `${maps ? ' using the available code map' : ''}. Never ask what the repo already answers.\n\n`,
+    );
     process.stdout.write('Interview agenda — ask the user about each:\n');
     for (const s of store.config.planSections) {
       process.stdout.write(`  ${color.cyan(s)} — ${PLAN_PROMPTS[s] ?? ''}\n`);
@@ -686,6 +711,113 @@ function cmdContinue(args: Args): void {
   process.exit(res.status ?? 0);
 }
 
+/**
+ * A new task in a repo with history is usually adjacent to an old one. Word
+ * overlap is a weak signal, so this only points — it never blocks.
+ */
+function warnOverlap(store: Store, title: string): void {
+  if (!store.exists) return;
+  const hits = overlappingTasks(store, title);
+  if (!hits.length) return;
+  process.stderr.write(
+    color.yellow(`dolly: ${hits.length} existing task(s) may already cover this — check before duplicating\n`),
+  );
+  for (const h of hits) {
+    process.stderr.write(
+      `  ${h.task.meta.id} ${h.task.meta.title} (${h.task.meta.status}) ${color.dim(`· shares: ${h.words.join(', ')}`)}\n` +
+        `    ${color.dim(h.outcome)}\n`,
+    );
+  }
+}
+
+function cmdProject(args: Args): void {
+  const store = openStore();
+  const sub = args.positional[1] ?? 'show';
+
+  if (sub === 'set') {
+    const section = args.positional[2];
+    if (!section) fail('usage: dolly project set "<Section>" --text "..."');
+    const text = textFrom(args, { inline: 'text', file: 'file' }) ?? pipedStdin();
+    if (text === undefined) fail('need --text, --file, or piped stdin');
+    ensureProject(store);
+    setProjectSection(store, section, text);
+    const st = projectStatus(store);
+    if (bool(args, 'json')) return jsonOut({ section, ...st });
+    process.stdout.write(`project brief · "${section}" updated\n`);
+    if (st.missing.length) {
+      process.stdout.write(color.dim(`still unfilled: ${st.missing.join(', ')}\n`));
+    }
+    return;
+  }
+
+  if (sub === 'init') {
+    ensureProject(store);
+    process.stdout.write(`${projectFile(store)}\n`);
+    return;
+  }
+
+  if (sub !== 'show') fail(`unknown project subcommand "${sub}" — use show|set|init`);
+
+  const st = projectStatus(store);
+  const maps = codeMapLine(store.project);
+  if (bool(args, 'json')) {
+    return jsonOut({ ...st, file: projectFile(store), digest: projectDigest(store), codeMaps: maps });
+  }
+  if (!st.exists) {
+    process.stdout.write(
+      `no project brief yet — ${color.bold('dolly project init')} creates one at ${projectFile(store)}\n\n` +
+        'It records what is true about this repo, so a new task is not treated as a greenfield project.\n' +
+        'Sections to fill:\n',
+    );
+    for (const [k, v] of Object.entries(st.prompts)) {
+      process.stdout.write(`  ${color.cyan(k)} — ${v}\n`);
+    }
+    return;
+  }
+  const digest = projectDigest(store);
+  process.stdout.write(digest ? `${digest}\n` : color.dim('project brief exists but every section is _TBD_\n'));
+  if (st.missing.length) {
+    process.stdout.write(`\n${color.yellow('unfilled sections')}: ${st.missing.join(', ')}\n`);
+    for (const m of st.missing) process.stdout.write(`  ${color.cyan(m)} — ${st.prompts[m] ?? ''}\n`);
+  }
+  if (maps) process.stdout.write(`\n${color.bold('code map available')}\n${maps}\n`);
+}
+
+function cmdRelated(args: Args): void {
+  const store = openStore();
+  const explicit = list(args, 'files');
+  const ref = args.positional[1];
+
+  let related: ReturnType<typeof relatedByFiles>;
+  let subject = '';
+  if (explicit.length) {
+    related = relatedByFiles(store, explicit);
+    subject = `${explicit.length} file(s)`;
+  } else {
+    const task = store.resolve(ref ?? 'current');
+    related = relatedToTask(store, task);
+    subject = `${task.meta.id} ${task.meta.title}`;
+  }
+
+  if (bool(args, 'json')) {
+    return jsonOut({
+      subject,
+      related: related.map((r) => ({
+        id: r.task.meta.id,
+        title: r.task.meta.title,
+        status: r.task.meta.status,
+        shared: r.shared,
+        outcome: r.outcome,
+      })),
+    });
+  }
+  if (!related.length) {
+    process.stdout.write(`no other task has touched this code (${subject})\n`);
+    return;
+  }
+  process.stdout.write(`tasks sharing code with ${color.bold(subject)}\n\n${renderRelated(related, 20)}\n`);
+}
+
 function cmdMigrate(args: Args): void {
   const store = openStore();
   const report = migrate(store, { dryRun: bool(args, 'dry-run') });
@@ -813,6 +945,34 @@ function cmdHook(args: Args): void {
       .map((x) => `${x.s} ${x.n}`)
       .join(' · ');
     lines.push(`dolly store: ${store.root}${counts ? ` — ${counts}` : ' — empty'}`);
+    lines.push('');
+    lines.push(
+      'This repo has task history. Work here is a slice of an ongoing codebase, not a new project — check what already exists before deciding anything.',
+    );
+
+    const brief = projectDigest(store, 1800);
+    if (brief) {
+      lines.push('', '## Project brief (what is true about this repo)', brief);
+    } else {
+      lines.push(
+        '',
+        'No project brief yet. If you learn something durable about this codebase — architecture, a convention, an invariant — record it with `dolly project set "<Section>" --text "..."` so the next task starts informed.',
+      );
+    }
+
+    const maps = codeMapLine(store.project);
+    if (maps) {
+      lines.push('', '## Code map available — prefer it over grep', maps);
+    }
+
+    const finished = recentlyFinished(store, 4).filter((t) => t.meta.id !== active?.meta.id);
+    if (finished.length) {
+      lines.push('', '## Recently finished here');
+      for (const t of finished) {
+        lines.push(`- ${t.meta.id} ${t.meta.title} (${t.meta.status}) — ${latestOutcome(t, 160)}`);
+      }
+    }
+
     if (active) {
       lines.push('');
       lines.push(`Active task ${active.meta.id} "${active.meta.title}" (${active.meta.status}), ${active.meta.steps} steps, updated ${humanAge(active.meta.updated)}.`);
@@ -843,7 +1003,12 @@ function cmdHook(args: Args): void {
       }
     } else {
       lines.push('');
-      lines.push('No active task. `dolly board` to see the board. New feature → `dolly plan start "<title>"`. Small fix → `dolly new "<title>"`.');
+      lines.push(
+        'No active task. `dolly board` for the board. New feature → `dolly plan start "<title>"`; small fix → `dolly new "<title>"`.',
+      );
+      lines.push(
+        'Before opening one: `dolly board --all` to check nothing already covers it, and `dolly related --files <the files you expect to touch>` to find who has been in that code and what they decided.',
+      );
     }
     emitSessionStart(lines.join('\n'));
     return;
@@ -969,6 +1134,10 @@ async function main(): Promise<void> {
     case 'retitle':
     case 'rename':
       return cmdRetitle(args);
+    case 'project':
+      return cmdProject(args);
+    case 'related':
+      return cmdRelated(args);
     case 'archive':
       return cmdArchive(args);
     case 'restore':

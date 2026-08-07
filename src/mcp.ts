@@ -17,6 +17,8 @@ import { renderBoard, renderContext, renderShow } from './core/render.js';
 import { Store, currentTask } from './core/store.js';
 import { addStep, createTask, fullSpec, setStatus, updateSpec } from './core/task.js';
 import type { Task } from './core/types.js';
+import { codeMapLine, ensureProject, projectDigest, projectStatus, setProjectSection } from './core/project.js';
+import { relatedByFiles, relatedToTask, renderRelated } from './core/related.js';
 import {
   applyReindex,
   importedTurns,
@@ -322,6 +324,61 @@ const TOOLS: Tool[] = [
       const { s, t } = open(a.ref, false);
       const moved = archiveTask(s, t, a.note);
       return `${moved.meta.id} archived -> ${moved.rel}`;
+    },
+  },
+  {
+    name: 'dolly_project',
+    description:
+      "Repo-level knowledge: what is true about this codebase, independent of any task — Overview, Architecture, Conventions, Invariants, Glossary. READ THIS before planning or deciding anything on an unfamiliar task; a task here is a slice of an ongoing codebase, not a greenfield project. It is not a second CLAUDE.md: CLAUDE.md says how to behave, this records what is true about the code. Maintain it — pass section+text to write what you learn. Rule of thumb: a fact useful to a task that does not exist yet belongs here; a fact about what this task did belongs in a step.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        section: S('Section to write: Overview, Architecture, Conventions, Invariants, Glossary.'),
+        text: S('Markdown body for that section. Omit both to read the brief.'),
+      },
+    },
+    run(a) {
+      const s = store();
+      if (!s.exists) return 'dolly not initialized here.';
+      if (a.section && a.text) {
+        ensureProject(s);
+        setProjectSection(s, a.section, a.text);
+        const st = projectStatus(s);
+        return `project brief "${a.section}" updated.${st.missing.length ? ` Still unfilled: ${st.missing.join(', ')}.` : ''}`;
+      }
+      const st = projectStatus(s);
+      const maps = codeMapLine(s.project);
+      const digest = projectDigest(s);
+      const out: string[] = [];
+      out.push(digest || 'The project brief is empty. Fill it as you learn about this repo.');
+      if (st.missing.length) {
+        out.push('', `unfilled sections: ${st.missing.map((m) => `${m} (${st.prompts[m]})`).join(' · ')}`);
+      }
+      if (maps) out.push('', `code map available — use it before grepping:\n${maps}`);
+      return out.join('\n');
+    },
+  },
+  {
+    name: 'dolly_related',
+    description:
+      'Which other tasks have touched this code, and what they concluded. dolly records the files every step touched, so this is a link nothing else in the toolchain can give you. Call it before changing shared code or opening a task adjacent to existing work — the outcome lines will tell you if you are about to undo a deliberate decision. Pass files to check code you are about to edit, or ref for an existing task.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ref: REF,
+        files: SArr('Repo-relative paths you are about to touch. Takes precedence over ref.'),
+      },
+    },
+    run(a) {
+      const s = store();
+      if (!s.exists) return 'dolly not initialized here.';
+      const files: string[] = Array.isArray(a.files) ? a.files : [];
+      const related = files.length
+        ? relatedByFiles(s, files)
+        : relatedToTask(s, s.resolve(a.ref ?? 'current'));
+      const subject = files.length ? `${files.length} file(s)` : (a.ref ?? 'current');
+      if (!related.length) return `No other task has touched this code (${subject}).`;
+      return `Tasks sharing code with ${subject}:\n\n${renderRelated(related, 20)}`;
     },
   },
   {

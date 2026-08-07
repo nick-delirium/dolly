@@ -49,7 +49,7 @@ You get:
 
 - **skills** `dolly` (memory, step logging) and `dolly-planning` (interview) — loaded automatically when relevant
 - **slash commands** `/dolly:board` `/dolly:resume` `/dolly:step` `/dolly:update` `/dolly:plan` `/dolly:spec` `/dolly:validate` `/dolly:adopt` `/dolly:housekeep`
-- **MCP server** — 15 tools, so the agent can drive dolly without shelling out
+- **MCP server** — 17 tools, so the agent can drive dolly without shelling out
 - **SessionStart hook** — spec, criteria and recent events injected into every new session automatically
 - **Stop hook** — auto-logs a step for each finished turn (see [Automatic logging](#automatic-logging)), and nudges when a task goes quiet
 
@@ -226,6 +226,64 @@ dolly reindex --apply --rebuild    # re-derive imported steps from the transcrip
 
 `migrate` is idempotent and has a `--dry-run`. It merges pre-0.2 `context/steps/NNNN.md` files into `steps.md`, folds `spec.vN.md` appendices into `spec.md`, and repoints dead links in the short log. Un-migrated stores stay readable in the meantime — the readers fall back to the old layout.
 
+## Big repos: one repo, many tasks
+
+The failure mode in a large codebase is an agent treating task 0007 as a greenfield project — reinventing conventions, re-deriving the architecture, and undoing a decision task 0003 made deliberately. Three things push against that, and they are injected automatically rather than left for the agent to remember.
+
+### The project brief
+
+`.dolly/project.md` holds what is true about the **codebase**, independent of any task:
+
+```bash
+dolly project                                       # read it
+dolly project set "Invariants" --text "<what you learned>"
+```
+
+Sections: Overview, Architecture, Conventions, Invariants, Glossary. Unfilled ones are reported so an agent knows what is still unanswered, and are never injected — a `_TBD_` heading is worse than silence.
+
+It is **not a second CLAUDE.md**. CLAUDE.md tells an agent how to behave; the brief records what is true about the code. Instructions versus findings. The rule agents are given: *a fact useful to a task that does not exist yet belongs in the brief; a fact about what this task did belongs in a step.*
+
+### Related tasks, by the files they touched
+
+dolly already records the files every step touched, which makes it the only thing in the toolchain that can answer *who else has been in this code, and what did they conclude?*
+
+```bash
+dolly related 7                              # tasks sharing files with task 7
+dolly related --files src/auth/token.ts      # before you edit something
+```
+
+```
+tasks sharing code with 2 file(s)
+
+- **0003 Rate limit the API** (done) — shares `src/auth/token.ts`
+  last: Bucket per token; reused the token parser rather than re-parsing.
+```
+
+The index is derived from `steps.md` on every call and never stored, so it cannot go stale. `dolly context <ref>` includes it automatically, alongside the brief and the full list of files the task has touched.
+
+Opening a task also checks for one that may already cover it — word overlap against existing titles, printed as a warning, never a block:
+
+```
+dolly: 1 existing task(s) may already cover this — check before duplicating
+  0004 Add replay country filter (working) · shares: replay, filter
+```
+
+### Code maps: detected, not rebuilt
+
+dolly does not index code, and a half-built third indexer would only be wrong more often. It detects one and tells the agent to reach for it before grep:
+
+| Marker | Tool | What the agent is told |
+|---|---|---|
+| `.codegraph/` | CodeGraph | `codegraph explore "<question>"` — symbols' source plus call paths, including dynamic dispatch |
+| `graft/` | graft | `graft ask "<task>"` — ranked nodes and file:line |
+| `.serena/` | Serena | symbolic lookup without reading whole files |
+
+Shown at session start and in `dolly project`. If a big repo has none, the agent is told to say so and suggest one.
+
+### What a new session is handed
+
+The SessionStart hook injects, before anything task-specific: *"work here is a slice of an ongoing codebase, not a new project"*, the project brief, any code map, and the last four finished tasks with their outcome lines. With no active task — exactly when a new one is about to be opened — it adds the two commands to run first: `dolly board --all` and `dolly related --files …`.
+
 ## Rehydrating — read in tiers
 
 Neither "the short chain" nor "the full context" is right on its own. They answer different questions and differ in cost by an order of magnitude:
@@ -360,6 +418,8 @@ init [--agents a,b] [--local|--global] [--no-mcp] [--no-agents]
 board | list [--all] [--status s] [--mine] [--tag t] [--json]
 show <ref> [--full] [--json]
 context <ref|current> [-n N] [--brief] [--json]
+project [show | init | set "<Section>" --text t]
+related [<ref>] [--files a,b] [--json]
 continue <ref> [--fork] [--print] [--session id]
 current                                    alias for: context current
 
@@ -398,7 +458,7 @@ Every command that produces data takes `--json`. Text input flags accept `-` for
 
 `dolly mcp` speaks MCP over stdio, no dependencies. Registered automatically by `dolly init` for agents that support it.
 
-`dolly_board` · `dolly_context` · `dolly_task_show` · `dolly_task_new` · `dolly_step_add` · `dolly_spec_update` · `dolly_status_set` · `dolly_plan_start` · `dolly_plan_set` · `dolly_plan_qa` · `dolly_plan_check` · `dolly_plan_finalize` · `dolly_reindex` · `dolly_archive` · `dolly_housekeep`
+`dolly_board` · `dolly_context` · `dolly_task_show` · `dolly_task_new` · `dolly_step_add` · `dolly_spec_update` · `dolly_status_set` · `dolly_plan_start` · `dolly_plan_set` · `dolly_plan_qa` · `dolly_plan_check` · `dolly_plan_finalize` · `dolly_project` · `dolly_related` · `dolly_reindex` · `dolly_archive` · `dolly_housekeep`
 
 ## Agent instructions
 

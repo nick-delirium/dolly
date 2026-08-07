@@ -565,3 +565,56 @@ Both conditions are required, so an inline mention cannot be touched and an unre
 
 The mangled text in step 0009 stays as it is. Hand-editing `.dolly/**` is the one thing the tool tells agents never to do, and this correction is the sanctioned remedy: a new append-only entry stating what the original said. The prose is wrong; the record of it being wrong is now right.
 <!-- /dolly:step 0010 -->
+
+<!-- dolly:step 0011 -->
+## 0011 · 2026-08-07T09:31:40Z · @nick-delirium
+
+- task status: validating
+- files: `README.md`, `skills/dolly/SKILL.md`, `src/cli.ts`, `src/core/project.ts`, `src/core/related.ts`, `src/core/render.ts`, `src/core/store.ts`, `src/mcp.ts`, `src/templates/instructions.ts`, `tests/project.test.mjs`
+
+## Problem
+
+dolly was task-scoped. An agent opening task 0007 in a large repo knew task 0007 and nothing else — not what 0001-0006 concluded, not the repo's conventions, not which code mattered. So it behaved as if the repo were greenfield: reinvented conventions, re-derived architecture, and could undo a decision an earlier task made deliberately.
+
+Four gaps. Three are now closed; the fourth is deliberately left to other tools.
+
+## 1. No repo-level memory -> `.dolly/project.md`
+
+Sections: Overview, Architecture, Conventions, Invariants, Glossary. `dolly project set "<Section>" --text`. Unfilled sections are reported but never injected — a `_TBD_` heading in context is worse than silence.
+
+The distinction that had to be made explicit in the prompting, or agents write to the wrong place: **CLAUDE.md is how to behave, project.md is what is true about the code.** Instructions vs findings. The heuristic given to agents: a fact useful to a task that does not exist yet -> brief; a fact about what this task did -> step.
+
+## 2. No cross-task awareness -> `dolly related`, derived from files
+
+This is the one nobody else can do. dolly already recorded `- files:` on every step entry and never used it. Now: build file -> [task] on demand, report tasks sharing files with their latest outcome line.
+
+Derived, never stored — rebuilt from steps.md per call, so it cannot go stale. `dolly context` includes it automatically, so an agent gets it without knowing to ask.
+
+Also `overlappingTasks()`: word overlap of a new title against existing titles, printed as a warning on `dolly new` / `dolly plan start`. Weak signal deliberately — it points, never blocks. Stopword list keeps "Add the fix" from matching everything.
+
+## 3. No repo framing at session start
+
+SessionStart now leads with "work here is a slice of an ongoing codebase, not a new project", then the project brief, then any code map, then the last four finished tasks with outcomes. When there is NO active task — exactly the moment a new one gets opened — it names the two commands to run first (`board --all`, `related --files`).
+
+Skill gained a "Rule one: one repo, many tasks" section listing the symptoms of having skipped it: reinventing an existing convention, two tasks editing the same file in opposite directions, asking what the repo already answers, "adding" what task 0005 already built.
+
+## 4. Code indexing: deliberately NOT built
+
+The user asked whether the agent can reindex code itself. It should not, and dolly should not grow an indexer — graft and CodeGraph already do this well and a third half-built one would be wrong more often. dolly detects `.codegraph/`, `graft/`, `.serena/` and tells the agent what command to run before grepping. If a big repo has none, the agent is told to say so and suggest one.
+
+The division: code maps answer "where is this and what calls it"; dolly answers "who changed it, when, and why". Complementary, not overlapping.
+
+## Bug found: ties in recency ordering
+
+`nowIso()` strips milliseconds, so two events in the same second compared equal and `recentlyFinished` / `currentTask` fell back to directory read order — non-deterministic. Added `byRecency()` in store.ts: updated descending, then id descending as tiebreak. Both call sites now share it.
+
+## Dogfooded
+
+Wrote this repo's own brief through the new commands (5 sections), including the marker-parsing invariant that has now caused two separate near-misses. Verified it appears in `dolly context` automatically.
+
+## Next
+
+- `related` matches exact paths only. A file renamed between tasks breaks the link. Git rename detection would fix it; not done.
+- `overlappingTasks` compares titles only. Specs would be a stronger signal and are already on disk.
+- Nothing prompts an agent to REVISIT the brief when it drifts. Staleness is currently detected only by an agent noticing and being told to fix it.
+<!-- /dolly:step 0011 -->

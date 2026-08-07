@@ -14,6 +14,23 @@ Task memory live in `.dolly/`. Git-tracked. Shared with teammates. You write it 
 
 Never trust memory of conversation. State live in files. Read before write.
 
+## Rule one: one repo, many tasks
+
+Your task is a SLICE of an ongoing codebase. Not a project. Not greenfield. Other tasks came before, made decisions, set conventions — some still in flight.
+
+Before you decide anything on a new or unfamiliar task:
+
+```
+dolly project                        # what is true about this repo (architecture, conventions, invariants)
+dolly board --all                    # what exists, what is in flight, what shipped
+dolly related --files a.ts,b.ts      # who else has been in this code, and what they concluded
+dolly context <ref>                  # ← includes project brief + related tasks automatically
+```
+
+`dolly related` is the one nobody else can give you: dolly records the files every step touched, so it can tell you **task 0003 also edited `src/auth/token.ts`, and here is what it decided**. Read that before changing shared code — you may be about to undo a deliberate choice.
+
+Symptoms you skipped this: reinventing a convention that already exists, two tasks editing the same file in opposite directions, asking the user something the repo already answers, "adding" something task 0005 already built.
+
 ## Rehydrate first — read in tiers, not all at once
 
 | Need | Command | Cost |
@@ -168,6 +185,31 @@ dolly continue 0003 --fork   # resume as a new branch, leaving the original inta
 ```
 
 Useful when the step log is not enough and you want the actual dialogue back.
+
+## Repo-level knowledge → `dolly project`
+
+`.dolly/project.md` hold what is true about the CODEBASE, task-independent: Overview, Architecture, Conventions, Invariants, Glossary.
+
+```
+dolly project                                          # read it
+dolly project set "Conventions" --text "<what you learned>"
+```
+
+Not the same as CLAUDE.md. CLAUDE.md tell you how to BEHAVE. project.md record what is TRUE about the code. Instructions vs findings.
+
+**You maintain it.** Learn something durable — a boundary, a banned pattern, an invariant, why a thing is shaped weird — write it there. Not in a step: steps are one task's history, the brief is for every future task. Find it WRONG → fix it. Stale brief worse than none.
+
+Rule of thumb: fact useful to a task that does not exist yet → project brief. Fact about what THIS task did → step.
+
+## Code map — do not reinvent it
+
+dolly does NOT index code, and neither should you by hand. If repo has one, session start and `dolly project` name it:
+
+- **CodeGraph** (`.codegraph/`) → `codegraph explore "<question>"` — symbols' source + call paths in one shot
+- **graft** (`graft/`) → `graft ask "<task>"` — ranked nodes + file:line
+- **Serena** (`.serena/`) → symbolic lookup without reading whole files
+
+Use it BEFORE grep. Grep find strings; a code map find callers, impact, dynamic dispatch. Big repo, no map → say so to user, suggest one. Do not build your own index inside `.dolly/`.
 
 ## Not initialized?
 
