@@ -6,17 +6,17 @@ status: validating
 owner: nick-delirium
 collaborators: [nick-delirium]
 tags: []
-steps: 14
+steps: 15
 spec_version: 2
 created: 2026-08-07T08:50:48Z
-updated: 2026-08-07T10:56:34Z
+updated: 2026-08-07T11:06:38Z
 sessions: [faa33f88-d19e-451a-8321-307f7d37483e]
 ---
 
 # 0001 · Build dolly: agent memory and task planning
 
 <!-- dolly:header -->
-`validating` · spec v2 · @nick-delirium · 14 steps · updated 2026-08-07 10:56Z
+`validating` · spec v2 · @nick-delirium · 15 steps · updated 2026-08-07 11:06Z
 <!-- /dolly:header -->
 
 ## Spec
@@ -77,4 +77,6 @@ Task memory and planning for coding agents, as plain markdown in the repo. Board
   files: `commands/adopt.md`, `commands/board.md`, `commands/housekeep.md`, `commands/plan.md`, `commands/resume.md`, `commands/spec.md` +15 more · full: `steps.md#0013`
 - `2026-08-07 10:56Z` @nick-delirium: Store carries a real schema version and migrations became an ordered chain: lossless hops apply themselves on any command, risky ones warn until a human runs dolly migrate, and a store written by a newer dolly refuses writes so version skew cannot silently corrupt a shared store. Found and fixed that a hand-migrated store never got stamped and would re-evaluate the chain forever.
   files: `.claude/commands/dolly/adopt.md`, `.claude/commands/dolly/board.md`, `.claude/commands/dolly/housekeep.md`, `.claude/commands/dolly/plan.md`, `.claude/commands/dolly/resume.md`, `.claude/commands/dolly/spec.md` +15 more · full: `steps.md#0014`
+- `2026-08-07 11:06Z` @nick-delirium: dolly reads its version from package.json instead of four hardcoded copies, releases are tagged, and a cached, detached update check tells a human at a terminal when they are behind — never an agent, never a protocol stream, never blocking. Tests caught a missing repository field and a suppression predicate that read process.env directly and so could not be tested inside an agent.
+  files: `README.md`, `package.json`, `src/cli.ts`, `src/core/pkg.ts`, `src/core/update.ts`, `src/mcp.ts` +1 more · full: `steps.md#0015`
 

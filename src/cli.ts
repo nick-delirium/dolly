@@ -59,7 +59,8 @@ import {
   renderRelated,
 } from './core/related.js';
 
-const VERSION = '0.1.0';
+import { VERSION } from './core/pkg.js';
+import { runUpdateCheck, updateNotice } from './core/update.js';
 
 const HELP = `dolly ${VERSION} — long-term memory + feature planning for coding agents
 
@@ -172,6 +173,22 @@ function guardStoreVersion(cmd: string): void {
       ),
     );
     for (const r of risky) process.stderr.write(`  ${r.migration.name} — ${r.detail}\n`);
+  }
+}
+
+/**
+ * Tell a human at a terminal that they are behind. Never an agent, never a
+ * machine-read stream, never blocking — see core/update.ts for why.
+ */
+function notifyUpdate(cmd: string): void {
+  try {
+    const store = Store.open();
+    const notice = updateNotice(cmd, VERSION, {
+      storeRoot: store.exists ? store.root : undefined,
+    });
+    if (notice) process.stderr.write(`${color.dim(notice)}\n`);
+  } catch {
+    /* an update check must never be the reason a command fails */
   }
 }
 
@@ -900,11 +917,11 @@ function cmdConfig(args: Args): void {
     if (!key || raw === '') fail('usage: dolly config set <key> <value>');
     // identity is per-person: it goes to the gitignored local config, never to
     // the shared one where it would stamp every teammate with the same handle
-    if (key === 'user') {
-      const value = String(coerce(raw));
-      store.saveLocal({ user: value });
+    if (key === 'user' || key === 'updateCheck') {
+      const value = coerce(raw);
+      store.saveLocal({ [key]: value });
       process.stderr.write(
-        color.dim(`written to ${store.localConfigPath} (gitignored — identity is per-person)\n`),
+        color.dim(`written to ${store.localConfigPath} (gitignored — per-person, not shared)\n`),
       );
       return jsonOut(value);
     }
@@ -1174,7 +1191,14 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (cmd === '__update-check') {
+    // detached child: do the network lookup, write the cache, say nothing
+    await runUpdateCheck();
+    return;
+  }
+
   guardStoreVersion(cmd);
+  notifyUpdate(cmd);
 
   switch (cmd) {
     case 'init':

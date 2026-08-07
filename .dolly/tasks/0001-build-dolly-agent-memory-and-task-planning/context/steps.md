@@ -787,3 +787,51 @@ Merged a duplicated rule line in the shipped instruction block — "One task = o
 
 Task 0002 now only has to append one entry to `MIGRATIONS` with `safe: false`, and the guard already refuses old binaries writing to the new layout.
 <!-- /dolly:step 0014 -->
+
+<!-- dolly:step 0015 -->
+## 0015 · 2026-08-07T11:06:38Z · @nick-delirium
+
+- task status: validating
+- files: `README.md`, `package.json`, `src/cli.ts`, `src/core/pkg.ts`, `src/core/update.ts`, `src/mcp.ts`, `tests/update.test.mjs`
+
+## Outcome
+
+dolly knows its own version from one place, releases are tagged, and a human at a terminal is told when they are behind. Agents and machine-read streams never see it.
+
+## The prerequisite was broken
+
+The version was hardcoded in FOUR files: `package.json`, `src/cli.ts`, `src/mcp.ts`, `.claude-plugin/plugin.json`. Nothing kept them in sync and there were no tags, so "am I current?" was unanswerable regardless of mechanism.
+
+Fixed by reading `package.json` at runtime from `core/pkg.ts` — npm always ships `package.json` whatever the `files` whitelist says, so no build step and no generated file. `cli.ts` and `mcp.ts` now derive it. `plugin.json` is static JSON read by Claude Code and cannot be derived, so a test asserts it equals `package.json`; that assertion is the only thing keeping it honest when a release is cut. A second test greps both source files for a hardcoded semver so the drift cannot come back.
+
+Tagged `v0.1.0` and pushed it, since without a tag the lookup has nothing to compare against — verified: before the tag the cache honestly recorded `latest: null`, after it `latest: "0.1.0"`.
+
+## Why the check is shaped the way it is
+
+Three constraints, each of which killed an obvious implementation:
+
+1. **Never in-band.** dolly runs on every SessionStart, every Stop and every MCP tool call. A synchronous HTTP request there taxes every agent turn. So: read `~/.dolly/update.json`; if older than 24h, spawn a **detached, unref'd** child running the hidden `__update-check` command, and use the *previous* answer. Nothing is waited on, ever.
+2. **stdout is a protocol.** `dolly mcp` speaks JSON-RPC on stdout and `--json` is parsed. Notice is stderr-only, and suppressed outright for `mcp`, `hook`, `statusline`.
+3. **Agents act on text they read.** Shown an upgrade command, an agent may stop mid-task to run it, or repeat it in a step summary as project state. So the notice requires a TTY and the absence of `CLAUDECODE` — it is for a human, and dolly can already tell the difference.
+
+`git ls-remote --tags` rather than `git fetch`: read-only, no mutation of the user's refs as a side effect of a status check. For published installs it asks the npm registry first and falls back to tags, which is what a not-yet-published package needs.
+
+## Failure modes handled
+
+- lookup fails → cache `null`, say nothing, do not retry until the TTL expires. An offline machine is not nagged and does not spawn a child per command.
+- local version AHEAD of the newest tag (a dev build) → `isNewer` is false, so no notice. Tested.
+- `updateNotice` is wrapped in try/catch at the call site: an update check must never be why a command fails.
+
+## Two bugs the tests caught
+
+1. `package.json` had **no `repository` field**, so `repoSlug()` returned null and the GitHub path had nothing to ask about. Added repository/bugs/homepage.
+2. `suppressed()` called `insideClaudeCode()`, which reads `process.env` directly — untestable from inside the very agent it exists to stay quiet in, and the test failed immediately. Now it reads the agent markers off the injected env, so the predicate is pure and every suppression reason is asserted.
+
+## Off switches
+
+`dolly config set updateCheck false` writes the gitignored `local.json`, not the shared config — it is a per-machine preference, same reasoning as identity. Plus `CI`, `NO_UPDATE_NOTIFIER`, `DOLLY_NO_UPDATE_CHECK`.
+
+## Framing worth keeping
+
+This is convenience only. The schema-version guard is what actually protects a shared store from a stale binary. If the two ever seem to conflict, the guard wins.
+<!-- /dolly:step 0015 -->

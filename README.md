@@ -51,7 +51,7 @@ npm install -g .     # or `npm link` if you want edits to take effect live
 ```bash
 git clone https://github.com/nick-delirium/dolly.git && cd dolly
 npm install && npm link
-npm test             # 78 tests
+npm test             # 87 tests
 ```
 
 Undo with `npm unlink -g dolly`. Requires Node ≥ 18 and nothing else — there are no runtime dependencies, and TypeScript is the only devDependency.
@@ -249,6 +249,34 @@ dolly spec 1 --short "<2-5 lines>" --file spec.md --reason "reindexed from sessi
 ```
 
 ## Upgrading between versions
+
+Releases are tagged `vX.Y.Z`, with `package.json` bumped in the same commit. dolly reads its own version from `package.json` at runtime, so there is one source of truth rather than a number copied into several files.
+
+### Being told you are behind
+
+A human at a terminal gets one line on stderr:
+
+```
+dolly 0.2.0 is available (you have 0.1.0)
+  git -C /path/to/dolly pull && npm install
+  silence this: dolly config set updateCheck false
+```
+
+The command matches how *your* copy was installed — a linked checkout needs a pull and a rebuild, not `npm install -g`.
+
+It is deliberately timid, because dolly runs on every SessionStart, every Stop and every MCP tool call:
+
+- **Never in-band.** The check reads a cache in `~/.dolly/update.json`. A cache older than 24h is refreshed by a detached background process, and the result is used on the *next* run. Nothing is ever waited on.
+- **Never on stdout.** `dolly mcp` speaks JSON-RPC there and `--json` is parsed, so the notice is stderr-only and suppressed entirely for `mcp`, `hook` and `statusline`.
+- **Never to an agent.** Agents act on text they read — shown an upgrade command, one may stop mid-task to run it, or repeat it in a step summary as if it were project state. The notice appears only for a human at a TTY, outside Claude Code.
+- **Silent when it cannot tell.** A failed lookup caches `null` and says nothing, so an offline machine is not nagged and does not retry on every command.
+
+Off switches: `dolly config set updateCheck false` (writes the gitignored `local.json`, so it is per-person), or `CI`, `NO_UPDATE_NOTIFIER`, `DOLLY_NO_UPDATE_CHECK` in the environment.
+
+This is convenience, not safety — the schema guard below is what actually protects a shared store.
+
+### Schema versions
+
 
 The store carries a schema version in `config.json`, and dolly compares it to the version the binary understands. Three outcomes:
 
@@ -541,7 +569,7 @@ git clone https://github.com/nick-delirium/dolly.git
 cd dolly
 npm install     # installs TypeScript, then `prepare` builds dist/
 npm link        # puts `dolly` on your PATH, pointing at this checkout
-npm test        # 78 tests
+npm test        # 87 tests
 ```
 
 `npm install` first is **not optional**: `npm link` runs the `prepare` script, and on a fresh clone with no `node_modules` that fails with `tsc: command not found`.
@@ -565,6 +593,16 @@ This one bites silently: the symptom is a fix that "doesn't work" because you're
 **Re-run `npm link` only if `package.json`'s `bin` changed.** npm materialises one symlink per bin entry at link time, so a newly added or renamed binary won't be on your PATH until you link again.
 
 Undo the link with `npm unlink -g dolly`.
+
+### Cutting a release
+
+```bash
+npm version patch          # or minor/major — bumps package.json and tags vX.Y.Z
+# bump .claude-plugin/plugin.json to match (a test enforces this)
+npm test && git push --follow-tags
+```
+
+The update check reads the newest `vX.Y.Z` tag on the remote, so a release that is committed but not tagged is invisible to everyone else.
 
 The clone ships dolly's own `.claude/`, `.mcp.json`, `CLAUDE.md` and `.dolly/`, so once `dolly` is on your PATH a Claude Code session in the checkout gets the skills, slash commands, MCP server and hooks automatically — and `dolly board` shows the project's real task history. dolly is developed with dolly.
 

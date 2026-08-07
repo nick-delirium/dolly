@@ -3,6 +3,7 @@
  * Hand-rolled so dolly stays dependency-free; the surface mirrors the CLI.
  */
 import { changedFiles } from './core/git.js';
+import { VERSION } from './core/pkg.js';
 import { archiveTask, housekeep } from './core/housekeep.js';
 import {
   addPlanQA,
@@ -30,7 +31,7 @@ import {
 } from './reindex.js';
 
 const PROTOCOL = '2025-06-18';
-const SERVER = { name: 'dolly', version: '0.1.0' };
+const SERVER = { name: 'dolly', version: VERSION };
 
 type Json = Record<string, any>;
 
