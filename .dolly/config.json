@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "statuses": [
+    "todo",
+    "planning",
+    "working",
+    "validating",
+    "done"
+  ],
+  "reviewStatus": "validating",
+  "doneStatus": "done",
+  "planSections": [
+    "Problem",
+    "Goal",
+    "Scope",
+    "Success Criteria",
+    "Changes",
+    "Risks",
+    "Test Plan",
+    "Open Questions"
+  ],
+  "housekeep": {
+    "archiveDoneAfterDays": 14,
+    "staleAfterDays": 60,
+    "deleteArchivedAfterDays": 0,
+    "keepFullStepsPerTask": 40,
+    "keepSpecVersions": 0,
+    "auto": true,
+    "autoEveryHours": 24
+  },
+  "install": {
+    "scope": "local",
+    "mcp": true
+  },
+  "user": "nick-delirium"
+}

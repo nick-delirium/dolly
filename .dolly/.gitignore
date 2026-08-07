@@ -1,0 +1,5 @@
+.housekeep.json
+*.tmp-*
+.claude/
+.cursor/
+.codex/

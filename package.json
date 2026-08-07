@@ -1,0 +1,44 @@
+{
+  "name": "dolly",
+  "version": "0.1.0",
+  "description": "Long-term memory and feature planning for coding agents. Git-tracked task board, step log, and full-context archive.",
+  "keywords": [
+    "ai",
+    "agent",
+    "claude-code",
+    "memory",
+    "planning",
+    "mcp",
+    "spec-driven"
+  ],
+  "license": "MIT",
+  "author": "nick-delirium",
+  "type": "module",
+  "bin": {
+    "dolly": "./dist/cli.js",
+    "dollie": "./dist/cli.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "dist/",
+    "bin/",
+    "skills/",
+    "commands/",
+    "agents/",
+    ".claude-plugin/",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node -e \"require('fs').chmodSync('dist/cli.js', 0o755)\"",
+    "dev": "tsc -w -p tsconfig.json",
+    "test": "npm run build && node --test tests/*.test.mjs",
+    "prepublishOnly": "npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0"
+  }
+}

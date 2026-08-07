@@ -1,0 +1,39 @@
+{
+  "name": "dolly",
+  "description": "Long-term memory + feature planning for coding agents. Git-tracked task board, step log with GitHub attribution, full-context archive, planning interview with a completeness gate.",
+  "version": "0.1.0",
+  "author": {
+    "name": "nick-delirium"
+  },
+  "mcpServers": {
+    "dolly": {
+      "command": "dolly",
+      "args": ["mcp"]
+    }
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/dolly-hook.mjs\" hook session-start",
+            "timeout": 10,
+            "statusMessage": "Loading dolly task memory..."
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/dolly-hook.mjs\" hook stop",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "dolly": {
+      "command": "dolly",
+      "args": [
+        "mcp"
+      ]
+    }
+  }
+}

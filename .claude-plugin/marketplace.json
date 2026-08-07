@@ -1,0 +1,16 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "dolly",
+  "description": "Long-term memory and feature planning for coding agents.",
+  "owner": {
+    "name": "nick-delirium"
+  },
+  "plugins": [
+    {
+      "name": "dolly",
+      "description": "Task board, step log and spec history that survive context resets. Shared via git, attributed per GitHub user.",
+      "source": "./",
+      "category": "productivity"
+    }
+  ]
+}
