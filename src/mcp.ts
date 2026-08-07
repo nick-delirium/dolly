@@ -19,6 +19,7 @@ import { addStep, createTask, fullSpec, setStatus, updateSpec } from './core/tas
 import type { Task } from './core/types.js';
 import { codeMapLine, ensureProject, projectDigest, projectStatus, setProjectSection } from './core/project.js';
 import { relatedByFiles, relatedToTask, renderRelated } from './core/related.js';
+import { maybeAutoMigrate, versionState } from './migrate.js';
 import {
   applyReindex,
   importedTurns,
@@ -474,6 +475,31 @@ function describeCheck(c: ReturnType<typeof checkPlan>): string {
   return out.join('\n');
 }
 
+const WRITE_TOOLS = new Set([
+  'dolly_task_new', 'dolly_step_add', 'dolly_spec_update', 'dolly_status_set',
+  'dolly_plan_start', 'dolly_plan_set', 'dolly_plan_qa', 'dolly_plan_finalize',
+  'dolly_project', 'dolly_archive', 'dolly_housekeep', 'dolly_reindex',
+]);
+
+/**
+ * Same rule as the CLI: a store written by a newer dolly refuses writes, and
+ * lossless migrations are applied without being asked.
+ */
+function guardVersion(tool: string): string | null {
+  const s = store();
+  if (!s.exists) return null;
+  const state = versionState(s);
+  if (state.newer && WRITE_TOOLS.has(tool)) {
+    return `error: this store is at schema version ${state.store} but this dolly understands ${state.code}. It was written by a newer dolly — upgrade dolly before writing to it.`;
+  }
+  if (!state.newer) maybeAutoMigrate(s);
+  const risky = versionState(store()).unsafePending;
+  if (risky.length && WRITE_TOOLS.has(tool)) {
+    return `error: ${risky.length} migration(s) must be applied first — run \`dolly migrate\` in a terminal: ${risky.map((r) => r.migration.name).join('; ')}`;
+  }
+  return null;
+}
+
 /* ------------------------------ JSON-RPC loop ----------------------------- */
 
 function send(msg: Json): void {
@@ -520,6 +546,8 @@ function handle(msg: Json): void {
       const name = params?.name;
       const tool = TOOLS.find((t) => t.name === name);
       if (!tool) return error(id, -32602, `unknown tool: ${name}`);
+      const guard = guardVersion(name);
+      if (guard) return result(id, { content: [{ type: 'text', text: guard }], isError: true });
       try {
         const text = tool.run(params?.arguments ?? {});
         return result(id, { content: [{ type: 'text', text }] });

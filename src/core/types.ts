@@ -1,3 +1,16 @@
+/**
+ * On-disk schema version of a store.
+ *
+ * 1 — 0.1.x: context/spec.vN.md appendices, context/steps/NNNN.md per step
+ * 2 — the dollie -> dolly rename: directory name and parsed block markers
+ * 3 — merged layout: one spec.md with history, one steps.md with every entry
+ * 4 — identity split out of the shared config into gitignored local.json
+ *
+ * Bump this and add a Migration whenever the layout changes. A store stamped
+ * higher than this is from a newer dolly and must not be written to.
+ */
+export const STORE_VERSION = 4;
+
 export const DEFAULT_STATUSES = [
   'todo',
   'planning',
@@ -79,6 +92,7 @@ export interface HousekeepConfig {
 }
 
 export interface Config {
+  /** on-disk schema version; see STORE_VERSION */
   version: number;
   statuses: Status[];
   /** statuses that mean "agent finished, human must check" */
@@ -94,7 +108,7 @@ export interface Config {
 }
 
 export const DEFAULT_CONFIG: Config = {
-  version: 1,
+  version: STORE_VERSION,
   statuses: [...DEFAULT_STATUSES],
   reviewStatus: 'validating',
   doneStatus: 'done',

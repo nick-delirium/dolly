@@ -75,11 +75,15 @@ test('migrate merges per-step files and spec appendices into the current layout'
   assert.equal(stepEntries(task.dir).length, 2, 'old layout is readable before migrating');
 
   const dry = migrate(Store.open(), { dryRun: true });
-  assert.deepEqual(dry.actions.map((a) => a.kind).sort(), ['spec', 'steps']);
+  // the chain reports its own hop alongside the per-task work
+  for (const kind of ['chain', 'spec', 'steps']) {
+    assert.ok(dry.actions.some((a) => a.kind === kind), `expected a ${kind} action`);
+  }
   assert.ok(fs.existsSync(path.join(task.dir, 'context', 'steps')), 'dry run changes nothing');
 
   const report = migrate(Store.open());
-  assert.equal(report.actions.length, 2);
+  assert.ok(report.actions.some((a) => a.kind === 'steps'));
+  assert.ok(report.actions.some((a) => a.kind === 'spec'));
 
   const ctx = path.join(task.dir, 'context');
   assert.deepEqual(fs.readdirSync(ctx).sort(), ['spec.md', 'steps.md']);
@@ -227,6 +231,7 @@ test('migrate moves the store, renames markers and keeps every step readable', (
   const report = migrate(Store.open(sb.dir));
   assert.ok(report.actions.some((a) => a.kind === 'store-rename'));
   assert.ok(report.actions.some((a) => a.kind === 'markers'));
+  assert.ok(report.actions.some((a) => a.kind === 'chain'));
 
   assert.equal(fs.existsSync(path.join(sb.dir, '.dollie')), false, 'old directory gone');
   assert.ok(fs.existsSync(path.join(sb.dir, '.dolly', 'config.json')), 'new directory in place');

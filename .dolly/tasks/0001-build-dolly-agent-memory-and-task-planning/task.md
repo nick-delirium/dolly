@@ -6,17 +6,17 @@ status: validating
 owner: nick-delirium
 collaborators: [nick-delirium]
 tags: []
-steps: 13
+steps: 14
 spec_version: 2
 created: 2026-08-07T08:50:48Z
-updated: 2026-08-07T10:43:02Z
+updated: 2026-08-07T10:56:34Z
 sessions: [faa33f88-d19e-451a-8321-307f7d37483e]
 ---
 
 # 0001 · Build dolly: agent memory and task planning
 
 <!-- dolly:header -->
-`validating` · spec v2 · @nick-delirium · 13 steps · updated 2026-08-07 10:43Z
+`validating` · spec v2 · @nick-delirium · 14 steps · updated 2026-08-07 10:56Z
 <!-- /dolly:header -->
 
 ## Spec
@@ -75,4 +75,6 @@ Task memory and planning for coding agents, as plain markdown in the repo. Board
   files: `src/core/args.ts`, `tests/args.test.mjs` · full: `steps.md#0012`
 - `2026-08-07 10:43Z` @nick-delirium: Applied the mechanical half of the review: identity split out of the shared config (it was misattributing every teammate), MCP context gap, hook session pinning, one log parser fixing both related-tasks gaps, title sanitising, auto-housekeep no longer archiving live work, non-destructive pruning default, and 9 slash commands reduced to thin wrappers to stop rule drift.
   files: `commands/adopt.md`, `commands/board.md`, `commands/housekeep.md`, `commands/plan.md`, `commands/resume.md`, `commands/spec.md` +15 more · full: `steps.md#0013`
+- `2026-08-07 10:56Z` @nick-delirium: Store carries a real schema version and migrations became an ordered chain: lossless hops apply themselves on any command, risky ones warn until a human runs dolly migrate, and a store written by a newer dolly refuses writes so version skew cannot silently corrupt a shared store. Found and fixed that a hand-migrated store never got stamped and would re-evaluate the chain forever.
+  files: `.claude/commands/dolly/adopt.md`, `.claude/commands/dolly/board.md`, `.claude/commands/dolly/housekeep.md`, `.claude/commands/dolly/plan.md`, `.claude/commands/dolly/resume.md`, `.claude/commands/dolly/spec.md` +15 more · full: `steps.md#0014`
 

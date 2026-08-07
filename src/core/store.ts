@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
-import { DEFAULT_CONFIG, type Config, type Task, type TaskMeta } from './types.js';
+import { DEFAULT_CONFIG, STORE_VERSION, type Config, type Task, type TaskMeta } from './types.js';
 import {
   ensureDir,
   exists,
@@ -167,7 +167,7 @@ export class Store {
     // per-user settings inside whatever directory they are pointed at.
     // Merged rather than overwritten so an older store gains new entries.
     const ignore = path.join(this.root, '.gitignore');
-    const want = ['.housekeep.json', LOCAL_CONFIG, '*.tmp-*', '.claude/', '.cursor/', '.codex/'];
+    const want = REQUIRED_IGNORES;
     const have = readTextOr(ignore).split('\n').map((l) => l.trim());
     const missing = want.filter((l) => !have.includes(l));
     if (missing.length) {
@@ -258,6 +258,41 @@ export class Store {
     }
     return String(max + 1).padStart(4, '0');
   }
+}
+
+/** entries the store's own .gitignore must contain */
+export const REQUIRED_IGNORES = [
+  '.housekeep.json',
+  LOCAL_CONFIG,
+  '*.tmp-*',
+  '.claude/',
+  '.cursor/',
+  '.codex/',
+];
+
+/** ignore entries not yet present — a store written by an older dolly lacks them */
+export function missingIgnores(root: string): string[] {
+  const have = readTextOr(path.join(root, '.gitignore'))
+    .split('\n')
+    .map((l) => l.trim());
+  return REQUIRED_IGNORES.filter((l) => !have.includes(l));
+}
+
+/**
+ * The version stamped in the store, or 1 for a store old enough to predate the
+ * stamp being read at all. An absent config.json means a fresh store, which is
+ * current by definition.
+ */
+export function storeVersion(root: string): number {
+  if (!exists(path.join(root, 'config.json'))) return STORE_VERSION;
+  const raw = readJson<Partial<Config>>(path.join(root, 'config.json'), {});
+  const v = Number(raw.version);
+  return Number.isFinite(v) && v > 0 ? v : 1;
+}
+
+export function stampVersion(root: string, version: number): void {
+  const raw = readJson<Record<string, unknown>>(path.join(root, 'config.json'), {});
+  writeJson(path.join(root, 'config.json'), { ...raw, version });
 }
 
 export function loadConfig(root: string): Config {

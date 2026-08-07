@@ -11,12 +11,21 @@
 import path from 'node:path';
 import { exists, isDir, listFiles, move, readJson, readTextOr, rmrf, writeJson, writeText } from './core/fsx.js';
 import { appendBlock } from './core/md.js';
-import { LEGACY_STORE_DIRNAME, LOCAL_CONFIG, STORE_DIRNAME, Store, sharedUserLeak } from './core/store.js';
+import {
+  LEGACY_STORE_DIRNAME,
+  LOCAL_CONFIG,
+  STORE_DIRNAME,
+  Store,
+  missingIgnores,
+  sharedUserLeak,
+  stampVersion,
+  storeVersion,
+} from './core/store.js';
 import { contextDir, readSpecDoc, saveTask, specFile, stepsFile } from './core/task.js';
-import type { Task } from './core/types.js';
+import { STORE_VERSION, type Task } from './core/types.js';
 
 export interface MigrateAction {
-  kind: 'steps' | 'spec' | 'store-rename' | 'markers' | 'config-split';
+  kind: 'steps' | 'spec' | 'store-rename' | 'markers' | 'config-split' | 'chain';
   task: string;
   detail: string;
 }
@@ -153,18 +162,199 @@ function splitIdentity(store: Store, dryRun: boolean, actions: MigrateAction[]):
   if (!local.user) store.saveLocal({ user: leaked });
 }
 
+/**
+ * One hop of the upgrade chain.
+ *
+ * `detect` returns a human description of what it would do, or null when there
+ * is nothing to do — so every migration stays idempotent and `--dry-run` is
+ * honest. `safe` means lossless and fine to apply unattended: it may add files
+ * or rewrite dolly-owned scaffolding, but it must never move a directory, delete
+ * anything, or parse prose.
+ */
+interface Migration {
+  /** store version once this has run */
+  to: number;
+  name: string;
+  safe: boolean;
+  detect(store: Store): string | null;
+  /**
+   * May return a replacement Store when the root moved. Must honour `dryRun` by
+   * reporting into `actions` without writing — otherwise `--dry-run` shows the
+   * chain but none of the per-task detail, which is the part worth reviewing.
+   */
+  apply(store: Store, actions: MigrateAction[], dryRun: boolean): Store;
+}
+
+const MIGRATIONS: Migration[] = [
+  {
+    to: 2,
+    name: 'dollie → dolly: directory and parsed markers',
+    safe: false, // moves the store directory and rewrites parsed markers
+    detect(store) {
+      if (store.legacy) return `${path.basename(store.root)}/ → ${STORE_DIRNAME}/ and rename its markers`;
+      const orphan = path.join(path.dirname(store.root), LEGACY_STORE_DIRNAME);
+      if (exists(orphan)) return `${orphan} still exists beside the current store`;
+      const stale = store
+        .loadTasks(true)
+        .filter((t) => markerFiles(t).some((f) => hasLegacyMarkers(readTextOr(f))));
+      return stale.length ? `rename markers in ${stale.length} task(s)` : null;
+    },
+    apply(store, actions, dryRun) {
+      const next = renameStore(store, dryRun, actions);
+      migrateMarkers(next, dryRun, actions);
+      return next;
+    },
+  },
+  {
+    to: 3,
+    name: 'merged layout: one spec.md with history, one steps.md',
+    safe: false, // merges and then deletes the old per-entry files
+    detect(store) {
+      const tasks = store.loadTasks(true).filter(
+        (t) => isDir(legacyStepsDir(t.dir)) || legacySpecFiles(t.dir).length,
+      );
+      return tasks.length ? `merge per-step / per-version files in ${tasks.length} task(s)` : null;
+    },
+    apply(store, actions, dryRun) {
+      mergeLegacyLayout(store, dryRun, actions);
+      return store;
+    },
+  },
+  {
+    to: 4,
+    name: 'identity out of the shared config, scaffolding refreshed',
+    safe: true, // only writes local.json and dolly's own .gitignore
+    detect(store) {
+      const leak = sharedUserLeak(store.root);
+      const missing = missingIgnores(store.root);
+      if (!leak && !missing.length) return null;
+      const parts: string[] = [];
+      if (leak) parts.push(`move user "${leak}" into ${LOCAL_CONFIG} (gitignored)`);
+      if (missing.length) parts.push(`add ${missing.join(', ')} to .gitignore`);
+      return parts.join('; ');
+    },
+    apply(store, actions, dryRun) {
+      if (!dryRun) store.init();
+      splitIdentity(store, dryRun, actions);
+      return store;
+    },
+  },
+];
+
+function markerFiles(task: Task): string[] {
+  return [
+    path.join(task.dir, 'task.md'),
+    specFile(task.dir),
+    stepsFile(task.dir),
+    path.join(contextDir(task.dir), 'plan.md'),
+  ];
+}
+
+export interface Pending {
+  migration: Migration;
+  detail: string;
+}
+
+/** migrations with work to do, in order */
+export function pending(store: Store): Pending[] {
+  const out: Pending[] = [];
+  for (const m of MIGRATIONS) {
+    const detail = m.detect(store);
+    if (detail) out.push({ migration: m, detail });
+  }
+  return out;
+}
+
+export interface VersionState {
+  store: number;
+  code: number;
+  /** the store was written by a newer dolly — writing to it would corrupt it */
+  newer: boolean;
+  pending: Pending[];
+  unsafePending: Pending[];
+}
+
+export function versionState(store: Store): VersionState {
+  const at = storeVersion(store.root);
+  const p = pending(store);
+  return {
+    store: at,
+    code: STORE_VERSION,
+    newer: at > STORE_VERSION,
+    pending: p,
+    unsafePending: p.filter((x) => !x.migration.safe),
+  };
+}
+
+/**
+ * Apply the lossless migrations without being asked, and leave the rest alone.
+ *
+ * Called before any command touches the store. The version stamp is only
+ * advanced once nothing is pending, so a store waiting on a risky migration
+ * keeps warning until a human runs `dolly migrate`.
+ */
+export function maybeAutoMigrate(store: Store): MigrateAction[] {
+  const state = versionState(store);
+  if (state.newer) return [];
+  const actions: MigrateAction[] = [];
+  let cur = store;
+  for (const { migration } of state.pending) {
+    if (!migration.safe) continue;
+    cur = migration.apply(cur, actions, false);
+  }
+  // Stamp whenever the store is structurally current, even if nothing had to be
+  // applied. A store that was migrated by hand — or created before the stamp
+  // existed — is otherwise re-evaluated on every single command, forever.
+  if (!pending(cur).length && storeVersion(cur.root) !== STORE_VERSION) {
+    stampVersion(cur.root, STORE_VERSION);
+  }
+  return actions;
+}
+
 export function migrate(store: Store, opts: { dryRun?: boolean } = {}): MigrateReport {
   const dryRun = Boolean(opts.dryRun);
   const actions: MigrateAction[] = [];
+  const state = versionState(store);
 
-  store = renameStore(store, dryRun, actions);
-  // Refresh the store's own scaffolding first. `init` merges any newly required
-  // .gitignore entries, and migrating identity into local.json is worthless if
-  // local.json is still tracked.
-  if (!dryRun) store.init();
-  migrateMarkers(store, dryRun, actions);
-  splitIdentity(store, dryRun, actions);
+  if (state.newer) {
+    throw new Error(
+      `this store is at schema version ${state.store} but this dolly only understands ${state.code} — ` +
+        'upgrade dolly instead of migrating down, or you will corrupt a store a teammate is using',
+    );
+  }
 
+  let cur = store;
+  for (const { migration, detail } of state.pending) {
+    actions.push({
+      kind: 'chain',
+      task: `v${migration.to}`,
+      detail: `${migration.name} — ${detail}`,
+    });
+    cur = migration.apply(cur, actions, dryRun);
+  }
+
+  if (!dryRun) {
+    const left = pending(cur);
+    if (!left.length && storeVersion(cur.root) !== STORE_VERSION) {
+      stampVersion(cur.root, STORE_VERSION);
+      actions.push({
+        kind: 'chain',
+        task: `v${STORE_VERSION}`,
+        detail: `store stamped as schema version ${STORE_VERSION}`,
+      });
+    }
+  } else if (state.store !== STORE_VERSION) {
+    actions.push({
+      kind: 'chain',
+      task: `v${STORE_VERSION}`,
+      detail: `would stamp the store as schema version ${STORE_VERSION} (currently ${state.store})`,
+    });
+  }
+  return { dryRun, actions };
+}
+
+/** the pre-0.2 per-step and per-version file merge */
+function mergeLegacyLayout(store: Store, dryRun: boolean, actions: MigrateAction[]): void {
   for (const task of store.loadTasks(true)) {
     const label = `${task.meta.id} ${task.meta.slug}`;
 
@@ -193,7 +383,6 @@ export function migrate(store: Store, opts: { dryRun?: boolean } = {}): MigrateR
       if (!dryRun) mergeSpecs(task, specs);
     }
   }
-  return { dryRun, actions };
 }
 
 function mergeSteps(task: Task, stepsDir: string, files: string[]): void {

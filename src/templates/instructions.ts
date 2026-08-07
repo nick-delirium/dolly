@@ -67,13 +67,14 @@ Then replace the imported spec with a real one (\`dolly spec\`) — import only 
 
 **Auto-logging** — with hooks installed dolly appends a mechanical step per finished turn from the transcript, so the log has no holes. It skips any turn you logged yourself, and its summaries are worse than yours. Keep logging real steps; treat auto-entries as the floor. Off: \`dolly config set reindex.autoLog false\`.
 
-**Housekeeping** — \`dolly housekeep --dry-run\` shows what ages out. Runs automatically once/day. Config in \`.dolly/config.json\`. \`dolly migrate\` upgrades a store written by an older dolly.
+**Housekeeping** — \`dolly housekeep --dry-run\` shows what ages out. Runs automatically once/day. Config in \`.dolly/config.json\`.
+
+**Version skew** — the store carries a schema version. Lossless upgrades apply themselves; anything that moves or rewrites data warns and waits for \`dolly migrate\`. If dolly refuses a write because the store is NEWER than your dolly, do NOT force it — a teammate wrote it with a newer version, so upgrade dolly instead.
 
 **Rules**
 - Task state lives in files, not in your head or this conversation.
 - Durable fact about the repo → project brief. Fact about what this task did → step.
-- One task = one feature; check \`dolly related\` before opening a task adjacent to existing work.
-- One task = one feature. Split when scope grows.
+- One task = one feature. Split when scope grows, and check \`dolly related\` before opening one adjacent to existing work.
 - Never edit \`.dolly/**\` by hand — use the CLI so frontmatter, versions and step counters stay consistent.
 - Steps are append-only history. Correct a wrong step with a new step, don't rewrite.
 - Every step stamped with git/github user → teammates see who did what. Commit \`.dolly/\` with your code.`;

@@ -3,9 +3,15 @@
 
 Task memory live in `.dolly/` (git-tracked, shared with teammates). You write it. Never guess state — read it.
 
+**One repo, many tasks.** Your task is a slice of an ongoing codebase, not a greenfield project. Before deciding anything on a new or unfamiliar task:
+- `dolly project` — repo-level truth: architecture, conventions, invariants. NOT the same as CLAUDE.md (that is how to behave; this is what is true about the code). You maintain it: `dolly project set "<Section>" --text "..."` when you learn something durable.
+- `dolly board --all` — what exists, what is in flight, what shipped.
+- `dolly related --files a.ts,b.ts` — which tasks already touched that code and what they concluded. dolly records the files of every step, so this is the one link nothing else can give you. Read it before changing shared code; you may be about to undo a deliberate choice.
+- Code map (`.codegraph/`, `graft/`, `.serena/`) if present — use it before grep. dolly does not index code and you should not hand-roll one.
+
 **Start of session / picking work back up** — read in tiers
 - `dolly board` — all tasks by status. Tiny.
-- `dolly context current` — **the default**. Spec (short + full), criteria, whole log, last 3 steps' FULL context. Run BEFORE touching code on an existing task: the log says what happened, full step context says why.
+- `dolly context current` — **the default**. Project brief, related tasks, spec (short + full), criteria, whole log, last 3 steps' FULL context. Run BEFORE touching code on an existing task: the log says what happened, full step context says why.
 - `dolly context <ref> --brief` — spec + criteria + log only, no step bodies. For orienting.
 - `dolly context <ref> -n 0` — every step in full. Archaeology only.
 - `dolly continue <ref>` — reopen the Claude Code conversation a task was worked in (`claude --resume <session>`).
@@ -58,11 +64,14 @@ Then replace the imported spec with a real one (`dolly spec`) — import only st
 
 **Auto-logging** — with hooks installed dolly appends a mechanical step per finished turn from the transcript, so the log has no holes. It skips any turn you logged yourself, and its summaries are worse than yours. Keep logging real steps; treat auto-entries as the floor. Off: `dolly config set reindex.autoLog false`.
 
-**Housekeeping** — `dolly housekeep --dry-run` shows what ages out. Runs automatically once/day. Config in `.dolly/config.json`. `dolly migrate` upgrades a store written by an older dolly.
+**Housekeeping** — `dolly housekeep --dry-run` shows what ages out. Runs automatically once/day. Config in `.dolly/config.json`.
+
+**Version skew** — the store carries a schema version. Lossless upgrades apply themselves; anything that moves or rewrites data warns and waits for `dolly migrate`. If dolly refuses a write because the store is NEWER than your dolly, do NOT force it — a teammate wrote it with a newer version, so upgrade dolly instead.
 
 **Rules**
 - Task state lives in files, not in your head or this conversation.
-- One task = one feature. Split when scope grows.
+- Durable fact about the repo → project brief. Fact about what this task did → step.
+- One task = one feature. Split when scope grows, and check `dolly related` before opening one adjacent to existing work.
 - Never edit `.dolly/**` by hand — use the CLI so frontmatter, versions and step counters stay consistent.
 - Steps are append-only history. Correct a wrong step with a new step, don't rewrite.
 - Every step stamped with git/github user → teammates see who did what. Commit `.dolly/` with your code.

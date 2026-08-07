@@ -738,3 +738,52 @@ Rules now live in the skills and `instructions.ts` only. All nine commands rewri
 
 Task 0002 holds the structural half: generated `task.md` from an append-only `log.jsonl`, collision-free `NNNN-user` step ids, derived `steps`/`spec_version`. That is where bug 2 gets its real fix and where concurrent teammates stop conflicting.
 <!-- /dolly:step 0013 -->
+
+<!-- dolly:step 0014 -->
+## 0014 · 2026-08-07T10:56:34Z · @nick-delirium
+
+- task status: validating
+- files: `.claude/commands/dolly/adopt.md`, `.claude/commands/dolly/board.md`, `.claude/commands/dolly/housekeep.md`, `.claude/commands/dolly/plan.md`, `.claude/commands/dolly/resume.md`, `.claude/commands/dolly/spec.md`, `.claude/commands/dolly/step.md`, `.claude/commands/dolly/update.md`, `.claude/commands/dolly/validate.md`, `.claude/skills/dolly/SKILL.md`, `CLAUDE.md`, `README.md`, `skills/dolly/SKILL.md`, `src/cli.ts`, `src/core/store.ts`, `src/core/types.ts`, `src/mcp.ts`, `src/migrate.ts`, `src/templates/instructions.ts`, `tests/migrate.test.mjs`, `tests/version.test.mjs`
+
+## Outcome
+
+The store now carries a real schema version, migrations are an ordered chain, lossless ones apply themselves, and a store from a newer dolly refuses writes.
+
+## What was broken
+
+`config.json` held `"version": 1` and **nothing read it** — the field was dead. Each migration sniffed for its own fingerprint independently. That worked for three migrations and did not generalise, and it meant two of the three announced nothing: an un-migrated pre-0.2 store just silently used the fallback readers, and a leaked identity was silently ignored.
+
+Worse, there was no protection against version skew. Today that is benign — an old dolly reading a new store only misses features. **After task 0002 it stops being benign**: once `task.md` is generated from `log.jsonl`, an old dolly would parse `task.md`, write to it directly, and the two would drift with no error. In a committed, shared store that is data loss with no signal. So the upgrade story had to land before 0002, not after.
+
+## Design
+
+`STORE_VERSION = 4` in `types.ts` (no imports, so it cannot cycle). Versions: 1 = 0.1.x layout, 2 = the dollie→dolly rename, 3 = merged spec/steps files, 4 = identity split.
+
+`MIGRATIONS` is an ordered list of `{ to, name, safe, detect, apply }`:
+
+- `detect()` returns a human description or null. So every migration is idempotent, `--dry-run` is honest, and the chain converges regardless of what the stamp claims — a store migrated by hand still ends up right.
+- `apply()` takes `dryRun` and must honour it. I got this wrong first: I skipped `apply` entirely on a dry run, which meant `--dry-run` printed the chain hop but none of the per-task detail — the part actually worth reviewing. Caught by an existing test.
+- `safe: true` means lossless and fine unattended: may add files or rewrite dolly's own scaffolding, must never move a directory, delete anything, or parse prose. Only the identity/scaffolding migration qualifies.
+
+`guardStoreVersion(cmd)` runs once in `main()` before dispatch, using a `WRITE_COMMANDS` set — one place, no call-site churn across twenty commands. MCP mirrors it in the `tools/call` handler with a `WRITE_TOOLS` set.
+
+## Rules that fell out
+
+- store behind + lossless → applied automatically, reported dim on stderr
+- store behind + risky → every command warns naming the migration and the fix; the version is **not** stamped, so it keeps warning until a human acts
+- store ahead → writes fail, reads warn and proceed. `migrate` also refuses to downgrade rather than mangling a teammate's store.
+
+## Bug found by running it on this repo
+
+The real store was structurally current but stamped `1`, because it had been migrated by hand earlier. `maybeAutoMigrate` found nothing pending, so `actions` was empty, so the guard `if (actions.length && !pending)` never stamped — the store would have re-evaluated the entire chain on every command forever, and stayed at version 1 permanently.
+
+Fixed: stamp whenever nothing is pending and the stamp is behind, regardless of whether work was applied. Stamping is itself lossless. Test covers exactly this case, including that it stays silent.
+
+## Also
+
+Merged a duplicated rule line in the shipped instruction block — "One task = one feature" appeared twice with different tails, drift from the repo-context work two commits ago.
+
+## Next
+
+Task 0002 now only has to append one entry to `MIGRATIONS` with `safe: false`, and the guard already refuses old binaries writing to the new layout.
+<!-- /dolly:step 0014 -->

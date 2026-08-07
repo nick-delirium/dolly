@@ -162,10 +162,15 @@ After import, TWO things are your job:
 2. **Fix misleading step summaries** with a corrective step. Never rewrite imported history.
 
 Storage format changed between dolly versions?
+
+Store carry a schema version. Lossless upgrades (new scaffolding, config moves) apply THEMSELVES on any command — nothing to do. Anything that moves or rewrites data warns and waits:
 ```
-dolly migrate                       # upgrade old .dolly/ layout in place
+dolly migrate --dry-run             # what it would change
+dolly migrate                       # apply it
 dolly reindex --apply --rebuild     # re-derive imported steps from the transcript
 ```
+
+Store NEWER than your dolly → dolly refuse writes. Do NOT work around it. Teammate wrote that store with a newer dolly; upgrade dolly first, else you corrupt their data.
 
 ## Automatic logging
 

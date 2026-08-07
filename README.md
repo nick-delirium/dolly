@@ -51,7 +51,7 @@ npm install -g .     # or `npm link` if you want edits to take effect live
 ```bash
 git clone https://github.com/nick-delirium/dolly.git && cd dolly
 npm install && npm link
-npm test             # 72 tests
+npm test             # 78 tests
 ```
 
 Undo with `npm unlink -g dolly`. Requires Node ≥ 18 and nothing else — there are no runtime dependencies, and TypeScript is the only devDependency.
@@ -248,7 +248,40 @@ Each imported step records `source: session <id> · turn <uuid>`, so re-running 
 dolly spec 1 --short "<2-5 lines>" --file spec.md --reason "reindexed from session faa33f88"
 ```
 
-### When dolly's own format changes
+## Upgrading between versions
+
+The store carries a schema version in `config.json`, and dolly compares it to the version the binary understands. Three outcomes:
+
+| Situation | What happens |
+|---|---|
+| store is current | nothing, silently |
+| store is behind, and the upgrade is **lossless** | applied automatically on the next command, reported on stderr |
+| store is behind, and the upgrade **moves or rewrites data** | every command warns with the exact command; you run `dolly migrate` |
+| store is **ahead** of your dolly | writes are refused, reads still work with a warning |
+
+So after `git pull` and a rebuild, you usually do nothing.
+
+**Why "lossless" is the dividing line.** Adding `local.json`, extending dolly's own `.gitignore` — those cannot lose anything, so asking permission is friction. Moving a directory or parsing existing prose can go wrong in ways you cannot undo, and `migrate` is the one place a surprise is unacceptable. Those never run unattended.
+
+**Why a newer store refuses writes.** `.dolly/` is shared and committed. If a teammate upgrades dolly and you don't, your older binary would happily write the old layout into their store and the two would drift with no error. Refusing is the only safe answer:
+
+```
+$ dolly step 1 -m "..."
+dolly: this store is at schema version 5, but this dolly understands 4.
+It was written by a newer dolly — upgrade dolly before writing to it.
+```
+
+`dolly migrate` refuses to downgrade for the same reason. Reads are always allowed, so you can still see the board while you upgrade.
+
+```bash
+dolly migrate --dry-run   # the chain, hop by hop, plus the per-task detail
+dolly migrate             # apply, then stamp the version
+```
+
+Migrations are an ordered chain, each idempotent and each detected by its own fingerprint rather than trusting the stamp — so a store migrated by hand, or one predating the stamp entirely, converges to the right state instead of re-running work. `--dry-run` shows both the chain and the per-task detail, and writes nothing.
+
+### Re-deriving imported steps
+
 
 ```bash
 dolly migrate                      # upgrade an older .dolly/ layout in place
@@ -508,7 +541,7 @@ git clone https://github.com/nick-delirium/dolly.git
 cd dolly
 npm install     # installs TypeScript, then `prepare` builds dist/
 npm link        # puts `dolly` on your PATH, pointing at this checkout
-npm test        # 72 tests
+npm test        # 78 tests
 ```
 
 `npm install` first is **not optional**: `npm link` runs the `prepare` script, and on a fresh clone with no `node_modules` that fails with `tsc: command not found`.

@@ -31,7 +31,7 @@ import { DEFAULT_CONFIG, type Task } from './core/types.js';
 import { humanAge } from './core/time.js';
 import { installTargets, TARGETS } from './install.js';
 import { runMcpServer } from './mcp.js';
-import { migrate } from './migrate.js';
+import { maybeAutoMigrate, migrate, versionState } from './migrate.js';
 import {
   applyReindex,
   importedTurns,
@@ -126,6 +126,55 @@ attribute every teammate's steps to one person, so it is ignored.
 Store location: DOLLY_DIR, else nearest .dolly/, else <repo-root>/.dolly,
 else ~/.dolly/projects/<name>-<hash>.`;
 
+/** commands that write to the store; a newer store must refuse these */
+const WRITE_COMMANDS = new Set([
+  'new', 'add', 'step', 'spec', 'status', 'move', 'retitle', 'rename',
+  'archive', 'restore', 'plan', 'reindex', 'adopt', 'housekeep', 'hk',
+  'config', 'project',
+]);
+
+/** commands that must never touch the store on their own */
+const NO_AUTO = new Set(['help', 'version', 'mcp', 'install', 'init', 'migrate']);
+
+/**
+ * Version skew is the real hazard for a shared store: a teammate on an older
+ * dolly writing to a store written by a newer one corrupts it silently. So a
+ * newer store refuses writes outright, and reads only warn.
+ *
+ * Lossless migrations are applied here without being asked; risky ones only warn
+ * and wait for `dolly migrate`.
+ */
+function guardStoreVersion(cmd: string): void {
+  const store = Store.open();
+  if (!store.exists) return;
+  const state = versionState(store);
+
+  if (state.newer) {
+    const msg =
+      `this store is at schema version ${state.store}, but this dolly understands ${state.code}. ` +
+      'It was written by a newer dolly — upgrade dolly before writing to it.';
+    if (WRITE_COMMANDS.has(cmd)) fail(msg);
+    process.stderr.write(color.yellow(`dolly: ${msg} Reading anyway.\n`));
+    return;
+  }
+
+  if (NO_AUTO.has(cmd)) return;
+
+  const applied = maybeAutoMigrate(store);
+  for (const a of applied) {
+    process.stderr.write(color.dim(`dolly: auto-migrated — ${a.detail}\n`));
+  }
+  const risky = versionState(Store.open()).unsafePending;
+  if (risky.length) {
+    process.stderr.write(
+      color.yellow(
+        `dolly: ${risky.length} migration(s) need you to run \`dolly migrate\` (they move or rewrite data, so they are not automatic):\n`,
+      ),
+    );
+    for (const r of risky) process.stderr.write(`  ${r.migration.name} — ${r.detail}\n`);
+  }
+}
+
 function fail(msg: string): never {
   process.stderr.write(`dolly: ${msg}\n`);
   process.exit(1);
@@ -135,13 +184,6 @@ function openStore(requireInit = true): Store {
   const store = Store.open();
   if (requireInit && !store.exists) {
     fail(`no store found — run \`dolly init\` (would create ${store.root})`);
-  }
-  if (store.legacy) {
-    process.stderr.write(
-      color.yellow(
-        `dolly: reading a pre-rename store at ${store.root} — run \`dolly migrate\` to move it to .dolly/ and rename its markers\n`,
-      ),
-    );
   }
   return store;
 }
@@ -824,12 +866,18 @@ function cmdRelated(args: Args): void {
 
 function cmdMigrate(args: Args): void {
   const store = openStore();
+  const before = versionState(store);
   const report = migrate(store, { dryRun: bool(args, 'dry-run') });
-  if (bool(args, 'json')) return jsonOut(report);
+  if (bool(args, 'json')) return jsonOut({ ...report, version: before });
   if (!report.actions.length) {
-    process.stdout.write(`${color.dim('store layout already current — nothing to migrate')}\n`);
+    process.stdout.write(
+      `${color.dim(`store already at schema version ${before.store} — nothing to migrate`)}\n`,
+    );
     return;
   }
+  process.stdout.write(
+    `${color.dim(`schema version ${before.store} → ${before.code}`)}\n`,
+  );
   for (const a of report.actions) {
     process.stdout.write(`  ${color.cyan(a.kind.padEnd(6))} ${a.task.padEnd(28)} ${a.detail}\n`);
   }
@@ -1125,6 +1173,8 @@ async function main(): Promise<void> {
     process.stdout.write(`${HELP}\n`);
     return;
   }
+
+  guardStoreVersion(cmd);
 
   switch (cmd) {
     case 'init':
