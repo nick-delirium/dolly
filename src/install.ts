@@ -289,6 +289,40 @@ export const TARGETS: Target[] = [
     },
   },
   {
+    id: 'pi',
+    label: 'pi',
+    detect: (p) => isDir(path.join(home, '.pi', 'agent')) || isDir(path.join(p, '.pi', 'agent')),
+    install(project, opts) {
+      const base = opts.global ? path.join(home, '.pi', 'agent') : path.join(project, '.pi', 'agent');
+      const out: string[] = cleanLegacy(project, base, opts.dryRun);
+      out.push(copyTree(path.join(PKG_ROOT, 'skills', 'dolly'), path.join(base, 'skills', 'dolly'), opts.dryRun));
+      out.push(
+        copyTree(
+          path.join(PKG_ROOT, 'skills', 'dolly-planning'),
+          path.join(base, 'skills', 'dolly-planning'),
+          opts.dryRun,
+        ),
+      );
+      out.push(
+        writeBlock(
+          opts.global ? path.join(base, 'SYSTEM.md') : path.join(project, 'AGENTS.md'),
+          AGENT_BLOCK,
+          opts.dryRun,
+        ),
+      );
+      if (opts.mcp) {
+        out.push(
+          mergeMcpJson(
+            opts.global ? path.join(base, 'mcp.json') : path.join(project, '.mcp.json'),
+            'mcpServers',
+            opts.dryRun,
+          ),
+        );
+      }
+      return out;
+    },
+  },
+  {
     id: 'agents',
     label: 'AGENTS.md (generic)',
     detect: (p) => exists(path.join(p, 'AGENTS.md')),

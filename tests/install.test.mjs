@@ -102,3 +102,53 @@ test('repeated prose flags are not split on commas', (t) => {
   // tags and file paths still split on commas — that is the documented shorthand
   assert.deepEqual(got.tags, ['a', 'b']);
 });
+
+test('pi is a registered install target', (t) => {
+  const sb = sandbox();
+  t.after(sb.cleanup);
+  Store.open().init();
+  const out = dolly(sb.dir, ['install', '--list'], { DOLLY_DIR: sb.store });
+  assert.match(out, /\bpi\b/, 'pi must appear in `dolly install --list`');
+});
+
+test('install pi wires skills, instructions, and mcp (local)', (t) => {
+  const sb = sandbox();
+  t.after(sb.cleanup);
+  Store.open().init();
+  fs.mkdirSync(path.join(sb.dir, '.pi', 'agent'), { recursive: true });
+
+  const out = dolly(sb.dir, ['install', 'pi', '--local'], { DOLLY_DIR: sb.store });
+  assert.match(out, /scope: local/);
+
+  assert.ok(
+    fs.existsSync(path.join(sb.dir, '.pi', 'agent', 'skills', 'dolly', 'SKILL.md')),
+    'dolly skill copied under pi base',
+  );
+  assert.ok(
+    fs.existsSync(path.join(sb.dir, '.pi', 'agent', 'skills', 'dolly-planning', 'SKILL.md')),
+    'dolly-planning skill copied under pi base',
+  );
+  assert.ok(fs.existsSync(path.join(sb.dir, 'AGENTS.md')), 'local instructions in AGENTS.md');
+  assert.ok(fs.existsSync(path.join(sb.dir, '.mcp.json')), 'local mcp in .mcp.json');
+
+  const mcp = JSON.parse(fs.readFileSync(path.join(sb.dir, '.mcp.json'), 'utf8'));
+  assert.deepEqual(mcp.mcpServers.dolly, { command: 'dolly', args: ['mcp'] });
+
+  const agents = fs.readFileSync(path.join(sb.dir, 'AGENTS.md'), 'utf8');
+  assert.match(agents, /<!-- dolly:instructions -->/);
+  assert.match(agents, /dolly context current/);
+});
+
+test('install pi is idempotent on rerun', (t) => {
+  const sb = sandbox();
+  t.after(sb.cleanup);
+  Store.open().init();
+  fs.mkdirSync(path.join(sb.dir, '.pi', 'agent'), { recursive: true });
+
+  dolly(sb.dir, ['install', 'pi', '--local'], { DOLLY_DIR: sb.store });
+  const second = dolly(sb.dir, ['install', 'pi', '--local'], { DOLLY_DIR: sb.store });
+
+  // instructions + mcp report no change the second time round
+  assert.match(second, /up-to-date .*AGENTS\.md/);
+  assert.match(second, /up-to-date .*\.mcp\.json/);
+});
