@@ -495,15 +495,31 @@ Every command that produces data takes `--json`. Text input flags accept `-` for
 
 Skills, slash commands and the instruction blocks written into `CLAUDE.md` / `AGENTS.md` / Cursor rules are all written in caveman register — articles and filler dropped, every command, path, flag and gate kept exact. Fewer input tokens per session, same precision.
 
-## Development
+## Contributing
 
 ```bash
-npm install
-npm run build
-npm test
+git clone https://github.com/nick-delirium/dolly.git
+cd dolly
+npm install     # installs TypeScript, then `prepare` builds dist/
+npm link        # puts `dolly` on your PATH, pointing at this checkout
+npm test        # 61 tests
 ```
 
-Zero runtime dependencies. TypeScript → ESM, Node ≥ 18.
+`npm install` first is **not optional**: `npm link` runs the `prepare` script, and on a fresh clone with no `node_modules` that fails with `tsc: command not found`.
+
+After editing `src/`, rebuild — the global `dolly` resolves to `dist/cli.js`, not to your sources:
+
+```bash
+npm run build   # or `npm run dev` to watch, or just `npm test` (it builds first)
+```
+
+Undo the link with `npm unlink -g dolly`.
+
+The clone ships dolly's own `.claude/`, `.mcp.json`, `CLAUDE.md` and `.dolly/`, so once `dolly` is on your PATH a Claude Code session in the checkout gets the skills, slash commands, MCP server and hooks automatically — and `dolly board` shows the project's real task history. dolly is developed with dolly.
+
+Requirements: Node ≥ 18. Zero runtime dependencies; TypeScript is the only devDependency. TypeScript → ESM.
+
+Conventions worth knowing before a PR are in the project brief: `dolly project` (or read `.dolly/project.md`). The invariants section is the one to read first — the block markers in `context/*.md` are parsed, so changing their shape needs a migration in `src/migrate.ts`.
 
 ## Prior art
 
