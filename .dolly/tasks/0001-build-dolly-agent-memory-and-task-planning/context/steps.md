@@ -618,3 +618,58 @@ Wrote this repo's own brief through the new commands (5 sections), including the
 - `overlappingTasks` compares titles only. Specs would be a stronger signal and are already on disk.
 - Nothing prompts an agent to REVISIT the brief when it drifts. Staleness is currently detected only by an agent noticing and being told to fix it.
 <!-- /dolly:step 0011 -->
+
+<!-- dolly:step 0012 -->
+## 0012 · 2026-08-07T10:26:08Z · @nick-delirium
+
+- task status: validating
+- files: `src/core/args.ts`, `tests/args.test.mjs`
+
+## The bug
+
+Four of five project-brief sections were rows of the word `true`. Root cause is in the arg parser, and it silently corrupts any flag value that begins with a dash — which is every markdown bullet list, i.e. the normal shape of a dolly `--text`, `--short` or `-m` value.
+
+Chain:
+1. `--text` followed by `- src/core/ …`. The old test for "is the next token a value?" was `!next.startsWith('-')`. A bullet starts with `-`, so it read as a flag → `put('text', true)`, storing the BOOLEAN true.
+2. The multi-line prose then got parsed as its own token. Not `--`, but `startsWith('-')` and length > 1, so it fell into the **short-flag bundling** branch, which iterates every character as a flag letter.
+3. `ALIASES` maps `t -> text`. Every letter `t` in the prose called `put('t', true)`, which appended `String(true)` to the existing value, building an array of `"true"` strings.
+4. `str()` joins arrays with `\n`. Result: one `true` per `t` in the original text.
+
+Overview survived because it starts with a letter. The four bullet-list sections did not. 64 `true` rows for Architecture = 64 letter `t`s.
+
+## Why it was invisible
+
+Three things had to line up, and each is individually reasonable:
+- a permissive value/flag test
+- character-wise short-flag bundling with no guard on what a bundle looks like
+- `put()` coercing repeats into an array with `String(value)`, so a boolean became the literal `"true"`
+
+No error at any step. `dolly project set` reported success, and the corruption only showed up when the brief was read back — one turn later, in a session-start injection.
+
+## Fix
+
+Single strict predicate, used by both decision points:
+
+```ts
+function looksLikeFlag(tok: string): boolean {
+  return /^--[A-Za-z]/.test(tok) || /^-[A-Za-z]+$/.test(tok);
+}
+```
+
+- a value is a value unless it looks like a flag by that test, so `- item`, `-5`, and anything containing a space or newline are values
+- the bundling branch now requires `/^-[A-Za-z]+$/` — a real bundle like `-ab`, never a line of prose
+
+`-` alone still means stdin. `--flag=value`, repeats, `--` passthrough, and bundles all unchanged.
+
+## Tests
+
+New `tests/args.test.mjs`, 5 cases. The regression one asserts a bullet list round-trips verbatim through `--text` AND that `flags.text` is a string rather than an array — because the array was the tell. Also pins the alias table (`-q`/`-a` are `question`/`answer`), which is what my first attempt at the test got wrong: I asserted `bool(a,'a')` and `a` aliases to `answer`.
+
+## Data repair
+
+Rewrote all four sections through the fixed CLI, which doubles as the end-to-end proof — every one is a bullet list, so they all took the previously-broken path. Added an invariant to the brief itself: *flag values are prose; a leading `-` is text, not a flag.*
+
+## Worth noting
+
+This is the third bug in this class: text flowing through a parser that was written assuming well-behaved input. Marker injection (step 0009), migration rewriting prose (step 0010), now arg parsing. The pattern to watch: dolly's inputs are human and agent prose, and prose contains every character the parsers treat as structure.
+<!-- /dolly:step 0012 -->

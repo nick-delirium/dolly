@@ -15,6 +15,19 @@ const ALIASES: Record<string, string> = {
   v: 'version',
 };
 
+/**
+ * Does this token look like a flag rather than a value?
+ *
+ * Deliberately strict, because dolly's values are prose: markdown bullet lists
+ * start with `- `, and a lenient "starts with a dash" test made
+ * `--text "- item"` parse as a bare boolean followed by a short-flag bundle,
+ * so every character of the prose became a flag. A flag is `--word` or a run of
+ * letters like `-abc` — never anything containing a space or newline.
+ */
+function looksLikeFlag(tok: string): boolean {
+  return /^--[A-Za-z]/.test(tok) || /^-[A-Za-z]+$/.test(tok);
+}
+
 export function parseArgs(argv: string[]): Args {
   const positional: string[] = [];
   const flags: Record<string, string | boolean | string[]> = {};
@@ -55,7 +68,7 @@ export function parseArgs(argv: string[]): Args {
         continue;
       }
       const next = argv[i + 1];
-      if (next !== undefined && (next === '-' || !next.startsWith('-'))) {
+      if (next !== undefined && !looksLikeFlag(next)) {
         put(body, next);
         i += 2;
       } else {
@@ -64,12 +77,14 @@ export function parseArgs(argv: string[]): Args {
       }
       continue;
     }
-    if (a.startsWith('-') && a.length > 1) {
+    // only a real short-flag bundle: `-abc`, never a line of prose that
+    // happens to begin with a dash
+    if (/^-[A-Za-z]+$/.test(a)) {
       const letters = a.slice(1);
       for (let k = 0; k < letters.length; k++) {
         const last = k === letters.length - 1;
         const next = argv[i + 1];
-        if (last && next !== undefined && (next === '-' || !next.startsWith('-'))) {
+        if (last && next !== undefined && !looksLikeFlag(next)) {
           put(letters[k], next);
           i++;
         } else {

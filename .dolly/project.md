@@ -15,246 +15,40 @@ Must not stop being true: the store is human-readable markdown, and dolly never 
 
 ## Architecture
 
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
+- `src/core/` — the model. `store.ts` locates `.dolly/` and loads tasks; `task.ts` owns every write to a task (frontmatter, sections, log lines, spec versions, step entries); `md.ts` is the frontmatter + section + marker-block toolkit everything parses through.
+- `src/cli.ts` — argument parsing and every command. Thin: it formats, `core/` decides.
+- `src/mcp.ts` — MCP stdio server, hand-rolled JSON-RPC, mirrors the CLI 1:1.
+- `src/reindex.ts` + `src/core/transcript.ts` — reads Claude Code session transcripts to adopt a conversation already in flight.
+- `src/core/project.ts` + `src/core/related.ts` — repo-level brief, and cross-task links derived from the files each step recorded.
+- `src/migrate.ts` — upgrades older stores in place. Every storage change needs a migration here.
+- `src/install.ts` — writes agent instructions for 8 targets, idempotently.
+- `skills/`, `commands/`, `.claude-plugin/` — agent-facing instructions, shipped in the npm package and doubling as the Claude Code plugin.
 
 ## Conventions
 
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
+- Zero runtime dependencies. Adding one needs a real argument; the tool is small enough not to need any.
+- Every command that produces data takes `--json`. Text input flags accept a file or `-` for stdin.
+- `core/` never prints. The CLI prints; core returns data or throws.
+- Comments explain WHY, never what. Load-bearing subtleties get one; obvious code gets none.
+- Agent-facing prose (skills, instructions, tool descriptions) is written in a compressed register — articles and filler dropped, every command, path and flag exact.
+- Tests are `node --test` against `dist/`, so `npm test` builds first. Test names state the behaviour, not the function under test.
 
 ## Invariants
 
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
+- **Markers are parsed, not decorative.** `<!-- dolly:step 0003 -->` and friends are matched by literal prefix in `md.ts`. Rename or reformat one without a migration and step context silently disappears — the log still lists steps while their bodies are unreachable.
+- **Content is escaped on write.** `neutralizeMarkers()` runs on every block write, because imported text can contain marker-shaped strings that would otherwise truncate the enclosing block.
+- **Steps are append-only.** Corrections are new entries. Nothing rewrites history, and prose is never machine-edited — it is a record of what someone actually wrote.
+- **Never destructive by default.** Housekeeping archives and prunes; deletion is opt-in. Migrations move, never overwrite, and refuse to guess when two candidates exist.
+- **Agents never set `done`.** `validating` is the handoff; a human closes the loop.
+- **`~/.dolly` is dolly own home, never a project store** — otherwise every project under $HOME resolves to it.
+- **Flag values are prose.** The arg parser must treat a leading `-` as text, not a flag: bullet lists are the normal shape of every `--text`, `--short` and `-m` value.
 
 ## Glossary
 
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
-true
+- **task** — one feature or fix, at `.dolly/tasks/NNNN-slug/`. The id is the stable handle; the slug follows the title.
+- **step** — one major unit of work, two tiers: a one-line summary in `task.md` and full handoff context in `context/steps.md`.
+- **spec version** — bumped when the full spec changes; the old one moves to "Superseded versions" in the same file with its reason.
+- **segment / turn** — one human prompt plus everything the agent did before the next prompt. The unit `reindex` imports, keyed by turn uuid for idempotency.
+- **work chain** — the ordered, repeat-collapsed trace of tool calls in a turn.
+- **the store** — `.dolly/` itself.
 
