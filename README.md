@@ -29,21 +29,52 @@ Three files per task, not thirty. A task's whole history is two diffs in a PR.
 
 ## Install
 
+Not on npm yet — install from the repo. Any of these gives you a `dolly` on your PATH; pick by whether you want to hack on it.
+
+**Straight from GitHub** (no clone, builds itself on install):
+
 ```bash
-npm install -g dolly
+npm install -g github:nick-delirium/dolly
+```
+
+**From a clone** — same result, but you have the source:
+
+```bash
+git clone https://github.com/nick-delirium/dolly.git
+cd dolly
+npm install          # builds via the `prepare` script
+npm install -g .     # or `npm link` if you want edits to take effect live
+```
+
+**Working on dolly itself** — `npm link` symlinks the global `dolly` at your checkout, so a rebuild is picked up immediately:
+
+```bash
+git clone https://github.com/nick-delirium/dolly.git && cd dolly
+npm install && npm link
+npm test             # 61 tests
+```
+
+Undo with `npm unlink -g dolly`. Requires Node ≥ 18 and nothing else — there are no runtime dependencies, and TypeScript is the only devDependency.
+
+Then, in whatever project you want task memory for:
+
+```bash
 cd your-project
 dolly init
 ```
 
 `dolly init` detects the coding agents on your machine, wires each one, and creates `.dolly/`. Commit `.dolly/` — that's the shared memory.
 
-### Claude Code (plugin — recommended)
+### Claude Code (plugin)
+
+The plugin gives you the hooks (auto-logging, session context) without editing `.claude/` yourself:
 
 ```bash
 claude plugin marketplace add nick-delirium/dolly
 claude plugin install dolly@dolly
-npm install -g dolly      # the plugin drives this CLI
 ```
+
+The plugin drives the CLI, so install that too (see above) — `bin/dolly-hook.mjs` falls back to a `dolly` on PATH and exits 0 rather than breaking your session if it can't find one.
 
 You get:
 
