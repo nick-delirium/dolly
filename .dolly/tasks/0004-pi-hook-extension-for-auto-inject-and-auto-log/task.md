@@ -2,20 +2,20 @@
 id: "0004"
 slug: pi-hook-extension-for-auto-inject-and-auto-log
 title: pi hook extension for auto-inject and auto-log
-status: working
+status: done
 owner: rjshrjndrn
 collaborators: [rjshrjndrn]
 tags: []
-steps: 5
+steps: 7
 spec_version: 3
 created: 2026-08-07T20:19:39Z
-updated: 2026-08-08T03:12:07Z
+updated: 2026-08-08T03:20:41Z
 ---
 
 # 0004 · pi hook extension for auto-inject and auto-log
 
 <!-- dolly:header -->
-`working` · spec v3 · @rjshrjndrn · 5 steps · updated 2026-08-08 03:12Z
+`done` · spec v3 · @rjshrjndrn · 7 steps · updated 2026-08-08 03:20Z
 <!-- /dolly:header -->
 
 ## Spec
@@ -64,4 +64,12 @@ Plan complete. Status → todo.
   files: `src/cli.ts`, `src/install.ts` · full: `steps.md#0004`
 - `2026-08-08 03:12Z` @rjshrjndrn: Auto-log v2 lands via event-driven path: new 'dolly hook stop --from-stdin' builds a step from a turn piped on stdin (dedup by session:turn, skip-if-agent-logged, config-gated, garbage-safe); extension gains turn_start/turn_end that reads pi's in-memory event and pipes it. Bypasses transcript.ts entirely. 99/99. NB: the 'Smoke-test...' line above is a test artifact, ignore it.
   files: `.gemini/settings.json`, `.pi/git-root.cache`, `.pi/memory.db`, `.pi/memory.db-shm`, `.pi/memory.db-wal`, `.windsurf/rules/dolly.md` +8 more · full: `steps.md#0005`
+- `2026-08-08 03:12Z` @rjshrjndrn: status working → validating. restart pi (extension already installed), keep task 0004 (or any) 'working', do one real turn that edits a file, then check: the turn is auto-logged as a step on the active task (dolly context <ref> --brief). Also confirm: a turn where you manually ran 'dolly step' is NOT double-logged. And the 'Smoke-test... turn live-demo:99' step on 0004 is a test artifact from implementation — ignore/expect it.
+- `2026-08-08 03:14Z` @rjshrjndrn: Auto-log confirmed with a live 'pi -p' run: a throwaway working task got two real steps from the nested session's turns (tool-call turn -> 'Ran bash.', text turn -> the answer), each stamped with the real pi session id and turn dedup key. Full turn_end -> stdin -> addStep chain proven, not mocked. Throwaway archived.
+  files: `src/install.ts`, `src/cli.ts` · full: `steps.md#0006`
+- `2026-08-08 03:17Z` @rjshrjndrn: status validating → done.
+- `2026-08-08 03:20Z` @rjshrjndrn: status done → working.
+- `2026-08-08 03:20Z` @rjshrjndrn: README documents pi: intro lists it alongside Claude, agents table gains a pi row (skills, SYSTEM.md/AGENTS.md, mcp.json, extensions/dolly.ts), and the Automatic-logging section notes pi's event-driven route (turn_end -> stop --from-stdin, no transcript) vs Claude's Stop-hook transcript parse.
+  files: `README.md`
+- `2026-08-08 03:20Z` @rjshrjndrn: status working → done.
 

@@ -209,3 +209,32 @@ schema.
 Next: human restart pi, do a real turn, confirm dolly auto-logs it
 onto the active task.
 <!-- /dolly:step 0005 -->
+
+<!-- dolly:step 0006 -->
+## 0006 · 2026-08-08T03:14:06Z · @rjshrjndrn
+
+- task status: validating
+- files: `src/install.ts`, `src/cli.ts`
+
+## Auto-log validated with a live `pi -p` process
+
+Created throwaway task 0005, set it working, ran:
+  pi -p "Run the bash command: echo dolly-autolog-probe. Then tell me
+         what it printed, in one sentence."
+
+A real nested pi session executed a bash turn. The extension's
+turn_end fired and piped each turn to `dolly hook stop --from-stdin`.
+Two steps auto-logged onto 0005:
+  - turn :0  "Ran bash."                      (tools-only summary synth)
+  - turn :1  "It printed `dolly-autolog-probe`."
+Both stamped with the real pi session id:
+  source: pi session 019fdf5c-9ccd-7b19-b83c-845ac8f8f27d · turn ...:0 / :1
+
+This is the full chain proven live: pi turn_end -> extension ->
+execFileSync dolly hook stop --from-stdin -> addStep. Not a piped
+mock. Confirms the tools-only summary path (turn with a toolCall but
+no final text -> "Ran bash.") and the dedup key format.
+
+Cleanup: 0005 archived to archive/2026-08. Board left with 0004
+validating.
+<!-- /dolly:step 0006 -->
