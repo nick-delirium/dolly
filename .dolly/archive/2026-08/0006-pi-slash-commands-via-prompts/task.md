@@ -10,6 +10,7 @@ steps: 18
 spec_version: 1
 created: 2026-08-08T03:31:38Z
 updated: 2026-08-08T03:42:09Z
+archived: 2026-08-08T03:48:30Z
 ---
 
 # 0006 · pi slash commands via prompts/
@@ -78,4 +79,5 @@ Install the 9 /dolly:* commands into pi as ~/.pi/agent/prompts/dolly-*.md. Trans
   files: `src/install.ts`, `tests/install.test.mjs` · full: `steps.md#0018`
 - `2026-08-08 03:39Z` @rjshrjndrn: status validating → validating. interactive pi check (the one thing pi -p can't do)
 - `2026-08-08 03:42Z` @rjshrjndrn: status validating → done.
+- `2026-08-08 03:48Z` @rjshrjndrn: archived.
 

@@ -10,6 +10,7 @@ steps: 7
 spec_version: 3
 created: 2026-08-07T20:19:39Z
 updated: 2026-08-08T03:20:41Z
+archived: 2026-08-08T03:48:30Z
 ---
 
 # 0004 · pi hook extension for auto-inject and auto-log
@@ -72,4 +73,5 @@ Plan complete. Status → todo.
 - `2026-08-08 03:20Z` @rjshrjndrn: README documents pi: intro lists it alongside Claude, agents table gains a pi row (skills, SYSTEM.md/AGENTS.md, mcp.json, extensions/dolly.ts), and the Automatic-logging section notes pi's event-driven route (turn_end -> stop --from-stdin, no transcript) vs Claude's Stop-hook transcript parse.
   files: `README.md`
 - `2026-08-08 03:20Z` @rjshrjndrn: status working → done.
+- `2026-08-08 03:48Z` @rjshrjndrn: archived.
 

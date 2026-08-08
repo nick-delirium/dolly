@@ -10,6 +10,7 @@ steps: 2
 spec_version: 2
 created: 2026-08-07T19:27:58Z
 updated: 2026-08-07T20:28:37Z
+archived: 2026-08-08T03:48:30Z
 ---
 
 # 0003 · support pi as an install target
@@ -56,4 +57,5 @@ Plan complete. Status → todo.
 - `2026-08-07 20:04Z` @rjshrjndrn: pi skill path is scope-dependent: pi scans ~/.pi/agent/skills (global) but <repo>/.pi/skills (local, no agent/ segment). First cut wrote local skills to the unscanned .pi/agent/skills. Branch by scope; verified against pi docs. Suite 91/91.
   files: `.gemini/settings.json`, `.pi/git-root.cache`, `.pi/memory.db`, `.pi/memory.db-shm`, `.pi/memory.db-wal`, `.windsurf/rules/dolly.md` +6 more · full: `steps.md#0002`
 - `2026-08-07 20:28Z` @rjshrjndrn: status validating → done.
+- `2026-08-08 03:48Z` @rjshrjndrn: archived.
 
