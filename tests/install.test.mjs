@@ -182,6 +182,56 @@ test('install pi --global writes the auto-inject extension', (t) => {
   assert.doesNotMatch(body, /pi-coding-agent/);
 });
 
+test('install pi --global writes the slash commands as prompts, transformed', (t) => {
+  const sb = sandbox();
+  t.after(sb.cleanup);
+  Store.open().init();
+  const fakeHome = path.join(sb.dir, 'home');
+  fs.mkdirSync(path.join(fakeHome, '.pi', 'agent'), { recursive: true });
+
+  dolly(sb.dir, ['install', 'pi', '--global'], { DOLLY_DIR: sb.store, HOME: fakeHome });
+
+  const prompts = path.join(fakeHome, '.pi', 'agent', 'prompts');
+  // flat files named dolly-<cmd>.md → invoked as /dolly-<cmd>
+  assert.ok(fs.existsSync(path.join(prompts, 'dolly-board.md')), 'board prompt written');
+  assert.ok(fs.existsSync(path.join(prompts, 'dolly-step.md')), 'step prompt written');
+  const written = fs.readdirSync(prompts).filter((f) => f.startsWith('dolly-'));
+  assert.equal(written.length, 9, 'all nine commands installed as prompts');
+
+  const board = fs.readFileSync(path.join(prompts, 'dolly-board.md'), 'utf8');
+  // frontmatter + $ARGUMENTS survive (pi understands both)
+  assert.match(board, /description: Show the dolly task board/);
+  assert.match(board, /\$ARGUMENTS/);
+  // the Claude inline-exec syntax is gone, replaced by a fenced bash block
+  assert.doesNotMatch(board, /!`/);
+  assert.match(board, /```bash\ndolly board \$ARGUMENTS\n```/);
+
+  // a command with two inline-exec lines transforms both
+  const step = fs.readFileSync(path.join(prompts, 'dolly-step.md'), 'utf8');
+  assert.doesNotMatch(step, /!`/);
+  assert.match(step, /```bash\ndolly show \$\{ARGUMENTS:-current\} 2>&1 \| head -20\n```/);
+  assert.match(step, /```bash\ngit status --porcelain 2>\/dev\/null \| head -30\n```/);
+
+  // plan.md has no inline-exec — it must copy through untouched
+  const plan = fs.readFileSync(path.join(prompts, 'dolly-plan.md'), 'utf8');
+  assert.match(plan, /Follow the \*\*dolly-planning\*\* skill/);
+});
+
+test('install pi commands are local when scope is local', (t) => {
+  const sb = sandbox();
+  t.after(sb.cleanup);
+  Store.open().init();
+  fs.mkdirSync(path.join(sb.dir, '.pi'), { recursive: true });
+
+  dolly(sb.dir, ['install', 'pi', '--local'], { DOLLY_DIR: sb.store });
+
+  // pi scans project prompts at .pi/prompts (sibling of .pi/skills)
+  assert.ok(
+    fs.existsSync(path.join(sb.dir, '.pi', 'prompts', 'dolly-board.md')),
+    'board prompt written to project .pi/prompts',
+  );
+});
+
 test('install pi extension is idempotent on rerun', (t) => {
   const sb = sandbox();
   t.after(sb.cleanup);

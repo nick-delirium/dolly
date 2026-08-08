@@ -40,6 +40,31 @@ function writeFileIdempotent(file: string, content: string, dry: boolean): strin
 }
 
 /**
+ * Adapt a Claude slash-command to a pi prompt template. pi shares the
+ * frontmatter and $ARGUMENTS syntax, but has no inline `!`cmd`` execution;
+ * its own prompts put commands in fenced bash blocks and let the agent run
+ * them. So rewrite each `!`cmd`` line into a ```bash block. Everything else
+ * (frontmatter, $ARGUMENTS, prose) passes through untouched.
+ */
+function toPiPrompt(md: string): string {
+  return md.replace(/^!`(.+)`\s*$/gm, (_m, cmd) => `\`\`\`bash\n${cmd}\n\`\`\``);
+}
+
+/** Install the dolly slash-commands as pi prompt templates (dolly-<name>.md). */
+function installPiCommands(dir: string, dry: boolean): string[] {
+  const src = path.join(PKG_ROOT, 'commands');
+  if (!isDir(src)) return [];
+  const out: string[] = [];
+  for (const file of fs.readdirSync(src).sort()) {
+    if (!file.endsWith('.md')) continue;
+    const name = file.replace(/\.md$/, '');
+    const dest = path.join(dir, `dolly-${name}.md`);
+    out.push(writeFileIdempotent(dest, toPiPrompt(readTextOr(path.join(src, file))), dry));
+  }
+  return out;
+}
+
+/**
  * pi auto-inject extension. On before_agent_start it shells the existing
  * `dolly hook session-start` (which reads .dolly, no transcript) and prepends
  * its output to the system prompt. Deliberately untyped so it carries no
@@ -409,6 +434,12 @@ export const TARGETS: Target[] = [
           ),
         );
       }
+      // Slash commands install as prompt templates. pi discovers these
+      // globally at ~/.pi/agent/prompts and per-project at <repo>/.pi/prompts.
+      const prompts = opts.global
+        ? path.join(home, '.pi', 'agent', 'prompts')
+        : path.join(project, '.pi', 'prompts');
+      out.push(...installPiCommands(prompts, opts.dryRun));
       // Auto-inject extension is global-only: pi loads extensions from
       // ~/.pi/agent/extensions. Repo-local extension loading is unconfirmed.
       if (opts.global) {
