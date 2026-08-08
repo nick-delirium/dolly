@@ -255,3 +255,39 @@ namespaced /dolly:board.
 
 Human check: /dolly-step, /dolly-plan etc. in an interactive pi session.
 <!-- /dolly:step 0016 -->
+
+<!-- dolly:step 0017 -->
+## 0017 · 2026-08-08T03:35:34Z · @rjshrjndrn
+
+- task status: working
+- files: none
+- source: pi session 019fdd9f-88e3-71fe-94af-81d9c01c546f · turn 019fdd9f-88e3-71fe-94af-81d9c01c546f:16
+
+tools: bash
+
+_Auto-logged by the pi extension from the turn_end event, not written by a human. Correct it with a follow-up `dolly step` if it misleads._
+<!-- /dolly:step 0017 -->
+
+<!-- dolly:step 0018 -->
+## 0018 · 2026-08-08T03:39:49Z · @rjshrjndrn
+
+- task status: validating
+- files: `src/install.ts`, `tests/install.test.mjs`
+
+## Final: all 5 success criteria verified
+
+Criteria were TBD at task open (dolly new without --criteria); derived
+from the spec and set via `dolly spec 0006 --criteria ...`, then each
+checked against hard proof.
+
+C1 nine prompts, global+local — ls ~/.pi/agent/prompts/dolly-*.md = 9;
+   local asserted by test install.test.mjs:220.
+C2 no inline exec — grep -lF '!`' over all 9 = clean; ```bash present
+   (board 1, step 2); test install.test.mjs:185.
+C3 frontmatter + $ARGUMENTS preserved; plan.md diff = IDENTICAL to source.
+C4 idempotent — rerun = 9 "up-to-date" prompt lines; npm test 101/101.
+C5 live — pi -p "/dolly-board" ran end-to-end, printed the board, exit 0.
+
+All met. Moving to validating for the interactive-picker check only a human
+can do (-p cannot exercise the /dolly- completion menu).
+<!-- /dolly:step 0018 -->
