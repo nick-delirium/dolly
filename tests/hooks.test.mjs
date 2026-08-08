@@ -21,6 +21,16 @@ function dolly(cwd, args, env = {}) {
   });
 }
 
+/** run the CLI feeding `stdin` on its standard input */
+function dollyStdin(cwd, args, stdin, env = {}) {
+  return execFileSync(process.execPath, [CLI, ...args], {
+    cwd,
+    input: stdin,
+    encoding: 'utf8',
+    env: { ...process.env, DOLLY_USER: 'tester', NO_COLOR: '1', ...env },
+  });
+}
+
 /** a transcript for `cwd`, discoverable via DOLLY_TRANSCRIPT_DIR */
 function plantTranscript(root, cwd, sessionId, entries) {
   const dir = path.join(root, escapeCwd(cwd));
@@ -183,4 +193,87 @@ test('session-start --raw emits plain context, no Claude JSON envelope', (t) => 
   assert.match(out, /Active task 0001 "Injected" \(working\)/);
   assert.match(out, /do the thing well/);
   assert.match(out, /index, not the record/);
+});
+
+// ── auto-log via stdin (pi's event-driven path, bypasses transcript.ts) ──
+
+const piTurn = (o) =>
+  JSON.stringify({
+    session: 'pisess-abc',
+    turn: 1,
+    text: 'Wired the country filter as an AND-ed where clause.',
+    tools: ['edit', 'bash'],
+    files: ['src/search.ts'],
+    ...o,
+  });
+
+test('hook stop --from-stdin appends a step from an in-memory turn', (t) => {
+  const sb = sandbox();
+  t.after(sb.cleanup);
+  const store = Store.open();
+  const task = createTask(store, { title: 'Search', specShort: 's' });
+  setStatus(store, task, 'working');
+
+  dollyStdin(sb.dir, ['hook', 'stop', '--from-stdin'], piTurn({}), { DOLLY_DIR: sb.store });
+
+  const entries = stepEntries(task.dir);
+  assert.equal(entries.length, 1, 'one step logged from the turn');
+  const body = entries[0].text;
+  assert.match(body, /country filter/, 'summary/detail carries what the turn did');
+  assert.match(body, /src\/search\.ts/, 'files recorded');
+  // dedup marker lives in the source line
+  assert.match(body, /turn pisess-abc:1/);
+});
+
+test('hook stop --from-stdin is idempotent on the same turn (dedup)', (t) => {
+  const sb = sandbox();
+  t.after(sb.cleanup);
+  const store = Store.open();
+  const task = createTask(store, { title: 'Search', specShort: 's' });
+  setStatus(store, task, 'working');
+
+  dollyStdin(sb.dir, ['hook', 'stop', '--from-stdin'], piTurn({}), { DOLLY_DIR: sb.store });
+  dollyStdin(sb.dir, ['hook', 'stop', '--from-stdin'], piTurn({}), { DOLLY_DIR: sb.store });
+
+  assert.equal(stepEntries(task.dir).length, 1, 'the same turn is not logged twice');
+});
+
+test('hook stop --from-stdin respects autoLogOnlyWhenWorking (default)', (t) => {
+  const sb = sandbox();
+  t.after(sb.cleanup);
+  const store = Store.open();
+  const task = createTask(store, { title: 'Search', specShort: 's' });
+  // status stays `todo` — not working
+
+  dollyStdin(sb.dir, ['hook', 'stop', '--from-stdin'], piTurn({}), { DOLLY_DIR: sb.store });
+
+  assert.equal(stepEntries(task.dir).length, 0, 'no auto-log while the task is not working');
+});
+
+test('hook stop --from-stdin skips when the agent already logged this turn', (t) => {
+  const sb = sandbox();
+  t.after(sb.cleanup);
+  const store = Store.open();
+  const task = createTask(store, { title: 'Search', specShort: 's' });
+  setStatus(store, task, 'working');
+
+  // turn started well in the past; the task was just updated (agent logged) → skip
+  const stdin = piTurn({ turnStartMs: Date.now() - 60 * 60_000 });
+  dollyStdin(sb.dir, ['hook', 'stop', '--from-stdin'], stdin, { DOLLY_DIR: sb.store });
+
+  assert.equal(stepEntries(task.dir).length, 0, 'agent-logged turn is not double-logged');
+});
+
+test('hook stop --from-stdin swallows empty/garbage input', (t) => {
+  const sb = sandbox();
+  t.after(sb.cleanup);
+  const store = Store.open();
+  const task = createTask(store, { title: 'Search', specShort: 's' });
+  setStatus(store, task, 'working');
+
+  // must not throw (execFileSync throws on non-zero exit)
+  dollyStdin(sb.dir, ['hook', 'stop', '--from-stdin'], 'not json at all', { DOLLY_DIR: sb.store });
+  dollyStdin(sb.dir, ['hook', 'stop', '--from-stdin'], '', { DOLLY_DIR: sb.store });
+
+  assert.equal(stepEntries(task.dir).length, 0, 'garbage logs nothing');
 });

@@ -172,6 +172,9 @@ test('install pi --global writes the auto-inject extension', (t) => {
   // shells the raw variant so pi gets plain text, not Claude's JSON envelope
   assert.match(body, /hook.*session-start.*--raw/s);
   assert.doesNotMatch(body, /hookSpecificOutput/);
+  // auto-log: registers turn_end and feeds the in-memory turn to the stdin path
+  assert.match(body, /turn_end/);
+  assert.match(body, /hook.*stop.*--from-stdin/s);
   // returns the prompt augmented, never blocks: wrapped in try/catch
   assert.match(body, /try\s*\{/);
   assert.match(body, /systemPrompt/);

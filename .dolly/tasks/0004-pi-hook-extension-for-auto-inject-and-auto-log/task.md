@@ -6,23 +6,21 @@ status: working
 owner: rjshrjndrn
 collaborators: [rjshrjndrn]
 tags: []
-steps: 1
-spec_version: 2
+steps: 5
+spec_version: 3
 created: 2026-08-07T20:19:39Z
-updated: 2026-08-07T20:32:38Z
+updated: 2026-08-08T03:12:07Z
 ---
 
 # 0004 · pi hook extension for auto-inject and auto-log
 
 <!-- dolly:header -->
-`working` · spec v2 · @rjshrjndrn · 1 step · updated 2026-08-07 20:32Z
+`working` · spec v3 · @rjshrjndrn · 5 steps · updated 2026-08-08 03:12Z
 <!-- /dolly:header -->
 
 ## Spec
 
-Give pi the auto-INJECT half of Claude's ambient behavior: a pi extension that dolly install writes to ~/.pi/agent/extensions/dolly.ts, which on before_agent_start shells `dolly hook session-start` and prepends its output to the system prompt. Every pi session then opens already knowing the active task's spec, criteria, and recent steps — zero agent effort. Auto-log is explicitly deferred to a follow-up.
-
-Full spec: `context/spec.md` · plan: `context/plan.md`
+pi extension gives pi BOTH halves of Claude's ambient behavior. Auto-inject (before_agent_start → dolly hook session-start --raw, shipped). Auto-log (turn_end → NEW dolly hook stop --from-stdin, reads the turn from pi's in-memory event and bypasses the Claude-only transcript parser entirely). Global-only, failure always swallowed.
 
 ## Success Criteria
 
@@ -53,4 +51,17 @@ Plan complete. Status → todo.
 - `2026-08-07 20:28Z` @rjshrjndrn: status todo → working.
 - `2026-08-07 20:32Z` @rjshrjndrn: pi auto-inject extension lands: install writes ~/.pi/agent/extensions/dolly.ts, shells 'dolly hook session-start --raw' into systemPrompt on before_agent_start. Added --raw mode because the hook emits Claude's JSON envelope, not plain text — caught by running it. Untyped extension dodges the pi package-name split. 94/94.
   files: `.gemini/settings.json`, `.pi/git-root.cache`, `.pi/memory.db`, `.pi/memory.db-shm`, `.pi/memory.db-wal`, `.pi/skills/dolly-planning/SKILL.md` +10 more · full: `steps.md#0001`
+- `2026-08-07 20:32Z` @rjshrjndrn: status working → validating. restart pi in this repo, confirm the dolly context block is injected at session start (should see 'dolly store: ...' + active task). Then rename/remove the dolly bin and start pi — confirm it still boots clean (failure is swallowed, prompt unchanged).
+- `2026-08-07 20:35Z` @rjshrjndrn: Validated both criteria with data: fresh 'pi -p' session received the injected dolly-store context (auto-inject works); with dolly off PATH pi still booted and answered (failure swallowed). Confirmed pi auto-loads ~/.pi/agent/extensions/*.ts via the acm.ts precedent.
+  files: `src/install.ts` · full: `steps.md#0002`
+- `2026-08-07 20:37Z` @rjshrjndrn: status validating → done. Human confirmed auto-inject context visible at pi session start
+- `2026-08-07 20:48Z` @rjshrjndrn: Correction logged: pi auto-log is NOT a DOLLY_TRANSCRIPT_DIR tweak. transcript.ts overrides only the dir; escapeCwd + the line parser are both hardwired to Claude's schema, so pi lines parse to zero turns. Two mismatches (location + schema); env fixes at most one. v2 should take event-driven path (b): turn_end + a new 'dolly hook stop --from-stdin', bypassing transcript.ts entirely.
+  files: `src/core/transcript.ts` · full: `steps.md#0003`
+- `2026-08-08 03:05Z` @rjshrjndrn: status done → working.
+- `2026-08-08 03:09Z` @rjshrjndrn: spec → v3. User pulled auto-log forward into this task instead of a separate v2. Event-driven path (b) chosen: pi's turn_end carries the turn, so a stdin entrypoint sidesteps transcript.ts (which is Claude-only in location AND schema).
+  previous version kept in `spec.md`
+- `2026-08-08 03:11Z` @rjshrjndrn: Smoke-test: event-driven auto-log wired end to end.
+  files: `src/cli.ts`, `src/install.ts` · full: `steps.md#0004`
+- `2026-08-08 03:12Z` @rjshrjndrn: Auto-log v2 lands via event-driven path: new 'dolly hook stop --from-stdin' builds a step from a turn piped on stdin (dedup by session:turn, skip-if-agent-logged, config-gated, garbage-safe); extension gains turn_start/turn_end that reads pi's in-memory event and pipes it. Bypasses transcript.ts entirely. 99/99. NB: the 'Smoke-test...' line above is a test artifact, ignore it.
+  files: `.gemini/settings.json`, `.pi/git-root.cache`, `.pi/memory.db`, `.pi/memory.db-shm`, `.pi/memory.db-wal`, `.windsurf/rules/dolly.md` +8 more · full: `steps.md#0005`
 

@@ -1,10 +1,61 @@
 <!-- dolly spec · task 0004 -->
 # Spec — pi hook extension for auto-inject and auto-log
 
-**current: v2** · updated 2026-08-07T20:27:25Z by @rjshrjndrn · superseded versions are kept at the bottom of this file
+**current: v3** · updated 2026-08-08T03:09:24Z by @rjshrjndrn · superseded versions are kept at the bottom of this file
 
 <!-- dolly:spec-current -->
-<!-- v2 · 2026-08-07T20:27:25Z · @rjshrjndrn -->
+<!-- v3 · 2026-08-08T03:09:24Z · @rjshrjndrn -->
+
+# pi hook extension: auto-inject AND auto-log
+
+Give pi the full ambient behavior Claude has, via a single generated
+extension (~/.pi/agent/extensions/dolly.ts) written by `dolly install`.
+
+## Auto-inject (shipped v1)
+On `before_agent_start` the extension shells `dolly hook session-start
+--raw` and prepends the output to the system prompt. Reads .dolly, no
+transcript. Failure is swallowed — never blocks a session.
+
+## Auto-log (v2, this version)
+On `turn_end` the extension reads the turn IN MEMORY from the pi event
+(event.message content blocks + event.toolResults) and pipes a compact
+JSON to a NEW CLI entrypoint `dolly hook stop --from-stdin`, which
+builds a mechanical step. This DELIBERATELY bypasses src/core/transcript.ts:
+that parser is hardwired to Claude Code's on-disk JSONL schema in both
+location-escaping and record shape, so it cannot read pi sessions. pi's
+turn_end is data-carrying (unlike Claude's dataless Stop hook), so the
+event supplies everything a step needs — no file, no parser, no second
+schema to maintain.
+
+### stdin contract
+{ session, turn, turnStartMs?, text, tools[], files[] }
+
+### CLI `dolly hook stop --from-stdin` rules
+- no active task → no-op.
+- gated by config.reindex.autoLog and autoLogOnlyWhenWorking, same as
+  the Claude Stop path.
+- dedup key `<session>:<turn>` recorded in the step source; a re-fired
+  or replayed turn is skipped (mirrors importedTurns).
+- skip-if-agent-logged: if turnStartMs is given and the task was updated
+  after the turn started, the agent already logged — skip.
+- empty/garbage stdin → no-op, never throws.
+- always writes a detail (so the source/dedup marker persists) and a
+  synthesised outcome summary.
+
+## Out
+- A generic per-harness TranscriptParser abstraction (only needed if a
+  future dataless-hook harness forces path (a)).
+- Repo-local extension install (global only).
+<!-- /dolly:spec-current -->
+
+---
+
+## Superseded versions
+
+<!-- dolly:spec-history -->
+## v2 — 2026-08-07T20:27:25Z · @rjshrjndrn
+
+> superseded by v3: User pulled auto-log forward into this task instead of a separate v2. Event-driven path (b) chosen: pi's turn_end carries the turn, so a stdin entrypoint sidesteps transcript.ts (which is Claude-only in location AND schema).
 
 # pi hook extension for auto-inject and auto-log
 
@@ -120,13 +171,7 @@ Manual:
 **Q (2026-08-07 20:26Z):** Extension install scope — global vs repo-local?
 
 **A:** DECIDE global: ~/.pi/agent/extensions/dolly.ts. Consistent with how the dolly hooks are user-global for Claude, and pi's own extensions (acm, auto-session-name) live global. Repo-local extension loading unconfirmed; not needed for v1.
-<!-- /dolly:spec-current -->
 
----
-
-## Superseded versions
-
-<!-- dolly:spec-history -->
 ## v1 — 2026-08-07T20:19:39Z · @rjshrjndrn
 
 > superseded by v2: planning finished — spec derived from plan.md
