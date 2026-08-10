@@ -141,7 +141,7 @@ Feature that need questions answered → use the **dolly-planning** skill instea
 - Never hand-edit `.dolly/**`. CLI keep frontmatter, versions, step counters consistent. Hand-edit break them.
 - Steps append-only. Wrong step → new step correcting it. No rewriting history.
 - One task = one feature. Scope grow → new task, link it in the step detail.
-- Commit `.dolly/` with the code. Teammates read your steps, you read theirs.
+- Commit `.dolly/` with the code. Teammates read your steps, you read theirs. Exception: store kept outside the repo (`dolly whoami` say `linked`/`global`) — private to that user, nothing to commit, no `.dolly/` in the repo at all.
 - Every step stamped with GitHub handle (`gh api user` → git email → `$USER`). `DOLLY_USER` override.
 - `dolly housekeep --dry-run` show what ages out. Auto-runs once/day. Tune in `.dolly/config.json`.
 

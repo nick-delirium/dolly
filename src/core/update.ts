@@ -23,6 +23,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { exists, readJson, writeJson } from './fsx.js';
 import { PKG_ROOT, repoSlug } from './pkg.js';
+import { notAHuman, type Env } from './tty.js';
 
 export interface UpdateCache {
   checkedAt: string;
@@ -65,13 +66,17 @@ export function isNewer(latest: string | null, current: string): boolean {
 /** commands whose stdout/stderr is machine-read or agent-facing */
 const QUIET_COMMANDS = new Set(['mcp', 'hook', 'statusline', '__update-check']);
 
-export interface Env {
-  [k: string]: string | undefined;
-}
+export type { Env };
 
 /**
  * Why the notice must stay silent, or null when it may be shown.
  * Returning the reason rather than a boolean keeps it testable.
+ *
+ * The agent / CI / no-terminal half lives in core/tty.ts, shared with the setup
+ * wizard: the two must never disagree about whether a human is watching. Only
+ * the update-specific opt-outs are decided here. Note the terminal test stays
+ * stdout-only — an update notice is readable through a pipe-less stdin, and
+ * `updateNotice` is called on every command.
  */
 export function suppressed(
   cmd: string,
@@ -81,15 +86,8 @@ export function suppressed(
   if (opts.enabled === false) return 'disabled by config';
   if (env.DOLLY_NO_UPDATE_CHECK) return 'DOLLY_NO_UPDATE_CHECK';
   if (env.NO_UPDATE_NOTIFIER) return 'NO_UPDATE_NOTIFIER';
-  if (env.CI) return 'CI';
   if (QUIET_COMMANDS.has(cmd)) return `${cmd} output is machine-read`;
-  // read the agent markers off the injected env, not process.env — otherwise
-  // this is untestable from inside the very agent it is meant to stay quiet in
-  if (env.CLAUDECODE === '1' || env.CLAUDE_CODE_ENTRYPOINT) {
-    return 'running inside an agent, not a terminal';
-  }
-  if (!(opts.isTty ?? process.stdout.isTTY)) return 'not a terminal';
-  return null;
+  return notAHuman({ env, isTty: opts.isTty ?? Boolean(process.stdout.isTTY) });
 }
 
 /** `updateCheck: false` in a store's local.json, or in ~/.dolly/local.json */

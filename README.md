@@ -63,7 +63,16 @@ cd your-project
 dolly init
 ```
 
-`dolly init` detects the coding agents on your machine, wires each one, and creates `.dolly/`. Commit `.dolly/` — that's the shared memory.
+`dolly init` opens a short setup screen: where task memory lives, which of the coding agents on your machine to wire, whether to register the MCP server and the hooks, your handle, and the housekeeping windows. Every prompt opens on dolly's default, so pressing enter through it is the whole setup.
+
+Two answers are worth knowing before you run it:
+
+- **task memory** — `.dolly/` in the repo (commit it; that's how teammates and their agents share the memory), or `~/.dolly/projects/` (private to you, nothing added to the repo). Switch either way later; the store moves with your tasks in it.
+- **agent instructions** — written into this project (`CLAUDE.md`, `.claude/`, …) or into your user config (`~/.claude/`), so every project you open gets them.
+
+`dolly setup` reopens the same screen with your current settings filled in.
+
+Scripts and CI have no terminal, so the wizard never runs there: pass `--yes` for the defaults, or spell it out — `dolly init --store local --agents claude,cursor --no-mcp`. A bare `dolly init` with no terminal stops and tells you which flags it wanted rather than guessing.
 
 ### Claude Code (plugin)
 
@@ -116,7 +125,7 @@ dolly install cursor codex gemini    # or name them
 | opencode | `AGENTS.md` block, `opencode.json` MCP entry |
 | anything else | `AGENTS.md` block |
 
-All writes are idempotent, delimited by `<!-- dolly:instructions -->` markers. Re-run anytime. `--dry-run` to preview, `--global` for user-level instead of project-level, `--no-mcp` to skip MCP wiring.
+All writes are idempotent, delimited by `<!-- dolly:instructions -->` markers. Re-run anytime — `dolly setup` to pick from a list, or `dolly install` for the non-interactive form. `--dry-run` to preview, `--global` for user-level instead of project-level, `--no-mcp` to skip MCP wiring.
 
 ## Two ways in
 
@@ -507,12 +516,34 @@ Because it's all files in the repo, two people working the same feature see each
 
 ## Where the store lives
 
-In order: `DOLLY_DIR` → nearest `.dolly/` walking up from cwd → `<repo-root>/.dolly` → `~/.dolly/projects/<name>-<hash>` when you're not in a repo. Non-repo directories get a global store so dolly still works outside git.
+In order: `DOLLY_DIR` → nearest `.dolly/` walking up from cwd → a store this project is **linked** to → `<repo-root>/.dolly` → `~/.dolly/projects/<name>-<hash>` when you're not in a repo. Non-repo directories get a global store so dolly still works outside git.
+
+`~/.dolly/projects/index.json` is a registry of every project dolly has seen:
+
+```json
+{
+  "/Users/you/work/api": { "path": "/Users/you/work/api", "local": false,
+                           "store": "/Users/you/.dolly/projects/api-1a2b3c4d",
+                           "created": "2026-08-10T09:44:45Z" },
+  "/Users/you/proj/web": { "path": "/Users/you/proj/web", "local": true,
+                           "store": "/Users/you/proj/web/.dolly",
+                           "created": "2026-08-02T11:20:03Z" }
+}
+```
+
+`local` is recorded either way, so "in the repo on purpose" is a fact rather than the absence of one — otherwise a repo you set up deliberately and a repo dolly has never seen look identical. A project registers itself the first time anything writes to its store, so a clone of a teammate's repo appears without you running setup. Reads never write it.
+
+It is **descriptive, not authoritative**: resolution consults it only when no `.dolly/` was found on disk. A directory cannot be wrong about existing; an entry can be stale in every direction — store deleted, project moved, dotfiles half-synced onto a new machine. So when the two disagree — you went private, then pulled a branch where a teammate committed `.dolly/` — dolly uses the repo's store, because that is the one the whole team can see, and prints what it is ignoring instead of choosing in silence.
+
+`dolly projects` lists the registry: every project, whether its store is in the repo, task count and last activity. `--prune` forgets entries whose store is gone. `dolly whoami` answers the same question for the project you are standing in.
 
 ## Commands
 
 ```
-init [--agents a,b] [--local|--global] [--no-mcp] [--no-agents]
+init [--yes] [--store local|global] [--agents a,b] [--local|--global]
+     [--no-mcp] [--no-hooks] [--no-agents] [--dry-run]
+setup                                      reopen the setup screen
+projects [--json] [--prune]                every project dolly knows
 board | list [--all] [--status s] [--mine] [--tag t] [--json]
 show <ref> [--full] [--json]
 context <ref|current> [-n N] [--brief] [--json]

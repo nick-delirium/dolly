@@ -66,6 +66,13 @@ function writable(): Store {
   return s;
 }
 
+/**
+ * These mirror the CLI one-for-one, with one deliberate gap: `dolly setup` has
+ * no tool here. It is an interactive screen, stdout here is a JSON-RPC stream,
+ * and a prompt written to it would hang the client rather than ask anybody
+ * anything. Setup is a human's job; an agent that needs the same effect changes
+ * `dolly config` or runs `dolly install` with flags.
+ */
 const TOOLS: Tool[] = [
   {
     name: 'dolly_board',

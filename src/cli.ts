@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 import { spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { bool, list, num, parseArgs, repeated, str, type Args } from './core/args.js';
-import { exists, readStdin, readTextOr, writeJson } from './core/fsx.js';
+import { exists, isDir, readStdin, readTextOr, writeJson } from './core/fsx.js';
 import { changedFiles } from './core/git.js';
 import { archiveTask, housekeep, lastRun, maybeAuto, restoreTask } from './core/housekeep.js';
 import {
@@ -14,8 +16,25 @@ import {
   startPlan,
   PLAN_PROMPTS,
 } from './core/plan.js';
-import { color, renderBoard, renderContext, renderShow } from './core/render.js';
-import { Store, currentTask, locateStore } from './core/store.js';
+import {
+  color,
+  renderBoard,
+  renderContext,
+  renderProjects,
+  renderShow,
+  type ProjectRow,
+} from './core/render.js';
+import {
+  Store,
+  currentTask,
+  forgetProject,
+  globalStoreFor,
+  locateStore,
+  projectEntry,
+  projectKey,
+  readProjectIndex,
+  storeConflict,
+} from './core/store.js';
 import {
   addStep,
   createTask,
@@ -61,6 +80,9 @@ import {
 
 import { VERSION } from './core/pkg.js';
 import { runUpdateCheck, updateNotice } from './core/update.js';
+import { notAHuman } from './core/tty.js';
+import { PromptCancelled, stdioTerm } from './prompt.js';
+import { nonTtyHint, runWizard, type WizardPre } from './wizard.js';
 
 const HELP = `dolly ${VERSION} — long-term memory + feature planning for coding agents
 
@@ -68,8 +90,13 @@ USAGE
   dolly <command> [args] [flags]
 
 BOARD
-  init [--agents a,b] [--local|--global] [--no-mcp]
-                                              create .dolly/ and wire agents
+  init [--yes] [--store local|global] [--agents a,b] [--local|--global] [--no-mcp]
+                                              setup screen: where task memory
+                                              lives, which agents to wire.
+                                              --yes or no terminal → flags only
+  setup                                       reopen the setup screen later
+  projects [--json] [--prune]                 every project dolly knows, and
+                                              whether its store is in the repo
   board | list [--all] [--status s] [--mine]  task board grouped by status
   show <ref> [--full] [--json]                one task
   context <ref|current> [-n N] [--brief]      rehydrate payload for an agent
@@ -124,18 +151,25 @@ gh api user -> git user.email / user.name -> $USER. Identity lives in
 local.json, which is gitignored — a handle in the shared config.json would
 attribute every teammate's steps to one person, so it is ignored.
 
-Store location: DOLLY_DIR, else nearest .dolly/, else <repo-root>/.dolly,
-else ~/.dolly/projects/<name>-<hash>.`;
+Store location: DOLLY_DIR, else nearest .dolly/, else the store recorded for
+this project in ~/.dolly/projects/index.json, else <repo-root>/.dolly, else
+~/.dolly/projects/<name>-<hash>. \`dolly setup\` switches between the last two.
+
+That registry records every project and whether its store is in the repo, but a
+.dolly/ on disk always wins over it — a directory cannot be wrong about
+existing, an entry can be stale. \`dolly projects\` lists it.`;
 
 /** commands that write to the store; a newer store must refuse these */
 const WRITE_COMMANDS = new Set([
   'new', 'add', 'step', 'spec', 'status', 'move', 'retitle', 'rename',
   'archive', 'restore', 'plan', 'reindex', 'adopt', 'housekeep', 'hk',
-  'config', 'project',
+  'config', 'project', 'setup',
 ]);
 
 /** commands that must never touch the store on their own */
-const NO_AUTO = new Set(['help', 'version', 'mcp', 'install', 'init', 'migrate']);
+const NO_AUTO = new Set([
+  'help', 'version', 'mcp', 'install', 'init', 'setup', 'migrate', 'projects',
+]);
 
 /**
  * Version skew is the real hazard for a shared store: a teammate on an older
@@ -189,6 +223,27 @@ function notifyUpdate(cmd: string): void {
     if (notice) process.stderr.write(`${color.dim(notice)}\n`);
   } catch {
     /* an update check must never be the reason a command fails */
+  }
+}
+
+/**
+ * The recorded store and the one on disk disagree. dolly uses the repo's and
+ * says so: silently preferring either one hides a store somebody is expecting to
+ * see. Kept off machine-read streams.
+ */
+function warnStoreConflict(cmd: string): void {
+  if (cmd === 'mcp' || cmd === 'hook' || cmd === 'statusline' || cmd === 'setup') return;
+  try {
+    const clash = storeConflict(locateStore());
+    if (!clash) return;
+    process.stderr.write(
+      color.yellow(
+        `dolly: this project has a .dolly/ in the repo, but setup recorded a private store at ${clash.recorded.store}.\n` +
+          `  using ${clash.using} — \`dolly setup\` to pick one, or delete the other.\n`,
+      ),
+    );
+  } catch {
+    /* a warning must never be the reason a command fails */
   }
 }
 
@@ -269,13 +324,88 @@ function afterWrite(store: Store): void {
 
 /* ------------------------------- commands -------------------------------- */
 
-function cmdInit(args: Args): void {
+/**
+ * `dolly init` and `dolly setup` are the same screen; `init` additionally has
+ * the old non-interactive body behind it.
+ *
+ * A prompt with nobody to answer it is a hang, so the wizard only runs for a
+ * human at a terminal. Without one there are two cases and they are not the
+ * same: an invocation carrying flags already said what it wanted and takes the
+ * old path unchanged, while a bare one is missing exactly the input the wizard
+ * would have collected — so it stops and says how to supply it, rather than
+ * silently picking on the user's behalf.
+ */
+/** `--store local|global`, or undefined. Anything else is a typo, not a default. */
+function storeFlagOf(args: Args): 'local' | 'global' | undefined {
+  const v = str(args, 'store');
+  if (v === undefined) return undefined;
+  if (v === 'local' || v === 'global') return v;
+  fail(`--store takes local or global, not "${v}"`);
+}
+
+function wizardPre(args: Args): WizardPre {
+  return {
+    store: storeFlagOf(args),
+    agents: [...args.positional.slice(1), ...list(args, 'agents')],
+    scope: bool(args, 'global') ? 'global' : bool(args, 'local') ? 'local' : undefined,
+    mcp: bool(args, 'no-mcp') ? false : bool(args, 'mcp') ? true : undefined,
+    hooks: bool(args, 'no-hooks') ? false : undefined,
+  };
+}
+
+async function runSetup(args: Args): Promise<void> {
+  const term = stdioTerm();
+  try {
+    await runWizard({ term, pre: wizardPre(args), dryRun: bool(args, 'dry-run') });
+  } catch (err) {
+    if (err instanceof PromptCancelled) {
+      process.stderr.write(`\n${color.dim('cancelled — nothing further written')}\n`);
+      process.exit(130);
+    }
+    throw err;
+  } finally {
+    term.close();
+  }
+}
+
+async function cmdSetup(args: Args): Promise<void> {
+  const reason = notAHuman();
+  if (reason) fail(nonTtyHint('setup', reason));
+  return runSetup(args);
+}
+
+async function cmdInit(args: Args): Promise<void> {
+  const bare = Object.keys(args.flags).length === 0;
+  if (!bool(args, 'yes')) {
+    const reason = notAHuman();
+    if (!reason) return runSetup(args);
+    if (bare) fail(nonTtyHint('init', reason));
+  }
   const loc = locateStore();
-  const store = new Store(loc);
+  // `--store` has to work here too, not only in the wizard: this is the path
+  // scripts and CI take, and silently creating a repo-local store for someone
+  // who asked for a private one is worse than not offering the flag at all.
+  // Moving an existing store is deliberately not automatic — it relocates the
+  // only copy of the user's memory, so that stays behind a confirmation.
+  const want = storeFlagOf(args);
+  const target =
+    !want || loc.kind === 'env'
+      ? loc.root
+      : want === 'local'
+        ? path.join(loc.project, '.dolly')
+        : globalStoreFor(loc.project);
+  if (path.resolve(target) !== path.resolve(loc.root) && isDir(loc.root)) {
+    fail(
+      `this project already has a store at ${loc.root}, and --store ${want} wants ${target}. ` +
+        'Run `dolly setup` in a terminal to move it.',
+    );
+  }
+  const store = new Store({ ...loc, root: target, kind: want === 'global' ? 'linked' : loc.kind });
   const fresh = !store.exists;
   store.init();
   process.stdout.write(
-    `${fresh ? 'created' : 'store exists'} ${store.root} ${color.dim(`(${store.kind})`)}\n`,
+    `${fresh ? 'created' : 'store exists'} ${store.root} ` +
+      `${color.dim(`(${store.inProject ? 'in the repo' : 'private to you'})`)}\n`,
   );
   process.stdout.write(`identity: @${store.user} ${color.dim(`(${store.identity.source})`)}\n`);
 
@@ -298,7 +428,11 @@ function cmdInit(args: Args): void {
     for (const line of r.log) process.stdout.write(`  ${line}\n`);
   }
   process.stdout.write(
-    `\n${color.dim('commit .dolly/ so teammates share the same task memory')}\n`,
+    `\n${color.dim(
+      store.inProject
+        ? 'commit .dolly/ so teammates share the same task memory'
+        : 'this store is yours alone — nothing to commit',
+    )}\n`,
   );
 }
 
@@ -965,17 +1099,68 @@ function coerce(raw: string): unknown {
 
 function cmdWhoami(args: Args): void {
   const store = Store.open();
+  const entry = projectEntry(store.project);
   const data = {
     user: store.user,
     source: store.identity.source,
     store: store.root,
     storeKind: store.kind,
+    /** null until the project has been set up; then the recorded decision */
+    storeLocal: store.exists ? store.inProject : (entry?.local ?? null),
+    recorded: entry,
     project: store.project,
     initialized: store.exists,
   };
   if (bool(args, 'json')) return jsonOut(data);
   process.stdout.write(`@${store.user} ${color.dim(`(${store.identity.source})`)}\n`);
   process.stdout.write(`store ${store.root} ${color.dim(`(${store.kind}${store.exists ? '' : ', not initialized'})`)}\n`);
+  if (store.exists) {
+    process.stdout.write(
+      store.inProject
+        ? `${color.dim('in the repo — commit it, teammates share it')}\n`
+        : `${color.dim('outside the repo — private to you, nothing to commit')}\n`,
+    );
+  }
+}
+
+function cmdProjects(args: Args): void {
+  const index = readProjectIndex();
+  const here = projectKey(Store.open().project);
+  const rows: ProjectRow[] = Object.values(index)
+    .map((e) => {
+      const live = isDir(e.store);
+      const tasks = live ? new Store({ root: e.store, kind: 'found', project: e.path }).loadTasks(false) : [];
+      return {
+        path: e.path,
+        store: e.store,
+        local: e.local,
+        tasks: live ? tasks.length : null,
+        updated: tasks.map((t) => t.meta.updated).sort().pop() ?? null,
+        current: e.path === here,
+      };
+    })
+    .sort((a, b) => (b.updated ?? '').localeCompare(a.updated ?? '') || a.path.localeCompare(b.path));
+
+  if (bool(args, 'prune')) {
+    const gone = rows.filter((r) => r.tasks === null);
+    for (const r of gone) forgetProject(r.path);
+    process.stdout.write(
+      gone.length
+        ? `forgot ${gone.length} project(s) whose store is gone:\n${gone.map((r) => `  ${r.path}`).join('\n')}\n`
+        : 'nothing to prune — every recorded store is still there\n',
+    );
+    return;
+  }
+  if (bool(args, 'json')) return jsonOut({ projects: rows });
+  // realpath, or `~` shortening silently fails wherever HOME is a symlink or an
+  // unnormalised path — every row then prints in full and the table stops reading
+  let home = os.homedir();
+  try {
+    home = fs.realpathSync(home);
+  } catch {
+    /* keep the unresolved one */
+  }
+  process.stdout.write(`${renderProjects(rows, home)}\n`);
 }
 
 function cmdInstall(args: Args): void {
@@ -1028,6 +1213,14 @@ function cmdHook(args: Args): void {
     lines.push(
       'This repo has task history. Work here is a slice of an ongoing codebase, not a new project — check what already exists before deciding anything.',
     );
+    // The instruction block says task memory is a committed `.dolly/`. When it is
+    // not, say so here — otherwise the agent looks for a directory that is not
+    // there, or tells the user to commit a store that is deliberately private.
+    if (store.kind === 'linked' || store.kind === 'global') {
+      lines.push(
+        `The store is NOT in this repo — it lives at ${store.root}, private to this user. Nothing to commit, no \`.dolly/\` to find here, and teammates have their own. Read and write it exactly as normal through the \`dolly\` CLI.`,
+      );
+    }
 
     const brief = projectDigest(store, 1800);
     if (brief) {
@@ -1198,11 +1391,14 @@ async function main(): Promise<void> {
   }
 
   guardStoreVersion(cmd);
+  warnStoreConflict(cmd);
   notifyUpdate(cmd);
 
   switch (cmd) {
     case 'init':
       return cmdInit(args);
+    case 'setup':
+      return cmdSetup(args);
     case 'board':
     case 'list':
     case 'ls':
@@ -1249,6 +1445,8 @@ async function main(): Promise<void> {
       return cmdHousekeep(args);
     case 'config':
       return cmdConfig(args);
+    case 'projects':
+      return cmdProjects(args);
     case 'whoami':
       return cmdWhoami(args);
     case 'install':

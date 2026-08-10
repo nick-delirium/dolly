@@ -38,9 +38,12 @@ test('real flags still parse', () => {
 });
 
 test('short bundles, = form, repeats, stdin dash and -- still work', () => {
-  const bundle = parseArgs(['-xy', 'val']);
+  const bundle = parseArgs(['-xz', 'val']);
   assert.equal(bool(bundle, 'x'), true);
-  assert.equal(str(bundle, 'y'), 'val', 'last letter of a bundle takes the value');
+  assert.equal(str(bundle, 'z'), 'val', 'last letter of a bundle takes the value');
+
+  // -y is the conventional shorthand for --yes, so it aliases like the others
+  assert.equal(bool(parseArgs(['init', '-y']), 'yes'), true);
 
   // single letters alias to long names, so `-a` is `--answer`, not a flag named "a"
   const aliased = parseArgs(['-q', 'why?', '-a', 'because']);

@@ -42,13 +42,65 @@ const STATUS_ICON: Record<string, string> = {
   done: '●',
 };
 
+export interface ProjectRow {
+  path: string;
+  store: string;
+  local: boolean;
+  /** null when the recorded store is no longer there */
+  tasks: number | null;
+  updated: string | null;
+  current: boolean;
+}
+
+export function renderProjects(rows: ProjectRow[], home: string): string {
+  if (!rows.length) {
+    return `${C.bold('dolly · no projects yet')}\n\n${C.dim('`dolly init` in a project registers it here.')}`;
+  }
+  const short = (p: string) => (home && p.startsWith(home) ? `~${p.slice(home.length)}` : p);
+  const pathW = Math.max(...rows.map((r) => short(r.path).length));
+  const out = [C.bold(`dolly · ${rows.length} project${rows.length === 1 ? '' : 's'}`), ''];
+  for (const r of rows) {
+    const kind = r.local ? C.dim('in repo ') : C.cyan('private');
+    const where = r.tasks === null ? C.yellow('store missing') : C.dim(short(r.store));
+    const activity =
+      r.tasks === null
+        ? ''
+        : `${r.tasks} task${r.tasks === 1 ? '' : 's'}${r.updated ? ` · ${humanAge(r.updated)}` : ''}`;
+    out.push(
+      `  ${r.current ? C.green('▸') : ' '} ${short(r.path).padEnd(pathW)}  ${kind}  ${where}  ${C.dim(activity)}`.trimEnd(),
+    );
+  }
+  out.push('', C.dim('`dolly projects --prune` forgets entries whose store is gone.'));
+  return out.join('\n');
+}
+
+/**
+ * How this store relates to the project, in a few words. Empty for the ordinary
+ * case — a `.dolly/` in the repo needs no explaining.
+ */
+export function storeNote(store: Store): string {
+  switch (store.kind) {
+    case 'linked':
+      return ' (private to you — outside the repo, nothing to commit)';
+    case 'global':
+      return ' (global store — this directory is not a repo)';
+    case 'env':
+      return ' (pinned by DOLLY_DIR)';
+    default:
+      return '';
+  }
+}
+
 export function renderBoard(
   store: Store,
   tasks: Task[],
   opts: { showArchived?: boolean } = {},
 ): string {
   const out: string[] = [];
-  const header = `dolly · ${store.root}${store.kind === 'global' ? C.dim(' (global store)') : ''}`;
+  // Say out loud when the store is not in the repo. Otherwise the only clue is
+  // an unusual path, and "why can my teammate not see these tasks?" has no
+  // answer anywhere on screen.
+  const header = `dolly · ${store.root}${C.dim(storeNote(store))}`;
   out.push(C.bold(header), '');
 
   const statuses = [...store.config.statuses];

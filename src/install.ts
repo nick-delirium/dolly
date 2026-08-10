@@ -6,6 +6,15 @@ import { ensureDir, exists, isDir, readJson, readTextOr, rmrf, writeJson, writeT
 import { setBlock } from './core/md.js';
 import { AGENT_BLOCK, MCP_SERVER } from './templates/instructions.js';
 
+/**
+ * The user's config home, resolved per call rather than at module load: a
+ * global install writes into it, and a caller (a test, a sandbox) that changes
+ * HOME must not be silently ignored because this was captured on import.
+ */
+function home(): string {
+  return os.homedir();
+}
+
 export const PKG_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 export interface Target {
@@ -124,7 +133,7 @@ function cleanLegacy(project: string, base: string, dry: boolean): string[] {
   // place instead of a second one being appended below it
   for (const file of [
     path.join(project, 'CLAUDE.md'),
-    path.join(home, '.claude', 'CLAUDE.md'),
+    path.join(home(), '.claude', 'CLAUDE.md'),
     path.join(project, 'AGENTS.md'),
     path.join(project, 'GEMINI.md'),
     path.join(project, '.github', 'copilot-instructions.md'),
@@ -139,7 +148,7 @@ function cleanLegacy(project: string, base: string, dry: boolean): string[] {
     [path.join(project, '.mcp.json'), 'mcpServers'],
     [path.join(project, '.cursor', 'mcp.json'), 'mcpServers'],
     [path.join(project, '.gemini', 'settings.json'), 'mcpServers'],
-    [path.join(home, '.claude.json'), 'mcpServers'],
+    [path.join(home(), '.claude.json'), 'mcpServers'],
   ] as const) {
     const cfg = readJson<Record<string, any>>(file, {});
     if (!cfg[key]?.[OLD]) continue;
@@ -168,15 +177,14 @@ function cleanLegacy(project: string, base: string, dry: boolean): string[] {
   return out;
 }
 
-const home = os.homedir();
 
 export const TARGETS: Target[] = [
   {
     id: 'claude',
     label: 'Claude Code',
-    detect: (p) => isDir(path.join(home, '.claude')) || isDir(path.join(p, '.claude')),
+    detect: (p) => isDir(path.join(home(), '.claude')) || isDir(path.join(p, '.claude')),
     install(project, opts) {
-      const base = opts.global ? path.join(home, '.claude') : path.join(project, '.claude');
+      const base = opts.global ? path.join(home(), '.claude') : path.join(project, '.claude');
       const out: string[] = cleanLegacy(project, base, opts.dryRun);
       out.push(copyTree(path.join(PKG_ROOT, 'skills', 'dolly'), path.join(base, 'skills', 'dolly'), opts.dryRun));
       out.push(
@@ -189,7 +197,7 @@ export const TARGETS: Target[] = [
       out.push(copyTree(path.join(PKG_ROOT, 'commands'), path.join(base, 'commands', 'dolly'), opts.dryRun));
       out.push(
         writeBlock(
-          opts.global ? path.join(home, '.claude', 'CLAUDE.md') : path.join(project, 'CLAUDE.md'),
+          opts.global ? path.join(home(), '.claude', 'CLAUDE.md') : path.join(project, 'CLAUDE.md'),
           AGENT_BLOCK,
           opts.dryRun,
         ),
@@ -197,7 +205,7 @@ export const TARGETS: Target[] = [
       if (opts.mcp) {
         out.push(
           mergeMcpJson(
-            opts.global ? path.join(home, '.claude.json') : path.join(project, '.mcp.json'),
+            opts.global ? path.join(home(), '.claude.json') : path.join(project, '.mcp.json'),
             'mcpServers',
             opts.dryRun,
           ),
@@ -212,17 +220,17 @@ export const TARGETS: Target[] = [
   {
     id: 'codex',
     label: 'Codex CLI',
-    detect: () => isDir(path.join(home, '.codex')),
+    detect: () => isDir(path.join(home(), '.codex')),
     install(project, opts) {
       const out = [writeBlock(path.join(project, 'AGENTS.md'), AGENT_BLOCK, opts.dryRun)];
-      if (opts.mcp) out.push(tomlBlock(path.join(home, '.codex', 'config.toml'), opts.dryRun));
+      if (opts.mcp) out.push(tomlBlock(path.join(home(), '.codex', 'config.toml'), opts.dryRun));
       return out;
     },
   },
   {
     id: 'cursor',
     label: 'Cursor',
-    detect: (p) => isDir(path.join(home, '.cursor')) || isDir(path.join(p, '.cursor')),
+    detect: (p) => isDir(path.join(home(), '.cursor')) || isDir(path.join(p, '.cursor')),
     install(project, opts) {
       const rule = [
         '---',
@@ -243,7 +251,7 @@ export const TARGETS: Target[] = [
   {
     id: 'windsurf',
     label: 'Windsurf',
-    detect: (p) => isDir(path.join(home, '.codeium')) || isDir(path.join(p, '.windsurf')),
+    detect: (p) => isDir(path.join(home(), '.codeium')) || isDir(path.join(p, '.windsurf')),
     install(project, opts) {
       const file = path.join(project, '.windsurf', 'rules', 'dolly.md');
       if (!opts.dryRun) writeText(file, `${AGENT_BLOCK}\n`);
@@ -263,7 +271,7 @@ export const TARGETS: Target[] = [
   {
     id: 'gemini',
     label: 'Gemini CLI',
-    detect: () => isDir(path.join(home, '.gemini')),
+    detect: () => isDir(path.join(home(), '.gemini')),
     install(project, opts) {
       const out = [writeBlock(path.join(project, 'GEMINI.md'), AGENT_BLOCK, opts.dryRun)];
       if (opts.mcp) out.push(mergeMcpJson(path.join(project, '.gemini', 'settings.json'), 'mcpServers', opts.dryRun));
@@ -274,7 +282,7 @@ export const TARGETS: Target[] = [
     id: 'opencode',
     label: 'opencode',
     detect: () =>
-      isDir(path.join(home, '.config', 'opencode')) || isDir(path.join(home, '.opencode')),
+      isDir(path.join(home(), '.config', 'opencode')) || isDir(path.join(home(), '.opencode')),
     install(project, opts) {
       const out = [writeBlock(path.join(project, 'AGENTS.md'), AGENT_BLOCK, opts.dryRun)];
       if (opts.mcp) {

@@ -13,6 +13,9 @@ const ALIASES: Record<string, string> = {
   n: 'limit',
   h: 'help',
   v: 'version',
+  // without this `-y` parses as its own flag: the wizard would still open on a
+  // terminal, and off one the run would look flagged rather than defaulted
+  y: 'yes',
 };
 
 /**

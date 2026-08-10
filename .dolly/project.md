@@ -17,11 +17,13 @@ Must not stop being true: the store is human-readable markdown, and dolly never 
 
 - `src/core/` — the model. `store.ts` locates `.dolly/` and loads tasks; `task.ts` owns every write to a task (frontmatter, sections, log lines, spec versions, step entries); `md.ts` is the frontmatter + section + marker-block toolkit everything parses through.
 - `src/cli.ts` — argument parsing and every command. Thin: it formats, `core/` decides.
-- `src/mcp.ts` — MCP stdio server, hand-rolled JSON-RPC, mirrors the CLI 1:1.
+- `src/mcp.ts` — MCP stdio server, hand-rolled JSON-RPC, mirrors the CLI 1:1 with one deliberate gap: no wizard tool, because prompting a JSON-RPC stream is a hang.
+- `src/prompt.ts` + `src/wizard.ts` — the interactive setup screen. `prompt.ts` is four hand-rolled prompt types over an injectable `Term` (arrow-key raw mode, and a numbered fallback that is a first-class path, not a degraded one); `wizard.ts` is the question flow and applies the answers through `core/` and `install.ts`. Both live outside `core/` because they print.
+- `src/core/tty.ts` — the single "is a human watching?" predicate. Shared by the update notice and the wizard so the two can never disagree; the environment is injected, never read off `process.env`, so it is testable from inside an agent.
 - `src/reindex.ts` + `src/core/transcript.ts` — reads Claude Code session transcripts to adopt a conversation already in flight.
 - `src/core/project.ts` + `src/core/related.ts` — repo-level brief, and cross-task links derived from the files each step recorded.
 - `src/migrate.ts` — upgrades older stores in place. Every storage change needs a migration here.
-- `src/install.ts` — writes agent instructions for 8 targets, idempotently.
+- `src/install.ts` — writes agent instructions for 8 targets, idempotently. Resolves the user's home per call, never at module load, so a caller that redirects `HOME` is honoured.
 - `skills/`, `commands/`, `.claude-plugin/` — agent-facing instructions, shipped in the npm package and doubling as the Claude Code plugin.
 
 ## Conventions

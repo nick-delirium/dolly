@@ -4,7 +4,7 @@
  */
 export const AGENT_BLOCK = `## dolly — long-term memory + planning
 
-Task memory live in \`.dolly/\` (git-tracked, shared with teammates). You write it. Never guess state — read it.
+Task memory live in the dolly store. Usually \`.dolly/\` at repo root — git-tracked, shared with teammates. Some projects keep it outside the repo instead (private to that user, nothing to commit); session start say so, \`dolly whoami\` print the resolved path either way. Never assume \`.dolly/\` exist here. You write the store. Never guess state — read it.
 
 **One repo, many tasks.** Your task is a slice of an ongoing codebase, not a greenfield project. Before deciding anything on a new or unfamiliar task:
 - \`dolly project\` — repo-level truth: architecture, conventions, invariants. NOT the same as CLAUDE.md (that is how to behave; this is what is true about the code). You maintain it: \`dolly project set "<Section>" --text "..."\` when you learn something durable.
@@ -77,7 +77,7 @@ Then replace the imported spec with a real one (\`dolly spec\`) — import only 
 - One task = one feature. Split when scope grows, and check \`dolly related\` before opening one adjacent to existing work.
 - Never edit \`.dolly/**\` by hand — use the CLI so frontmatter, versions and step counters stay consistent.
 - Steps are append-only history. Correct a wrong step with a new step, don't rewrite.
-- Every step stamped with git/github user → teammates see who did what. Commit \`.dolly/\` with your code.`;
+- Every step stamped with git/github user → teammates see who did what. Commit \`.dolly/\` with your code when store live in repo — session start say when it does not, and then there is nothing to commit.`;
 
 export const MCP_SERVER = {
   command: 'dolly',

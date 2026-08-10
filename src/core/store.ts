@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { DEFAULT_CONFIG, STORE_VERSION, type Config, type Task, type TaskMeta } from './types.js';
@@ -28,11 +29,26 @@ export const LEGACY_STORE_DIRNAME = '.dollie';
 export const TASKS = 'tasks';
 export const ARCHIVE = 'archive';
 
+/**
+ * The store explains itself to whoever opens it — including the fact that an
+ * out-of-repo store is nobody else's to read, which is the opposite of the
+ * advice the in-repo one gives.
+ */
+function storeReadme(inRepo: boolean, project: string): string {
+  const opening = inRepo
+    ? `Commit this directory: it is how the next session — yours or a teammate's —
+knows what was decided and why.`
+    : `This store sits outside the project it describes (${project}), because that
+is what was chosen at setup. It is private to you: there is nothing to commit,
+and a teammate cloning that repo gets their own. \`dolly setup\` moves it back
+into the repo if you want it shared.`;
+  return STORE_README.replace('%OPENING%', opening);
+}
+
 const STORE_README = `# .dolly — shared task memory
 
 Written and read by coding agents via the \`dolly\` CLI (\`npm i -g dolly\`).
-Commit this directory: it is how the next session — yours or a teammate's —
-knows what was decided and why.
+%OPENING%
 
 - \`tasks/NNNN-slug/task.md\` — short spec, success criteria, and a one-line-per-event
   log. Start here. Every line is stamped with the GitHub handle of whoever did it.
@@ -51,16 +67,194 @@ step counters.
 export interface StoreLocation {
   root: string;
   /** where the store lives relative to the user's project */
-  kind: 'env' | 'found' | 'repo' | 'global';
+  kind: 'env' | 'found' | 'linked' | 'repo' | 'global';
   /** project root the store describes */
   project: string;
   /** true when this is a pre-rename `.dollie/` store awaiting `dolly migrate` */
   legacy?: boolean;
 }
 
-function globalStoreFor(project: string): string {
+/**
+ * Where dolly keeps its own state — identity cache, out-of-repo stores, the
+ * project index. `DOLLY_HOME` exists so a test can isolate all of that instead
+ * of writing into the developer's real home directory.
+ */
+let homeCache: { raw: string; resolved: string } | null = null;
+
+export function dollyHome(): string {
+  const raw = process.env.DOLLY_HOME?.trim() || os.homedir();
+  // Canonicalised, because this string ends up *inside* paths dolly stores and
+  // compares — a home given as a symlink or an unnormalised path would produce a
+  // different store path for the same physical directory, and break the `~`
+  // shortening that keeps `dolly projects` readable. Memoised on the raw value:
+  // this is on the hot path (once per ancestor directory per lookup), and the
+  // environment can still change within a process.
+  if (homeCache?.raw === raw) return homeCache.resolved;
+  let resolved = raw;
+  try {
+    resolved = fs.realpathSync(raw);
+  } catch {
+    /* not created yet — the unresolved path is the best answer available */
+  }
+  homeCache = { raw, resolved };
+  return resolved;
+}
+
+/** `~/.dolly/projects` — every store that deliberately lives outside its repo */
+export function projectsDir(home = dollyHome()): string {
+  return path.join(home, STORE_DIRNAME, 'projects');
+}
+
+export function indexFile(home = dollyHome()): string {
+  return path.join(projectsDir(home), 'index.json');
+}
+
+export function globalStoreFor(project: string, home = dollyHome()): string {
   const hash = crypto.createHash('sha1').update(project).digest('hex').slice(0, 8);
-  return path.join(os.homedir(), STORE_DIRNAME, 'projects', `${path.basename(project)}-${hash}`);
+  return path.join(projectsDir(home), `${path.basename(project)}-${hash}`);
+}
+
+/**
+ * Every project dolly has seen, and what was decided about it.
+ *
+ * Two jobs. First, keeping a store outside its repo has to survive the next
+ * command, and the repo is exactly where that answer cannot be written — a
+ * pointer file in a repo the user asked to keep clean defeats the choice. So
+ * the mapping lives next to the stores it points at.
+ *
+ * Second, `local` is recorded explicitly rather than implied by the absence of
+ * an entry. Otherwise "deliberately in the repo" and "never set up" look
+ * identical, and there is nowhere to answer "which projects does dolly know".
+ *
+ * It is deliberately *descriptive, not authoritative*: resolution consults it
+ * only when no `.dolly/` was found on disk. A directory that exists cannot be
+ * wrong about existing, while an entry can be stale in every direction — store
+ * deleted, project moved, dotfiles half-synced onto a new machine.
+ *
+ * Paths are keyed by realpath, so a symlinked or bind-mounted checkout resolves
+ * to the same entry instead of quietly getting a second store.
+ */
+export interface ProjectEntry {
+  /** project root this entry describes */
+  path: string;
+  /** true when the store lives inside the project — committed, shared */
+  local: boolean;
+  /** absolute store root */
+  store: string;
+  created: string;
+}
+
+export interface ProjectIndex {
+  [projectPath: string]: ProjectEntry;
+}
+
+export function projectKey(p: string): string {
+  const abs = path.resolve(p);
+  try {
+    return fs.realpathSync(abs);
+  } catch {
+    return abs;
+  }
+}
+
+/**
+ * Read tolerantly: the first shape of this file mapped a path straight to a
+ * store root, and was only ever written for out-of-repo stores. Normalising on
+ * read means no migration — the entry gains its fields the next time it is
+ * written.
+ */
+export function readProjectIndex(file = indexFile()): ProjectIndex {
+  const raw = readJson<Record<string, unknown>>(file, {});
+  const out: ProjectIndex = {};
+  for (const [k, v] of Object.entries(raw)) {
+    if (typeof v === 'string' && v) {
+      out[k] = { path: k, local: false, store: v, created: '' };
+      continue;
+    }
+    if (v && typeof v === 'object') {
+      const e = v as Partial<ProjectEntry>;
+      if (typeof e.store === 'string' && e.store) {
+        out[k] = {
+          path: typeof e.path === 'string' && e.path ? e.path : k,
+          local: e.local === true,
+          store: e.store,
+          created: typeof e.created === 'string' ? e.created : '',
+        };
+      }
+    }
+  }
+  return out;
+}
+
+export function projectEntry(project: string, file = indexFile()): ProjectEntry | null {
+  return readProjectIndex(file)[projectKey(project)] ?? null;
+}
+
+/**
+ * Record what this project's store is and whether it lives in the repo.
+ * A no-op when nothing changed, so it can be called on any write without
+ * rewriting a global file on every command.
+ */
+export function recordProject(
+  project: string,
+  opts: { store: string; local: boolean },
+  file = indexFile(),
+): void {
+  const index = readProjectIndex(file);
+  const key = projectKey(project);
+  const next: ProjectEntry = {
+    path: key,
+    local: opts.local,
+    store: path.resolve(opts.store),
+    created: index[key]?.created || new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
+  };
+  const prev = index[key];
+  if (prev && prev.local === next.local && prev.store === next.store && prev.created === next.created) {
+    return;
+  }
+  index[key] = next;
+  writeJson(file, index);
+}
+
+export function forgetProject(project: string, file = indexFile()): void {
+  const index = readProjectIndex(file);
+  const key = projectKey(project);
+  if (!(key in index)) return;
+  delete index[key];
+  writeJson(file, index);
+}
+
+/**
+ * The store this project was linked to, or null. An entry pointing at a
+ * directory that is no longer a store is treated as absent rather than as an
+ * error: a deleted or moved store must degrade to the normal lookup, never
+ * strand every command behind a stale line of JSON.
+ */
+export function linkedStore(project: string, file = indexFile()): string | null {
+  const entry = readProjectIndex(file)[projectKey(project)];
+  if (!entry) return null;
+  return isProjectStore(entry.store) ? entry.store : null;
+}
+
+/**
+ * The registry and the disk disagree: a `.dolly/` was found in the project, but
+ * the recorded decision points somewhere else that also exists.
+ *
+ * Reachable in ordinary use — go private, then pull a branch where a teammate
+ * committed `.dolly/`. Either resolution surprises someone, so dolly resolves to
+ * the repo (the shared choice, and the one a whole team can see) and reports the
+ * disagreement rather than picking in silence.
+ */
+export function storeConflict(
+  loc: StoreLocation,
+  file = indexFile(),
+): { recorded: ProjectEntry; using: string } | null {
+  if (loc.kind !== 'found') return null;
+  const entry = readProjectIndex(file)[projectKey(loc.project)];
+  if (!entry || entry.local) return null;
+  if (path.resolve(entry.store) === path.resolve(loc.root)) return null;
+  if (!isProjectStore(entry.store)) return null;
+  return { recorded: entry, using: loc.root };
 }
 
 /**
@@ -68,18 +262,30 @@ function globalStoreFor(project: string): string {
  * project store — otherwise every project under $HOME would resolve to it.
  */
 function isProjectStore(p: string): boolean {
-  if (p === path.join(os.homedir(), STORE_DIRNAME)) return false;
-  if (p === path.join(os.homedir(), LEGACY_STORE_DIRNAME)) return false;
+  if (p === path.join(dollyHome(), STORE_DIRNAME)) return false;
+  if (p === path.join(dollyHome(), LEGACY_STORE_DIRNAME)) return false;
   return isDir(p) && (exists(path.join(p, 'config.json')) || isDir(path.join(p, TASKS)));
 }
 
-/** Walk up looking for an existing `.dolly/`; fall back to repo root, then global. */
+/**
+ * Where this project's store lives. Precedence, nearest first:
+ *   DOLLY_DIR → a real `.dolly/` found walking up → a linked store for that
+ *   same directory → repo root → `~/.dolly/projects/<name>-<hash>`.
+ *
+ * Both directory tests happen at every level of the walk, so "nearest wins"
+ * holds across the two mechanisms: a `.dolly/` sitting in a directory beats an
+ * index entry for that directory, and either beats anything further up.
+ */
 export function locateStore(cwd = process.cwd()): StoreLocation {
   const env = process.env.DOLLY_DIR?.trim();
   if (env) {
     const root = path.resolve(env);
     return { root, kind: 'env', project: repoRoot(cwd) ?? cwd };
   }
+  // Read the registry once for the whole walk. Reading it per level meant one
+  // `dolly board` from a deep directory re-read the same file 26 times: every
+  // ancestor, times every locateStore() call a command makes.
+  const index = readProjectIndex();
   let dir = path.resolve(cwd);
   for (;;) {
     for (const name of [STORE_DIRNAME, LEGACY_STORE_DIRNAME]) {
@@ -93,6 +299,10 @@ export function locateStore(cwd = process.cwd()): StoreLocation {
         };
       }
     }
+    const entry = index[projectKey(dir)];
+    if (entry && isProjectStore(entry.store)) {
+      return { root: entry.store, kind: 'linked', project: dir };
+    }
     const parent = path.dirname(dir);
     if (parent === dir) break;
     dir = parent;
@@ -100,6 +310,29 @@ export function locateStore(cwd = process.cwd()): StoreLocation {
   const root = repoRoot(cwd);
   if (root) return { root: path.join(root, STORE_DIRNAME), kind: 'repo', project: root };
   return { root: globalStoreFor(path.resolve(cwd)), kind: 'global', project: path.resolve(cwd) };
+}
+
+/**
+ * Move a store, task memory intact. This is the only copy of the user's
+ * history, so: refuse a destination that already holds anything, copy before
+ * removing, and verify the task directories arrived — a truncated copy that
+ * then deletes the source is the one failure this must never have.
+ */
+export function moveStore(from: string, to: string): void {
+  if (!isDir(from)) throw new Error(`no store at ${from}`);
+  if (path.resolve(from) === path.resolve(to)) return;
+  if (exists(to) && fs.readdirSync(to).length) throw new Error(`destination is not empty: ${to}`);
+
+  const before = listDirs(path.join(from, TASKS));
+  ensureDir(path.dirname(to));
+  fs.cpSync(from, to, { recursive: true });
+
+  const after = listDirs(path.join(to, TASKS));
+  if (before.length !== after.length || before.some((d, i) => d !== after[i])) {
+    fs.rmSync(to, { recursive: true, force: true });
+    throw new Error(`copy verification failed (${before.length} task(s) in, ${after.length} out) — nothing moved`);
+  }
+  fs.rmSync(from, { recursive: true, force: true });
 }
 
 export class Store {
@@ -175,7 +408,23 @@ export class Store {
       writeText(ignore, `${base}${base && !base.endsWith('\n') ? '\n' : ''}${missing.join('\n')}\n`);
     }
     const readme = path.join(this.root, 'README.md');
-    if (!exists(readme)) writeText(readme, STORE_README);
+    if (!exists(readme)) {
+      writeText(readme, storeReadme(this.inProject, this.project));
+    }
+    // Register the project the first time anything writes to its store, so
+    // `dolly projects` sees a repo that was set up before the registry existed,
+    // or cloned from a teammate, without anyone running a command for it.
+    // `recordProject` is a no-op when nothing changed, so this is not a global
+    // write on every command. A DOLLY_DIR store was pinned by the environment
+    // rather than chosen, so it is left out.
+    if (this.kind !== 'env') {
+      recordProject(this.project, { store: this.root, local: this.inProject });
+    }
+  }
+
+  /** does the store live inside the project it describes? */
+  get inProject(): boolean {
+    return path.dirname(path.resolve(this.root)) === path.resolve(this.project);
   }
 
   saveConfig(next: Config): void {
