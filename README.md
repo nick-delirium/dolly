@@ -10,7 +10,7 @@ Three things it does:
 - **Plans.** A planning interview that refuses to finish while any section is `_TBD_` or any question unanswered, then derives the spec from the answers.
 - **Tracks.** `todo → planning → working → validating → done`, where `validating` means the agent is done and a human must verify. Agents never mark work done.
 
-Installs into Claude Code (plugin, skills, slash commands, MCP, hooks) and seven other agents. Zero runtime dependencies.
+Installs into Claude Code (plugin, skills, slash commands, MCP, hooks), pi (skills, MCP, and an extension giving the same auto-inject and auto-logging hooks), and seven other agents. Zero runtime dependencies.
 
 ```
 .dolly/
@@ -123,6 +123,7 @@ dolly install cursor codex gemini    # or name them
 | GitHub Copilot | `.github/copilot-instructions.md` block |
 | Gemini CLI | `GEMINI.md` block, `.gemini/settings.json` MCP entry |
 | opencode | `AGENTS.md` block, `opencode.json` MCP entry |
+| pi | `~/.pi/agent/skills/` (or `.pi/skills/` local), `SYSTEM.md`/`AGENTS.md` block, `mcp.json`, and `~/.pi/agent/extensions/dolly.ts` — a global-only extension that injects task context at session start and auto-logs a step per finished turn |
 | anything else | `AGENTS.md` block |
 
 All writes are idempotent, delimited by `<!-- dolly:instructions -->` markers. Re-run anytime — `dolly setup` to pick from a list, or `dolly install` for the non-interactive form. `--dry-run` to preview, `--global` for user-level instead of project-level, `--no-mcp` to skip MCP wiring.
@@ -403,6 +404,8 @@ At session start the Claude Code hook injects spec + criteria + the last six eve
 ## Automatic logging
 
 Yes, it wires itself up on install. With the plugin (or `dolly install claude`), the Stop hook fires after every finished turn and appends a mechanical step for it, derived from the transcript: what the agent reported, its work chain, the files it touched. The log has no holes even when the agent forgets.
+
+pi gets the same behavior through its extension, by a different route: pi's `turn_end` event already carries the finished turn, so the extension reads it in memory and pipes it to `dolly hook stop --from-stdin` — no transcript file involved. Auto-inject works the same way via `before_agent_start`. The gating and dedup rules below apply identically.
 
 It stays out of the way of real work:
 

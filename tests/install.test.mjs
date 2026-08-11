@@ -102,3 +102,158 @@ test('repeated prose flags are not split on commas', (t) => {
   // tags and file paths still split on commas — that is the documented shorthand
   assert.deepEqual(got.tags, ['a', 'b']);
 });
+
+test('pi is a registered install target', (t) => {
+  const sb = sandbox();
+  t.after(sb.cleanup);
+  Store.open().init();
+  const out = dolly(sb.dir, ['install', '--list'], { DOLLY_DIR: sb.store });
+  assert.match(out, /\bpi\b/, 'pi must appear in `dolly install --list`');
+});
+
+test('install pi wires skills, instructions, and mcp (local)', (t) => {
+  const sb = sandbox();
+  t.after(sb.cleanup);
+  Store.open().init();
+  fs.mkdirSync(path.join(sb.dir, '.pi', 'agent'), { recursive: true });
+
+  const out = dolly(sb.dir, ['install', 'pi', '--local'], { DOLLY_DIR: sb.store });
+  assert.match(out, /scope: local/);
+
+  // pi scans PROJECT skills at .pi/skills (NOT .pi/agent/skills)
+  assert.ok(
+    fs.existsSync(path.join(sb.dir, '.pi', 'skills', 'dolly', 'SKILL.md')),
+    'dolly skill copied into project .pi/skills',
+  );
+  assert.ok(
+    fs.existsSync(path.join(sb.dir, '.pi', 'skills', 'dolly-planning', 'SKILL.md')),
+    'dolly-planning skill copied into project .pi/skills',
+  );
+  assert.ok(
+    !fs.existsSync(path.join(sb.dir, '.pi', 'agent', 'skills')),
+    '.pi/agent/skills is a global-only path, never written for a local install',
+  );
+  assert.ok(fs.existsSync(path.join(sb.dir, 'AGENTS.md')), 'local instructions in AGENTS.md');
+  assert.ok(fs.existsSync(path.join(sb.dir, '.mcp.json')), 'local mcp in .mcp.json');
+
+  const mcp = JSON.parse(fs.readFileSync(path.join(sb.dir, '.mcp.json'), 'utf8'));
+  assert.deepEqual(mcp.mcpServers.dolly, { command: 'dolly', args: ['mcp'] });
+
+  const agents = fs.readFileSync(path.join(sb.dir, 'AGENTS.md'), 'utf8');
+  assert.match(agents, /<!-- dolly:instructions -->/);
+  assert.match(agents, /dolly context current/);
+});
+
+test('install pi --global resolves skills under ~/.pi/agent/skills', (t) => {
+  const sb = sandbox();
+  t.after(sb.cleanup);
+  Store.open().init();
+  // dry-run so the real home directory is never touched
+  const out = dolly(sb.dir, ['install', 'pi', '--global', '--dry-run'], { DOLLY_DIR: sb.store });
+  assert.match(out, /scope: global/);
+  assert.match(out, /[/\\]\.pi[/\\]agent[/\\]skills[/\\]dolly\b/);
+});
+
+test('install pi --global writes the auto-inject extension', (t) => {
+  const sb = sandbox();
+  t.after(sb.cleanup);
+  Store.open().init();
+  const fakeHome = path.join(sb.dir, 'home');
+  fs.mkdirSync(path.join(fakeHome, '.pi', 'agent'), { recursive: true });
+
+  dolly(sb.dir, ['install', 'pi', '--global'], { DOLLY_DIR: sb.store, HOME: fakeHome });
+
+  const ext = path.join(fakeHome, '.pi', 'agent', 'extensions', 'dolly.ts');
+  assert.ok(fs.existsSync(ext), 'extension written to ~/.pi/agent/extensions/dolly.ts');
+
+  const body = fs.readFileSync(ext, 'utf8');
+  // registers the injection hook and shells the existing dolly command
+  assert.match(body, /before_agent_start/);
+  // shells the raw variant so pi gets plain text, not Claude's JSON envelope
+  assert.match(body, /hook.*session-start.*--raw/s);
+  assert.doesNotMatch(body, /hookSpecificOutput/);
+  // auto-log: registers turn_end and feeds the in-memory turn to the stdin path
+  assert.match(body, /turn_end/);
+  assert.match(body, /hook.*stop.*--from-stdin/s);
+  // returns the prompt augmented, never blocks: wrapped in try/catch
+  assert.match(body, /try\s*\{/);
+  assert.match(body, /systemPrompt/);
+  // no hard dependency on a specific pi package name
+  assert.doesNotMatch(body, /pi-coding-agent/);
+});
+
+test('install pi --global writes the slash commands as prompts, transformed', (t) => {
+  const sb = sandbox();
+  t.after(sb.cleanup);
+  Store.open().init();
+  const fakeHome = path.join(sb.dir, 'home');
+  fs.mkdirSync(path.join(fakeHome, '.pi', 'agent'), { recursive: true });
+
+  dolly(sb.dir, ['install', 'pi', '--global'], { DOLLY_DIR: sb.store, HOME: fakeHome });
+
+  const prompts = path.join(fakeHome, '.pi', 'agent', 'prompts');
+  // flat files named dolly-<cmd>.md → invoked as /dolly-<cmd>
+  assert.ok(fs.existsSync(path.join(prompts, 'dolly-board.md')), 'board prompt written');
+  assert.ok(fs.existsSync(path.join(prompts, 'dolly-step.md')), 'step prompt written');
+  const written = fs.readdirSync(prompts).filter((f) => f.startsWith('dolly-'));
+  assert.equal(written.length, 9, 'all nine commands installed as prompts');
+
+  const board = fs.readFileSync(path.join(prompts, 'dolly-board.md'), 'utf8');
+  // frontmatter + $ARGUMENTS survive (pi understands both)
+  assert.match(board, /description: Show the dolly task board/);
+  assert.match(board, /\$ARGUMENTS/);
+  // the Claude inline-exec syntax is gone, replaced by a fenced bash block
+  assert.doesNotMatch(board, /!`/);
+  assert.match(board, /```bash\ndolly board \$ARGUMENTS\n```/);
+
+  // a command with two inline-exec lines transforms both
+  const step = fs.readFileSync(path.join(prompts, 'dolly-step.md'), 'utf8');
+  assert.doesNotMatch(step, /!`/);
+  assert.match(step, /```bash\ndolly show \$\{ARGUMENTS:-current\} 2>&1 \| head -20\n```/);
+  assert.match(step, /```bash\ngit status --porcelain 2>\/dev\/null \| head -30\n```/);
+
+  // plan.md has no inline-exec — it must copy through untouched
+  const plan = fs.readFileSync(path.join(prompts, 'dolly-plan.md'), 'utf8');
+  assert.match(plan, /Follow the \*\*dolly-planning\*\* skill/);
+});
+
+test('install pi commands are local when scope is local', (t) => {
+  const sb = sandbox();
+  t.after(sb.cleanup);
+  Store.open().init();
+  fs.mkdirSync(path.join(sb.dir, '.pi'), { recursive: true });
+
+  dolly(sb.dir, ['install', 'pi', '--local'], { DOLLY_DIR: sb.store });
+
+  // pi scans project prompts at .pi/prompts (sibling of .pi/skills)
+  assert.ok(
+    fs.existsSync(path.join(sb.dir, '.pi', 'prompts', 'dolly-board.md')),
+    'board prompt written to project .pi/prompts',
+  );
+});
+
+test('install pi extension is idempotent on rerun', (t) => {
+  const sb = sandbox();
+  t.after(sb.cleanup);
+  Store.open().init();
+  const fakeHome = path.join(sb.dir, 'home');
+  fs.mkdirSync(path.join(fakeHome, '.pi', 'agent'), { recursive: true });
+
+  dolly(sb.dir, ['install', 'pi', '--global'], { DOLLY_DIR: sb.store, HOME: fakeHome });
+  const second = dolly(sb.dir, ['install', 'pi', '--global'], { DOLLY_DIR: sb.store, HOME: fakeHome });
+  assert.match(second, /up-to-date .*extensions[/\\]dolly\.ts/);
+});
+
+test('install pi is idempotent on rerun', (t) => {
+  const sb = sandbox();
+  t.after(sb.cleanup);
+  Store.open().init();
+  fs.mkdirSync(path.join(sb.dir, '.pi', 'agent'), { recursive: true });
+
+  dolly(sb.dir, ['install', 'pi', '--local'], { DOLLY_DIR: sb.store });
+  const second = dolly(sb.dir, ['install', 'pi', '--local'], { DOLLY_DIR: sb.store });
+
+  // instructions + mcp report no change the second time round
+  assert.match(second, /up-to-date .*AGENTS\.md/);
+  assert.match(second, /up-to-date .*\.mcp\.json/);
+});

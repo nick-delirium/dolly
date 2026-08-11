@@ -1195,7 +1195,7 @@ function cmdHook(args: Args): void {
   const which = args.positional[1];
   const store = Store.open();
   if (!store.exists) {
-    if (which === 'session-start') emitSessionStart('');
+    if (which === 'session-start') emitSessionStart('', args.flags.raw === true);
     return;
   }
   const tasks = store.loadTasks(false);
@@ -1282,7 +1282,7 @@ function cmdHook(args: Args): void {
         'Before opening one: `dolly board --all` to check nothing already covers it, and `dolly related --files <the files you expect to touch>` to find who has been in that code and what they decided.',
       );
     }
-    emitSessionStart(lines.join('\n'));
+    emitSessionStart(lines.join('\n'), args.flags.raw === true);
     return;
   }
 
@@ -1290,6 +1290,45 @@ function cmdHook(args: Args): void {
     if (!active) return;
     const hk = store.config.reindex;
     const working = active.meta.status === 'working';
+
+    // Event-driven auto-log (pi): the harness hands us the turn on stdin, so we
+    // never touch a transcript file. Deliberately bypasses transcript.ts, which
+    // only understands Claude Code's on-disk JSONL schema.
+    if (args.flags['from-stdin'] === true) {
+      if (!hk.autoLog || (!working && hk.autoLogOnlyWhenWorking)) return;
+      let turn: {
+        session?: string;
+        turn?: number | string;
+        turnStartMs?: number;
+        text?: string;
+        tools?: string[];
+        files?: string[];
+      };
+      try {
+        turn = JSON.parse(readStdin());
+      } catch {
+        return; // garbage or empty input — log nothing, never throw
+      }
+      if (!turn || typeof turn !== 'object') return;
+      const text = (turn.text ?? '').trim();
+      const tools = Array.isArray(turn.tools) ? turn.tools.filter(Boolean) : [];
+      const files = Array.isArray(turn.files) ? turn.files.filter(Boolean) : [];
+      if (!text && !tools.length && !files.length) return; // nothing substantive
+
+      // the agent logged its own step during this turn → don't double-log
+      if (turn.turnStartMs && Date.parse(active.meta.updated) >= turn.turnStartMs) return;
+
+      const turnId = `${turn.session ?? 'pi'}:${turn.turn ?? 0}`;
+      if (importedTurns(active).has(turnId)) return; // dedup a re-fired/replayed turn
+
+      addStep(store, active, {
+        summary: stopStdinSummary(text, tools),
+        files,
+        detail: stopStdinDetail(text, tools),
+        source: `pi session ${turn.session ?? 'unknown'} · turn ${turnId}`,
+      });
+      return;
+    }
 
     // Auto-log: append a mechanical step for the turn that just ended, unless
     // the agent already logged one itself (which bumps `updated` past the turn's
@@ -1338,14 +1377,41 @@ function cmdHook(args: Args): void {
   fail(`unknown hook "${which}" — use session-start|stop`);
 }
 
+/** one-line outcome for an auto-logged pi turn — first real line, else the tools */
+function stopStdinSummary(text: string, tools: string[]): string {
+  const first = text
+    .split('\n')
+    .map((l) => l.trim())
+    .find((l) => l.length > 0);
+  if (first) return first.length > 200 ? `${first.slice(0, 197)}…` : first;
+  return tools.length ? `Ran ${tools.join(', ')}.` : 'Turn with no written summary.';
+}
+
+/** full step body for an auto-logged pi turn */
+function stopStdinDetail(text: string, tools: string[]): string {
+  const parts: string[] = [];
+  if (text) parts.push(text);
+  if (tools.length) parts.push(`tools: ${tools.join(', ')}`);
+  parts.push(
+    '_Auto-logged by the pi extension from the turn_end event, not written by a human. Correct it with a follow-up `dolly step` if it misleads._',
+  );
+  return parts.join('\n\n');
+}
+
 /** last N non-empty lines of a section — a cheap "what just happened" view */
 function tailLines(text: string, n: number): string {
   const lines = text.split('\n').filter((l) => l.trim());
   return lines.slice(-n).join('\n');
 }
 
-function emitSessionStart(context: string): void {
+function emitSessionStart(context: string, raw = false): void {
   if (!context.trim()) return;
+  // raw: plain text for non-Claude harnesses (e.g. the pi extension) that do
+  // not speak Claude Code's hook envelope. Default: the Claude JSON envelope.
+  if (raw) {
+    process.stdout.write(`${context}\n`);
+    return;
+  }
   process.stdout.write(
     `${JSON.stringify({
       hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: context },
