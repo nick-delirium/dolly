@@ -100,6 +100,26 @@ export function dollyHome(): string {
   return resolved;
 }
 
+/**
+ * Collapse a path under the user's real home to a leading `~`, so values
+ * stored in index.json survive a move to a machine with a different home.
+ * A path outside home (a custom store dir) is returned unchanged. Anchored on
+ * a path boundary so /home/bobby never matches home /home/bob.
+ */
+export function tildeEncode(abs: string): string {
+  const home = os.homedir();
+  if (abs === home) return '~';
+  const prefix = home.endsWith(path.sep) ? home : home + path.sep;
+  return abs.startsWith(prefix) ? '~/' + abs.slice(prefix.length) : abs;
+}
+
+/** Inverse of tildeEncode: `~`/`~/...` expand against the current home; else unchanged. */
+export function tildeExpand(rel: string): string {
+  if (rel === '~') return os.homedir();
+  if (rel.startsWith('~/')) return path.join(os.homedir(), rel.slice(2));
+  return rel;
+}
+
 /** `~/.dolly/projects` — every store that deliberately lives outside its repo */
 export function projectsDir(home = dollyHome()): string {
   return path.join(home, STORE_DIRNAME, 'projects');
