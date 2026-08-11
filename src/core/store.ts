@@ -106,8 +106,23 @@ export function dollyHome(): string {
  * A path outside home (a custom store dir) is returned unchanged. Anchored on
  * a path boundary so /home/bobby never matches home /home/bob.
  */
-export function tildeEncode(abs: string): string {
+/**
+ * The user's home, symlinks resolved. os.homedir() returns $HOME as the shell
+ * set it, which on macOS is the unresolved /var or /tmp symlink, while every
+ * path we compare against is realpath'd — so without this the prefix never
+ * matches and nothing tilde-encodes.
+ */
+function realHome(): string {
   const home = os.homedir();
+  try {
+    return fs.realpathSync(home);
+  } catch {
+    return home;
+  }
+}
+
+export function tildeEncode(abs: string): string {
+  const home = realHome();
   if (abs === home) return '~';
   const prefix = home.endsWith(path.sep) ? home : home + path.sep;
   return abs.startsWith(prefix) ? '~/' + abs.slice(prefix.length) : abs;
@@ -115,8 +130,8 @@ export function tildeEncode(abs: string): string {
 
 /** Inverse of tildeEncode: `~`/`~/...` expand against the current home; else unchanged. */
 export function tildeExpand(rel: string): string {
-  if (rel === '~') return os.homedir();
-  if (rel.startsWith('~/')) return path.join(os.homedir(), rel.slice(2));
+  if (rel === '~') return realHome();
+  if (rel.startsWith('~/')) return path.join(realHome(), rel.slice(2));
   return rel;
 }
 
