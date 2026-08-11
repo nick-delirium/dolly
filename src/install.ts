@@ -409,13 +409,13 @@ export const TARGETS: Target[] = [
   {
     id: 'pi',
     label: 'pi',
-    detect: (p) => isDir(path.join(home, '.pi', 'agent')) || isDir(path.join(p, '.pi')),
+    detect: (p) => isDir(path.join(home(), '.pi', 'agent')) || isDir(path.join(p, '.pi')),
     install(project, opts) {
       // pi's skill discovery differs by scope: global lives under
       // ~/.pi/agent/skills, but a trusted project is scanned at .pi/skills
       // (NOT .pi/agent/skills). Instructions + MCP use the usual repo files.
       const skills = opts.global
-        ? path.join(home, '.pi', 'agent', 'skills')
+        ? path.join(home(), '.pi', 'agent', 'skills')
         : path.join(project, '.pi', 'skills');
       const out: string[] = [];
       out.push(copyTree(path.join(PKG_ROOT, 'skills', 'dolly'), path.join(skills, 'dolly'), opts.dryRun));
@@ -428,7 +428,7 @@ export const TARGETS: Target[] = [
       );
       out.push(
         writeBlock(
-          opts.global ? path.join(home, '.pi', 'agent', 'SYSTEM.md') : path.join(project, 'AGENTS.md'),
+          opts.global ? path.join(home(), '.pi', 'agent', 'SYSTEM.md') : path.join(project, 'AGENTS.md'),
           AGENT_BLOCK,
           opts.dryRun,
         ),
@@ -436,7 +436,7 @@ export const TARGETS: Target[] = [
       if (opts.mcp) {
         out.push(
           mergeMcpJson(
-            opts.global ? path.join(home, '.pi', 'agent', 'mcp.json') : path.join(project, '.mcp.json'),
+            opts.global ? path.join(home(), '.pi', 'agent', 'mcp.json') : path.join(project, '.mcp.json'),
             'mcpServers',
             opts.dryRun,
           ),
@@ -445,7 +445,7 @@ export const TARGETS: Target[] = [
       // Slash commands install as prompt templates. pi discovers these
       // globally at ~/.pi/agent/prompts and per-project at <repo>/.pi/prompts.
       const prompts = opts.global
-        ? path.join(home, '.pi', 'agent', 'prompts')
+        ? path.join(home(), '.pi', 'agent', 'prompts')
         : path.join(project, '.pi', 'prompts');
       out.push(...installPiCommands(prompts, opts.dryRun));
       // Auto-inject extension is global-only: pi loads extensions from
@@ -453,7 +453,7 @@ export const TARGETS: Target[] = [
       if (opts.global) {
         out.push(
           writeFileIdempotent(
-            path.join(home, '.pi', 'agent', 'extensions', 'dolly.ts'),
+            path.join(home(), '.pi', 'agent', 'extensions', 'dolly.ts'),
             PI_EXTENSION,
             opts.dryRun,
           ),
