@@ -14,7 +14,7 @@ import {
   writeText,
 } from './fsx.js';
 import { parseFrontmatter } from './md.js';
-import { repoRoot } from './git.js';
+import { commonDir, repoRoot } from './git.js';
 import { resolveIdentity, type Identity } from './identity.js';
 
 export const STORE_DIRNAME = '.dolly';
@@ -129,9 +129,28 @@ export function indexFile(home = dollyHome()): string {
   return path.join(projectsDir(home), 'index.json');
 }
 
+/**
+ * The identity a repo keys its GLOBAL store on: the working-tree root, derived
+ * from the shared git dir so it is identical across every worktree. A repo and
+ * all its `git worktree add` checkouts therefore resolve to one store. null
+ * outside a git repo, where the caller falls back to the resolved path.
+ */
+export function repoIdentity(cwd: string): string | null {
+  const common = commonDir(cwd);
+  if (!common) return null;
+  return path.basename(common) === '.git' ? path.dirname(common) : common;
+}
+
+/** Index key for a repo's global store: its shared identity, else the resolved path. */
+export function globalKey(cwd: string): string {
+  return repoIdentity(cwd) ?? projectKey(cwd);
+}
+
 export function globalStoreFor(project: string, home = dollyHome()): string {
-  const hash = crypto.createHash('sha1').update(project).digest('hex').slice(0, 8);
-  return path.join(projectsDir(home), `${path.basename(project)}-${hash}`);
+  // Canonicalise so all worktrees of a repo name the same folder.
+  const id = globalKey(project);
+  const hash = crypto.createHash('sha1').update(id).digest('hex').slice(0, 8);
+  return path.join(projectsDir(home), `${path.basename(id)}-${hash}`);
 }
 
 /**
@@ -221,7 +240,9 @@ export function recordProject(
   file = indexFile(),
 ): void {
   const index = readProjectIndex(file);
-  const key = projectKey(project);
+  // Global stores key on the repo's shared identity so every worktree agrees;
+  // local stores stay per-path (a committed .dolly is a per-worktree fact).
+  const key = opts.local ? projectKey(project) : globalKey(project);
   const next: ProjectEntry = {
     path: key,
     local: opts.local,
@@ -236,10 +257,22 @@ export function recordProject(
   writeJson(file, index);
 }
 
+/**
+ * The entry for a project, whether it was recorded local (keyed per path) or
+ * global (keyed on the shared repo identity). Checking both means every helper
+ * resolves the same entry from any worktree of the repo.
+ */
+function entryKeyIn(index: ProjectIndex, project: string): string | null {
+  const local = projectKey(project);
+  if (local in index) return local;
+  const global = globalKey(project);
+  return global in index ? global : null;
+}
+
 export function forgetProject(project: string, file = indexFile()): void {
   const index = readProjectIndex(file);
-  const key = projectKey(project);
-  if (!(key in index)) return;
+  const key = entryKeyIn(index, project);
+  if (!key) return;
   delete index[key];
   writeJson(file, index);
 }
@@ -251,8 +284,10 @@ export function forgetProject(project: string, file = indexFile()): void {
  * strand every command behind a stale line of JSON.
  */
 export function linkedStore(project: string, file = indexFile()): string | null {
-  const entry = readProjectIndex(file)[projectKey(project)];
-  if (!entry) return null;
+  const index = readProjectIndex(file);
+  const key = entryKeyIn(index, project);
+  if (!key) return null;
+  const entry = index[key];
   return isProjectStore(entry.store) ? entry.store : null;
 }
 
@@ -270,7 +305,9 @@ export function storeConflict(
   file = indexFile(),
 ): { recorded: ProjectEntry; using: string } | null {
   if (loc.kind !== 'found') return null;
-  const entry = readProjectIndex(file)[projectKey(loc.project)];
+  const index = readProjectIndex(file);
+  const key = entryKeyIn(index, loc.project);
+  const entry = key ? index[key] : undefined;
   if (!entry || entry.local) return null;
   if (path.resolve(entry.store) === path.resolve(loc.root)) return null;
   if (!isProjectStore(entry.store)) return null;
@@ -327,9 +364,21 @@ export function locateStore(cwd = process.cwd()): StoreLocation {
     if (parent === dir) break;
     dir = parent;
   }
+  // A linked worktree never walks up to the main checkout's root, so a shared
+  // global store keyed on the repo identity is not reachable by the ancestor
+  // walk. Look it up directly. Restricted to global entries (local:false) so a
+  // per-path local entry is never hijacked across worktrees.
+  const gid = repoIdentity(cwd);
+  if (gid) {
+    const g = index[globalKey(cwd)];
+    if (g && !g.local && isProjectStore(g.store)) {
+      return { root: g.store, kind: 'linked', project: gid };
+    }
+  }
   const root = repoRoot(cwd);
   if (root) return { root: path.join(root, STORE_DIRNAME), kind: 'repo', project: root };
-  return { root: globalStoreFor(path.resolve(cwd)), kind: 'global', project: path.resolve(cwd) };
+  const project = gid ?? path.resolve(cwd);
+  return { root: globalStoreFor(project), kind: 'global', project };
 }
 
 /**
