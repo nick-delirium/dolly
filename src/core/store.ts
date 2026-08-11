@@ -14,7 +14,7 @@ import {
   writeText,
 } from './fsx.js';
 import { parseFrontmatter } from './md.js';
-import { commonDir, repoRoot } from './git.js';
+import { commonDir, ensureRepo, repoRoot } from './git.js';
 import { resolveIdentity, type Identity } from './identity.js';
 
 export const STORE_DIRNAME = '.dolly';
@@ -287,6 +287,10 @@ export function recordProject(
   }
   index[key] = next;
   writeProjectIndex(file, index);
+  // Opting a repo into a global store is the moment ~/.dolly/projects starts
+  // holding data worth backing up, so make it a git repo now (once, lazily).
+  // Local stores live in their own repo and need no backup here.
+  if (!opts.local) ensureRepo(projectsDir());
 }
 
 /**

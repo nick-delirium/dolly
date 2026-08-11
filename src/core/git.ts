@@ -19,6 +19,29 @@ export function repoRoot(cwd: string): string | null {
 }
 
 /**
+ * Make `dir` a git repo if it is not one already, so the out-of-repo stores it
+ * holds can be backed up and synced with a single push. Idempotent: an existing
+ * repo (and its history) is left untouched. Best-effort — a missing git binary
+ * must not break recording a store.
+ */
+export function ensureRepo(dir: string): void {
+  if (isDir(path.join(dir, '.git'))) return;
+  try {
+    execFileSync('git', ['init', '-q', dir], { stdio: 'ignore' });
+  } catch {
+    /* no git, or init failed — storage still works, just not one-push syncable */
+  }
+}
+
+function isDir(p: string): boolean {
+  try {
+    return fs.statSync(p).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Absolute, symlink-resolved path of the shared git dir, identical across every
  * worktree of a repo (unlike show-toplevel, which is per worktree). git returns
  * it relative by default; --path-format=absolute (git 2.31+, 2021) makes it
