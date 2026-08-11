@@ -1,4 +1,6 @@
 import { execFileSync } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
 
 function run(args: string[], cwd: string): string | null {
   try {
@@ -14,6 +16,17 @@ function run(args: string[], cwd: string): string | null {
 
 export function repoRoot(cwd: string): string | null {
   return run(['rev-parse', '--show-toplevel'], cwd);
+}
+
+/**
+ * Absolute, symlink-resolved path of the shared git dir, identical across every
+ * worktree of a repo (unlike show-toplevel, which is per worktree). git returns
+ * it relative by default; --path-format=absolute (git 2.31+, 2021) makes it
+ * absolute and fully resolves symlinks, so it matches the realpath'd keys
+ * repoIdentity/projectKey compute. null outside a repo.
+ */
+export function commonDir(cwd: string): string | null {
+  return run(['rev-parse', '--path-format=absolute', '--git-common-dir'], cwd);
 }
 
 export function gitConfig(key: string, cwd: string): string | null {
