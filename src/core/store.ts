@@ -14,7 +14,7 @@ import {
   writeText,
 } from './fsx.js';
 import { parseFrontmatter } from './md.js';
-import { repoRoot } from './git.js';
+import { commonDir, ensureRepo, repoRoot } from './git.js';
 import { resolveIdentity, type Identity } from './identity.js';
 
 export const STORE_DIRNAME = '.dolly';
@@ -100,6 +100,41 @@ export function dollyHome(): string {
   return resolved;
 }
 
+/**
+ * Collapse a path under the user's real home to a leading `~`, so values
+ * stored in index.json survive a move to a machine with a different home.
+ * A path outside home (a custom store dir) is returned unchanged. Anchored on
+ * a path boundary so /home/bobby never matches home /home/bob.
+ */
+/**
+ * The user's home, symlinks resolved. os.homedir() returns $HOME as the shell
+ * set it, which on macOS is the unresolved /var or /tmp symlink, while every
+ * path we compare against is realpath'd — so without this the prefix never
+ * matches and nothing tilde-encodes.
+ */
+function realHome(): string {
+  const home = os.homedir();
+  try {
+    return fs.realpathSync(home);
+  } catch {
+    return home;
+  }
+}
+
+export function tildeEncode(abs: string): string {
+  const home = realHome();
+  if (abs === home) return '~';
+  const prefix = home.endsWith(path.sep) ? home : home + path.sep;
+  return abs.startsWith(prefix) ? '~/' + abs.slice(prefix.length) : abs;
+}
+
+/** Inverse of tildeEncode: `~`/`~/...` expand against the current home; else unchanged. */
+export function tildeExpand(rel: string): string {
+  if (rel === '~') return realHome();
+  if (rel.startsWith('~/')) return path.join(realHome(), rel.slice(2));
+  return rel;
+}
+
 /** `~/.dolly/projects` — every store that deliberately lives outside its repo */
 export function projectsDir(home = dollyHome()): string {
   return path.join(home, STORE_DIRNAME, 'projects');
@@ -109,9 +144,41 @@ export function indexFile(home = dollyHome()): string {
   return path.join(projectsDir(home), 'index.json');
 }
 
+/**
+ * The identity a repo keys its GLOBAL store on: the working-tree root, derived
+ * from the shared git dir so it is identical across every worktree. A repo and
+ * all its `git worktree add` checkouts therefore resolve to one store. null
+ * outside a git repo, where the caller falls back to the resolved path.
+ */
+export function repoIdentity(cwd: string): string | null {
+  const common = commonDir(cwd);
+  if (!common) return null;
+  return path.basename(common) === '.git' ? path.dirname(common) : common;
+}
+
+/**
+ * Index key for a repo's LOCAL store: the resolved path, tilde-encoded so a
+ * synced index resolves under a different home.
+ */
+export function localKey(p: string): string {
+  return tildeEncode(projectKey(p));
+}
+
+/**
+ * Index key for a repo's GLOBAL store: its shared identity (so worktrees agree),
+ * tilde-encoded so a synced index resolves under a different home. Falls back to
+ * the resolved path outside a git repo.
+ */
+export function globalKey(cwd: string): string {
+  return tildeEncode(repoIdentity(cwd) ?? projectKey(cwd));
+}
+
 export function globalStoreFor(project: string, home = dollyHome()): string {
-  const hash = crypto.createHash('sha1').update(project).digest('hex').slice(0, 8);
-  return path.join(projectsDir(home), `${path.basename(project)}-${hash}`);
+  // Canonicalise so all worktrees of a repo name the same folder.
+  const id = globalKey(project);
+  const hash = crypto.createHash('sha1').update(id).digest('hex').slice(0, 8);
+  return path.join(projectsDir(home), `${path.basename(id)}-${hash}`);
+  // (id is tilde-encoded, so the folder name is stable across machines.)
 }
 
 /**
@@ -167,17 +234,20 @@ export function readProjectIndex(file = indexFile()): ProjectIndex {
   const raw = readJson<Record<string, unknown>>(file, {});
   const out: ProjectIndex = {};
   for (const [k, v] of Object.entries(raw)) {
+    // Stored values are tilde-encoded for portability; expand them to absolute
+    // for the current home so callers get real paths. The map KEY stays as
+    // written (tilde), matching the tilde keys lookups compute.
     if (typeof v === 'string' && v) {
-      out[k] = { path: k, local: false, store: v, created: '' };
+      out[k] = { path: tildeExpand(k), local: false, store: tildeExpand(v), created: '' };
       continue;
     }
     if (v && typeof v === 'object') {
       const e = v as Partial<ProjectEntry>;
       if (typeof e.store === 'string' && e.store) {
         out[k] = {
-          path: typeof e.path === 'string' && e.path ? e.path : k,
+          path: tildeExpand(typeof e.path === 'string' && e.path ? e.path : k),
           local: e.local === true,
-          store: e.store,
+          store: tildeExpand(e.store),
           created: typeof e.created === 'string' ? e.created : '',
         };
       }
@@ -186,8 +256,21 @@ export function readProjectIndex(file = indexFile()): ProjectIndex {
   return out;
 }
 
+/**
+ * Write the index back tilde-encoded. readProjectIndex hands callers an
+ * absolute-path view for convenience; this is its inverse, so a store synced to
+ * another home still resolves. Keys are already tilde-encoded.
+ */
+function writeProjectIndex(file: string, index: ProjectIndex): void {
+  const out: Record<string, ProjectEntry> = {};
+  for (const [k, e] of Object.entries(index)) {
+    out[k] = { ...e, path: tildeEncode(e.path), store: tildeEncode(e.store) };
+  }
+  writeJson(file, out);
+}
+
 export function projectEntry(project: string, file = indexFile()): ProjectEntry | null {
-  return readProjectIndex(file)[projectKey(project)] ?? null;
+  return readProjectIndex(file)[globalKey(project)] ?? readProjectIndex(file)[localKey(project)] ?? null;
 }
 
 /**
@@ -201,9 +284,14 @@ export function recordProject(
   file = indexFile(),
 ): void {
   const index = readProjectIndex(file);
-  const key = projectKey(project);
+  // Global stores key on the repo's shared identity so every worktree agrees;
+  // local stores stay per-path (a committed .dolly is a per-worktree fact).
+  // Both keys are tilde-encoded for portability.
+  const key = opts.local ? localKey(project) : globalKey(project);
+  // In-memory the index is absolute (readProjectIndex expanded it); keep next
+  // absolute too so dedup compares like with like. writeProjectIndex re-encodes.
   const next: ProjectEntry = {
-    path: key,
+    path: tildeExpand(key),
     local: opts.local,
     store: path.resolve(opts.store),
     created: index[key]?.created || new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
@@ -213,15 +301,31 @@ export function recordProject(
     return;
   }
   index[key] = next;
-  writeJson(file, index);
+  writeProjectIndex(file, index);
+  // Opting a repo into a global store is the moment ~/.dolly/projects starts
+  // holding data worth backing up, so make it a git repo now (once, lazily).
+  // Local stores live in their own repo and need no backup here.
+  if (!opts.local) ensureRepo(projectsDir());
+}
+
+/**
+ * The entry for a project, whether it was recorded local (keyed per path) or
+ * global (keyed on the shared repo identity). Checking both means every helper
+ * resolves the same entry from any worktree of the repo.
+ */
+function entryKeyIn(index: ProjectIndex, project: string): string | null {
+  const local = localKey(project);
+  if (local in index) return local;
+  const global = globalKey(project);
+  return global in index ? global : null;
 }
 
 export function forgetProject(project: string, file = indexFile()): void {
   const index = readProjectIndex(file);
-  const key = projectKey(project);
-  if (!(key in index)) return;
+  const key = entryKeyIn(index, project);
+  if (!key) return;
   delete index[key];
-  writeJson(file, index);
+  writeProjectIndex(file, index);
 }
 
 /**
@@ -231,8 +335,10 @@ export function forgetProject(project: string, file = indexFile()): void {
  * strand every command behind a stale line of JSON.
  */
 export function linkedStore(project: string, file = indexFile()): string | null {
-  const entry = readProjectIndex(file)[projectKey(project)];
-  if (!entry) return null;
+  const index = readProjectIndex(file);
+  const key = entryKeyIn(index, project);
+  if (!key) return null;
+  const entry = index[key];
   return isProjectStore(entry.store) ? entry.store : null;
 }
 
@@ -250,7 +356,9 @@ export function storeConflict(
   file = indexFile(),
 ): { recorded: ProjectEntry; using: string } | null {
   if (loc.kind !== 'found') return null;
-  const entry = readProjectIndex(file)[projectKey(loc.project)];
+  const index = readProjectIndex(file);
+  const key = entryKeyIn(index, loc.project);
+  const entry = key ? index[key] : undefined;
   if (!entry || entry.local) return null;
   if (path.resolve(entry.store) === path.resolve(loc.root)) return null;
   if (!isProjectStore(entry.store)) return null;
@@ -299,7 +407,7 @@ export function locateStore(cwd = process.cwd()): StoreLocation {
         };
       }
     }
-    const entry = index[projectKey(dir)];
+    const entry = index[localKey(dir)];
     if (entry && isProjectStore(entry.store)) {
       return { root: entry.store, kind: 'linked', project: dir };
     }
@@ -307,9 +415,21 @@ export function locateStore(cwd = process.cwd()): StoreLocation {
     if (parent === dir) break;
     dir = parent;
   }
+  // A linked worktree never walks up to the main checkout's root, so a shared
+  // global store keyed on the repo identity is not reachable by the ancestor
+  // walk. Look it up directly. Restricted to global entries (local:false) so a
+  // per-path local entry is never hijacked across worktrees.
+  const gid = repoIdentity(cwd);
+  if (gid) {
+    const g = index[globalKey(cwd)];
+    if (g && !g.local && isProjectStore(g.store)) {
+      return { root: g.store, kind: 'linked', project: gid };
+    }
+  }
   const root = repoRoot(cwd);
   if (root) return { root: path.join(root, STORE_DIRNAME), kind: 'repo', project: root };
-  return { root: globalStoreFor(path.resolve(cwd)), kind: 'global', project: path.resolve(cwd) };
+  const project = gid ?? path.resolve(cwd);
+  return { root: globalStoreFor(project), kind: 'global', project };
 }
 
 /**
