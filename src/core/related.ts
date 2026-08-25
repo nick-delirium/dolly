@@ -101,7 +101,7 @@ export function relatedByFiles(store: Store, files: string[], excludeId?: string
   if (!files.length) return [];
   const wanted = new Set(files);
   const out: RelatedTask[] = [];
-  for (const task of store.loadTasks(true)) {
+  for (const task of store.loadTasks()) {
     if (task.meta.id === excludeId) continue;
     const shared = filesOfTask(task).filter((f) => wanted.has(f));
     if (!shared.length) continue;
@@ -144,7 +144,7 @@ export function overlappingTasks(store: Store, title: string, min = 2): Overlap[
   const want = tokens(title);
   if (!want.size) return [];
   const out: Overlap[] = [];
-  for (const task of store.loadTasks(true)) {
+  for (const task of store.loadTasks()) {
     const words = [...tokens(task.meta.title)].filter((w) => want.has(w));
     if (words.length < min) continue;
     out.push({ task, words, outcome: latestOutcome(task, 120) });
@@ -157,7 +157,7 @@ export function overlappingTasks(store: Store, title: string, min = 2): Overlap[
 /** recently finished work, so a new task knows what just shipped */
 export function recentlyFinished(store: Store, limit = 5): Task[] {
   return store
-    .loadTasks(true)
+    .loadTasks()
     .filter((t) => t.meta.status === store.config.doneStatus || t.meta.status === store.config.reviewStatus)
     .sort(byRecency)
     .slice(0, limit);

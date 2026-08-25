@@ -14,6 +14,7 @@ import {
   updateNotice,
   upgradeCommand,
 } from '../dist/core/update.js';
+import { dirtyClone, planUpdate } from '../dist/core/selfupdate.js';
 import { sandbox } from './helpers.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -137,4 +138,31 @@ test('the upgrade command matches how this copy was installed', () => {
   assert.equal(installKind(ROOT), 'clone', 'this checkout is a git clone');
   assert.match(upgradeCommand('clone', ROOT), /^git -C .* pull && npm install$/);
   assert.match(upgradeCommand('package'), /^npm install -g github:nick-delirium\/dolly$/);
+});
+
+test('update plan matches the install kind, and dirty clones are caught', (t) => {
+  const clone = planUpdate('clone', '/tmp/somewhere');
+  assert.deepEqual(clone.steps, [
+    ['git', '-C', '/tmp/somewhere', 'pull', '--ff-only'],
+    ['npm', '--prefix', '/tmp/somewhere', 'install'],
+  ]);
+  assert.match(clone.reason, /checkout/);
+
+  const pkg = planUpdate('package');
+  assert.deepEqual(pkg.steps, [['npm', 'install', '-g', 'github:nick-delirium/dolly']]);
+
+  // a real repo has git; an empty dir does not
+  assert.equal(dirtyClone('/tmp/definitely-not-a-repo'), null);
+});
+
+test('the passive notice points at `dolly update`', (t) => {
+  const sb = sandbox();
+  t.after(sb.cleanup);
+  const cache = path.join(sb.dir, 'update.json');
+  fs.writeFileSync(
+    cache,
+    JSON.stringify({ checkedAt: new Date().toISOString(), latest: '9.9.9', source: 'git' }),
+  );
+  const notice = updateNotice('board', '0.1.0', { file: cache, isTty: true, env: {} });
+  assert.match(notice, /run: dolly update/);
 });

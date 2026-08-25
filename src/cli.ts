@@ -4,9 +4,14 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { bool, list, num, parseArgs, repeated, str, type Args } from './core/args.js';
-import { exists, isDir, readStdin, readTextOr, writeJson } from './core/fsx.js';
+import fs2 from 'node:fs';
+import path2 from 'node:path';
+import { exists, isDir, readStdin, readTextOr, writeJson, writeText } from './core/fsx.js';
+import { buildDigest, hasMemo, memoFile, renderDigest as renderMemoDigest, today } from './core/memo.js';
+import { applyPlan, dirtyClone, installedVersion, planUpdate } from './core/selfupdate.js';
+import { installKind, latestFromGitForCheck } from './core/update.js';
+
 import { changedFiles } from './core/git.js';
-import { archiveTask, housekeep, lastRun, maybeAuto, restoreTask } from './core/housekeep.js';
 import {
   addPlanQA,
   checkPlan,
@@ -34,6 +39,7 @@ import {
   projectKey,
   readProjectIndex,
   storeConflict,
+  AmbiguousRef,
 } from './core/store.js';
 import {
   addStep,
@@ -45,6 +51,7 @@ import {
   setStatus,
   shortSpec,
   updateSpec,
+  linkSession,
 } from './core/task.js';
 import { DEFAULT_CONFIG, type Task } from './core/types.js';
 import { humanAge } from './core/time.js';
@@ -81,7 +88,7 @@ import {
 import { VERSION } from './core/pkg.js';
 import { runUpdateCheck, updateNotice } from './core/update.js';
 import { notAHuman } from './core/tty.js';
-import { PromptCancelled, stdioTerm } from './prompt.js';
+import { PromptCancelled, filterSelect, stdioTerm } from './prompt.js';
 import { nonTtyHint, runWizard, type WizardPre } from './wizard.js';
 
 const HELP = `dolly ${VERSION} — long-term memory + feature planning for coding agents
@@ -131,7 +138,9 @@ ADOPT AN ONGOING CONVERSATION
                                               print a digest, optionally import it
 
 MAINTENANCE
-  housekeep [--dry-run] [--json]
+  memo [--date YYYY-MM-DD] [--json]           today's digest: tasks, chats, commits
+      [--save --file f|-]                      save agent-written prose as the day's memo
+  update [--check] [--dry-run] [--force]      self-update: pull+rebuild (clone) or reinstall (npm)
   migrate [--dry-run]                         upgrade an older .dolly/ layout
   config [get <key> | set <key> <value>]
   whoami
@@ -162,7 +171,7 @@ existing, an entry can be stale. \`dolly projects\` lists it.`;
 /** commands that write to the store; a newer store must refuse these */
 const WRITE_COMMANDS = new Set([
   'new', 'add', 'step', 'spec', 'status', 'move', 'retitle', 'rename',
-  'archive', 'restore', 'plan', 'reindex', 'adopt', 'housekeep', 'hk',
+  'plan', 'reindex', 'adopt', 'memo',
   'config', 'project', 'setup',
 ]);
 
@@ -287,12 +296,44 @@ function jsonOut(data: unknown): void {
   process.stdout.write(`${JSON.stringify(data, null, 2)}\n`);
 }
 
+/**
+ * Resolve a ref from the command line, with a face when it is ambiguous:
+ * several matches open the type-to-filter picker in a TTY, or print a numbered
+ * list and stop in a script. Exact ids/hashes/slugs never reach this path.
+ */
+async function resolveRef(store: Store, ref: string): Promise<Task> {
+  try {
+    return store.resolve(ref);
+  } catch (err) {
+    if (!(err instanceof AmbiguousRef)) throw err;
+    if (err.candidates.length <= 1) throw err;
+    const choices = err.candidates.map((t) => ({
+      value: t,
+      label: `${t.meta.id} ${t.meta.title}`,
+      hint: t.meta.status,
+    }));
+    if (!process.stdout.isTTY) {
+      process.stderr.write(`${color.red(`ambiguous ref "${ref}"`)} — candidates:\n`);
+      for (const c of choices) process.stderr.write(`  ${c.label}  (${c.hint})\n`);
+      fail('disambiguate by id/hash, or run from an interactive terminal');
+    }
+    const term = stdioTerm();
+    try {
+      return await filterSelect(term, { question: `Which task is "${ref}"?`, choices, initial: ref });
+    } catch (e) {
+      if (e instanceof PromptCancelled) fail('cancelled');
+      throw e;
+    } finally {
+      term.close();
+    }
+  }
+}
+
 function taskJson(task: Task): Record<string, unknown> {
   return {
     ...task.meta,
     dir: task.dir,
     rel: task.rel,
-    archived: task.archived,
     spec_short: shortSpec(task),
     criteria: criteria(task),
     log: logSection(task),
@@ -311,15 +352,6 @@ function installOpts(args: Args, store: Store) {
       : store.config.install.scope === 'global';
   const mcp = bool(args, 'no-mcp') ? false : bool(args, 'mcp') ? true : store.config.install.mcp;
   return { global, mcp, hooks: !bool(args, 'no-hooks'), dryRun: bool(args, 'dry-run') };
-}
-
-function afterWrite(store: Store): void {
-  const report = maybeAuto(store);
-  if (report && report.actions.length) {
-    process.stderr.write(
-      color.dim(`dolly housekeeping: ${report.actions.length} action(s) — \`dolly housekeep --dry-run\` for detail\n`),
-    );
-  }
 }
 
 /* ------------------------------- commands -------------------------------- */
@@ -439,7 +471,7 @@ async function cmdInit(args: Args): Promise<void> {
 function cmdBoard(args: Args): void {
   const store = openStore();
   const all = bool(args, 'all');
-  let tasks = store.loadTasks(all);
+  let tasks = store.loadTasks();
   const status = str(args, 'status');
   if (status) tasks = tasks.filter((t) => t.meta.status === status);
   if (bool(args, 'mine')) tasks = tasks.filter((t) => t.meta.owner === store.user);
@@ -455,14 +487,14 @@ function cmdBoard(args: Args): void {
     });
     return;
   }
-  process.stdout.write(`${renderBoard(store, tasks, { showArchived: all })}\n`);
+  process.stdout.write(`${renderBoard(store, tasks)}\n`);
 }
 
-function cmdShow(args: Args): void {
+async function cmdShow(args: Args): Promise<void> {
   const store = openStore();
   const ref = args.positional[1];
   if (!ref) fail('usage: dolly show <ref>');
-  const task = store.resolve(ref);
+  const task = await resolveRef(store, ref);
   if (bool(args, 'json')) {
     jsonOut({ ...taskJson(task), spec_full: fullSpec(task), plan: readPlan(task) || null });
     return;
@@ -470,10 +502,10 @@ function cmdShow(args: Args): void {
   process.stdout.write(`${renderShow(task, { full: bool(args, 'full') })}\n`);
 }
 
-function cmdContext(args: Args, refOverride?: string): void {
+async function cmdContext(args: Args, refOverride?: string): Promise<void> {
   const store = openStore();
   const ref = refOverride ?? args.positional[1] ?? 'current';
-  const task = store.resolve(ref);
+  const task = await resolveRef(store, ref);
   const brief = bool(args, 'brief');
   const steps = brief ? 0 : (num(args, 'limit') ?? num(args, 'steps') ?? 3);
   if (bool(args, 'json')) {
@@ -504,16 +536,15 @@ function cmdNew(args: Args): void {
     specFull: full,
     criteria: repeated(args, 'criteria'),
   });
-  afterWrite(store);
   if (bool(args, 'json')) return jsonOut(taskJson(task));
   process.stdout.write(`${color.bold(task.meta.id)} ${task.meta.title} → ${task.meta.status}\n`);
   process.stdout.write(`${color.dim(task.dir)}\n`);
 }
 
-function cmdStep(args: Args): void {
+async function cmdStep(args: Args): Promise<void> {
   const store = openStore();
   const ref = args.positional[1] ?? 'current';
-  const task = store.resolve(ref, false);
+  const task = await resolveRef(store, ref);
   const summary = str(args, 'summary') ?? args.positional.slice(2).join(' ').trim();
   if (!summary) fail('usage: dolly step <ref> -m "<summary>"');
 
@@ -529,7 +560,6 @@ function cmdStep(args: Args): void {
     detail,
     status: str(args, 'status'),
   });
-  afterWrite(store);
   if (bool(args, 'json')) return jsonOut({ task: task.meta.id, step: n, ...taskJson(task) });
   process.stdout.write(
     `step ${String(n).padStart(4, '0')} logged on ${task.meta.id} ${task.meta.slug}` +
@@ -538,10 +568,10 @@ function cmdStep(args: Args): void {
   );
 }
 
-function cmdSpec(args: Args): void {
+async function cmdSpec(args: Args): Promise<void> {
   const store = openStore();
   const ref = args.positional[1] ?? 'current';
-  const task = store.resolve(ref, false);
+  const task = await resolveRef(store, ref);
   const short = textFrom(args, { inline: 'short', file: 'short-file' });
   const full = textFrom(args, { inline: 'full', file: 'file' }) ?? pipedStdin();
   const crit = repeated(args, 'criteria');
@@ -554,7 +584,6 @@ function cmdSpec(args: Args): void {
     criteria: crit,
     reason: str(args, 'reason'),
   });
-  afterWrite(store);
   if (bool(args, 'json')) return jsonOut({ task: task.meta.id, spec_version: v });
   process.stdout.write(
     `spec of ${task.meta.id} now v${v}` +
@@ -563,17 +592,16 @@ function cmdSpec(args: Args): void {
   );
 }
 
-function cmdStatus(args: Args): void {
+async function cmdStatus(args: Args): Promise<void> {
   const store = openStore();
   const ref = args.positional[1];
   const status = args.positional[2];
   if (!ref || !status) {
     fail(`usage: dolly status <ref> <${store.config.statuses.join('|')}> [--note t]`);
   }
-  const task = store.resolve(ref, false);
+  const task = await resolveRef(store, ref);
   const from = task.meta.status;
   setStatus(store, task, status, str(args, 'note'));
-  afterWrite(store);
   if (bool(args, 'json')) return jsonOut(taskJson(task));
   process.stdout.write(`${task.meta.id} ${from} → ${task.meta.status}\n`);
   if (status === store.config.reviewStatus) {
@@ -581,40 +609,20 @@ function cmdStatus(args: Args): void {
   }
 }
 
-function cmdRetitle(args: Args): void {
+async function cmdRetitle(args: Args): Promise<void> {
   const store = openStore();
   const ref = args.positional[1];
   const title = args.positional.slice(2).join(' ').trim() || str(args, 'title');
   if (!ref || !title) fail('usage: dolly retitle <ref> "<new title>"');
-  const task = store.resolve(ref, false);
+  const task = await resolveRef(store, ref);
   const from = task.meta.title;
   const moved = retitle(store, task, title);
-  afterWrite(store);
   if (bool(args, 'json')) return jsonOut(taskJson(moved));
   process.stdout.write(`${moved.meta.id}: "${from}" → "${moved.meta.title}"\n`);
   if (moved.rel !== task.rel) process.stdout.write(`${color.dim(`moved → ${moved.rel}`)}\n`);
 }
 
-function cmdArchive(args: Args): void {
-  const store = openStore();
-  const ref = args.positional[1];
-  if (!ref) fail('usage: dolly archive <ref>');
-  const task = store.resolve(ref, false);
-  const moved = archiveTask(store, task, str(args, 'note'));
-  process.stdout.write(`${moved.meta.id} archived → ${moved.rel}\n`);
-}
-
-function cmdRestore(args: Args): void {
-  const store = openStore();
-  const ref = args.positional[1];
-  if (!ref) fail('usage: dolly restore <ref>');
-  const task = store.resolve(ref, true);
-  if (!task.archived) fail(`${task.meta.id} is not archived`);
-  const moved = restoreTask(store, task);
-  process.stdout.write(`${moved.meta.id} restored → ${moved.rel}\n`);
-}
-
-function cmdPlan(args: Args): void {
+async function cmdPlan(args: Args): Promise<void> {
   const sub = args.positional[1];
   if (!sub) fail('usage: dolly plan <start|show|set|qa|check|finalize> ...');
 
@@ -626,7 +634,6 @@ function cmdPlan(args: Args): void {
     const brief = textFrom(args, { inline: 'brief', file: 'brief-file' }) ?? pipedStdin() ?? '';
     warnOverlap(store, title);
     const task = startPlan(store, title, brief);
-    afterWrite(store);
     if (bool(args, 'json')) {
       return jsonOut({ ...taskJson(task), plan: readPlan(task), prompts: PLAN_PROMPTS });
     }
@@ -652,7 +659,7 @@ function cmdPlan(args: Args): void {
   const ref = args.positional[2] ?? 'current';
 
   if (sub === 'show') {
-    const task = store.resolve(ref);
+    const task = await resolveRef(store, ref);
     const p = readPlan(task);
     if (!p) fail(`no plan for ${task.meta.id}`);
     if (bool(args, 'json')) return jsonOut({ task: task.meta.id, plan: p });
@@ -661,7 +668,7 @@ function cmdPlan(args: Args): void {
   }
 
   if (sub === 'set') {
-    const task = store.resolve(ref, false);
+    const task = await resolveRef(store, ref);
     const section = args.positional[3];
     if (!section) fail('usage: dolly plan set <ref> "<Section>" --text "..."');
     const text = textFrom(args, { inline: 'text', file: 'file' }) ?? pipedStdin();
@@ -675,7 +682,7 @@ function cmdPlan(args: Args): void {
   }
 
   if (sub === 'qa') {
-    const task = store.resolve(ref, false);
+    const task = await resolveRef(store, ref);
     const q = str(args, 'question');
     const a = str(args, 'answer');
     if (!q || !a) fail('usage: dolly plan qa <ref> -q "<question>" -a "<answer>"');
@@ -686,7 +693,7 @@ function cmdPlan(args: Args): void {
   }
 
   if (sub === 'check') {
-    const task = store.resolve(ref);
+    const task = await resolveRef(store, ref);
     const check = checkPlan(store, task);
     if (bool(args, 'json')) return jsonOut({ task: task.meta.id, ...check });
     printCheck(check, true);
@@ -695,14 +702,13 @@ function cmdPlan(args: Args): void {
   }
 
   if (sub === 'finalize') {
-    const task = store.resolve(ref, false);
+    const task = await resolveRef(store, ref);
     const check = finalizePlan(store, task, {
       short: textFrom(args, { inline: 'short' }),
       full: textFrom(args, { inline: 'full', file: 'file' }),
       force: bool(args, 'force'),
       nextStatus: str(args, 'status'),
     });
-    afterWrite(store);
     if (!check.ok) {
       if (bool(args, 'json')) {
         jsonOut({ task: task.meta.id, ...check, ok: false });
@@ -746,27 +752,7 @@ function printCheck(check: ReturnType<typeof checkPlan>, verbose: boolean): void
   }
 }
 
-function cmdHousekeep(args: Args): void {
-  const store = openStore();
-  const report = housekeep(store, { dryRun: bool(args, 'dry-run') });
-  if (bool(args, 'json')) return jsonOut({ ...report, config: store.config.housekeep });
-  const last = lastRun(store);
-  process.stdout.write(
-    `housekeeping${report.dryRun ? ' (dry run)' : ''} · last run ${last ? humanAge(last) : 'never'}\n`,
-  );
-  if (!report.actions.length) {
-    process.stdout.write(color.dim('nothing to do\n'));
-    return;
-  }
-  for (const a of report.actions) {
-    process.stdout.write(`  ${color.cyan(a.kind.padEnd(15))} ${a.task.padEnd(28)} ${a.detail}\n`);
-  }
-  process.stdout.write(
-    `\n${report.actions.length} action(s)${report.dryRun ? ' — rerun without --dry-run to apply' : ' applied'}\n`,
-  );
-}
-
-function cmdReindex(args: Args): void {
+async function cmdReindex(args: Args): Promise<void> {
   const store = openStore(false);
   const cwd = store.project;
 
@@ -774,7 +760,7 @@ function cmdReindex(args: Args): void {
     const sessions = listSessions(cwd);
     if (bool(args, 'json')) return jsonOut({ cwd, sessions });
     if (!sessions.length) {
-      process.stdout.write(`no Claude Code transcripts found for ${cwd}\n`);
+      process.stdout.write(`no transcripts found for ${cwd} — none from Claude Code or opencode\n`);
       return;
     }
     process.stdout.write(`transcripts for ${cwd}\n`);
@@ -809,7 +795,7 @@ function cmdReindex(args: Args): void {
     let target: Task | null = null;
     if (store.exists) {
       try {
-        target = store.resolve(opts.into ?? 'current', false);
+        target = await resolveRef(store, opts.into ?? 'current');
       } catch {
         target = null;
       }
@@ -837,7 +823,6 @@ function cmdReindex(args: Args): void {
 
   store.init();
   const res = applyReindex(store, transcript, opts);
-  afterWrite(store);
   if (bool(args, 'json')) {
     return jsonOut({
       session: transcript.sessionId,
@@ -867,9 +852,9 @@ function cmdReindex(args: Args): void {
  * rather than executing it whenever exec would be wrong — inside Claude Code
  * (spawning an interactive TUI from a tool call) or with no terminal.
  */
-function cmdContinue(args: Args): void {
+async function cmdContinue(args: Args): Promise<void> {
   const store = openStore();
-  const task = store.resolve(args.positional[1] ?? 'current');
+  const task = await resolveRef(store, args.positional[1] ?? 'current');
   const sessions = task.meta.sessions;
   if (!sessions.length) {
     fail(
@@ -980,7 +965,7 @@ function cmdProject(args: Args): void {
   if (maps) process.stdout.write(`\n${color.bold('code map available')}\n${maps}\n`);
 }
 
-function cmdRelated(args: Args): void {
+async function cmdRelated(args: Args): Promise<void> {
   const store = openStore();
   const explicit = list(args, 'files');
   const ref = args.positional[1];
@@ -991,7 +976,7 @@ function cmdRelated(args: Args): void {
     related = relatedByFiles(store, explicit);
     subject = `${explicit.length} file(s)`;
   } else {
-    const task = store.resolve(ref ?? 'current');
+    const task = await resolveRef(store, ref ?? 'current');
     related = relatedToTask(store, task);
     subject = `${task.meta.id} ${task.meta.title}`;
   }
@@ -1129,7 +1114,7 @@ function cmdProjects(args: Args): void {
   const rows: ProjectRow[] = Object.values(index)
     .map((e) => {
       const live = isDir(e.store);
-      const tasks = live ? new Store({ root: e.store, kind: 'found', project: e.path }).loadTasks(false) : [];
+      const tasks = live ? new Store({ root: e.store, kind: 'found', project: e.path }).loadTasks() : [];
       return {
         path: e.path,
         store: e.store,
@@ -1198,7 +1183,7 @@ function cmdHook(args: Args): void {
     if (which === 'session-start') emitSessionStart('', args.flags.raw === true);
     return;
   }
-  const tasks = store.loadTasks(false);
+  const tasks = store.loadTasks();
   const active = currentTask(tasks, store.config);
 
   if (which === 'session-start') {
@@ -1282,6 +1267,13 @@ function cmdHook(args: Args): void {
         'Before opening one: `dolly board --all` to check nothing already covers it, and `dolly related --files <the files you expect to touch>` to find who has been in that code and what they decided.',
       );
     }
+
+    if (store.config.memo?.auto && !hasMemo(store.root, today())) {
+      lines.push('');
+      lines.push(
+        `No memo for today yet (memo.auto is on). At a natural stopping point: run \`dolly memo\` for the digest, write a few sentences of prose, save with \`dolly memo --save --file <notes.md>\`.`,
+      );
+    }
     emitSessionStart(lines.join('\n'), args.flags.raw === true);
     return;
   }
@@ -1303,6 +1295,7 @@ function cmdHook(args: Args): void {
         text?: string;
         tools?: string[];
         files?: string[];
+        agent?: string;
       };
       try {
         turn = JSON.parse(readStdin());
@@ -1321,11 +1314,15 @@ function cmdHook(args: Args): void {
       const turnId = `${turn.session ?? 'pi'}:${turn.turn ?? 0}`;
       if (importedTurns(active).has(turnId)) return; // dedup a re-fired/replayed turn
 
+      const harness = turn.agent ?? 'pi';
+      // record the conversation even though the agent never saw its env vars,
+      // so `dolly show`/sessions know where this task was worked on
+      if (turn.session) linkSession(active, String(turn.session));
       addStep(store, active, {
         summary: stopStdinSummary(text, tools),
         files,
-        detail: stopStdinDetail(text, tools),
-        source: `pi session ${turn.session ?? 'unknown'} · turn ${turnId}`,
+        detail: stopStdinDetail(text, tools, harness),
+        source: `${harness} session ${turn.session ?? 'unknown'} · turn ${turnId}`,
       });
       return;
     }
@@ -1387,13 +1384,13 @@ function stopStdinSummary(text: string, tools: string[]): string {
   return tools.length ? `Ran ${tools.join(', ')}.` : 'Turn with no written summary.';
 }
 
-/** full step body for an auto-logged pi turn */
-function stopStdinDetail(text: string, tools: string[]): string {
+/** full step body for an auto-logged turn from a non-Claude harness */
+function stopStdinDetail(text: string, tools: string[], harness = 'pi'): string {
   const parts: string[] = [];
   if (text) parts.push(text);
   if (tools.length) parts.push(`tools: ${tools.join(', ')}`);
   parts.push(
-    '_Auto-logged by the pi extension from the turn_end event, not written by a human. Correct it with a follow-up `dolly step` if it misleads._',
+    `_Auto-logged by the ${harness} extension from the turn-end event, not written by a human. Correct it with a follow-up \`dolly step\` if it misleads._`,
   );
   return parts.join('\n\n');
 }
@@ -1422,7 +1419,7 @@ function emitSessionStart(context: string, raw = false): void {
 function cmdStatusline(): void {
   const store = Store.open();
   if (!store.exists) return;
-  const tasks = store.loadTasks(false);
+  const tasks = store.loadTasks();
   const active = currentTask(tasks, store.config);
   if (!active) {
     const n = tasks.length;
@@ -1431,6 +1428,95 @@ function cmdStatusline(): void {
   }
   process.stdout.write(
     `🐕 ${active.meta.id} ${active.meta.slug} · ${active.meta.status} · ${active.meta.steps}✎\n`,
+  );
+}
+
+/* ---------------------------------- memo ---------------------------------- */
+
+function cmdMemo(args: Args): void {
+  const store = openStore();
+  const date = str(args, 'date') ?? today();
+
+  if (bool(args, 'save')) {
+    const src = str(args, 'file');
+    if (!src) fail('usage: dolly memo --save --file <prose.md> (or - for stdin) [--date YYYY-MM-DD]');
+    const body = src === '-' ? readStdin() : fs2.readFileSync(src, 'utf8');
+    if (!body.trim()) fail('refusing to save an empty memo');
+    const file = memoFile(store.root, date);
+    fs2.mkdirSync(path2.dirname(file), { recursive: true });
+    writeText(file, `${body.trimEnd()}\n`);
+    process.stdout.write(`${color.green('✓')} memo saved → ${file}\n`);
+    return;
+  }
+
+  const digest = buildDigest(store, date);
+  if (bool(args, 'json')) {
+    jsonOut({
+      date: digest.date,
+      tasks: digest.tasks.map(({ task, events }) => ({
+        id: task.meta.id,
+        title: task.meta.title,
+        status: task.meta.status,
+        events,
+      })),
+      conversations: digest.conversations,
+      commits: digest.commits,
+    });
+    return;
+  }
+  process.stdout.write(`${renderMemoDigest(digest)}\n`);
+}
+
+/* --------------------------------- update --------------------------------- */
+
+function cmdUpdate(args: Args): void {
+  const kind = installKind();
+  const plan = planUpdate(kind);
+  const current = installedVersion();
+
+  if (bool(args, 'check')) {
+    const latest = latestFromGitForCheck();
+    if (!latest) {
+      process.stdout.write(`dolly ${current} — could not reach the remote to compare\n`);
+      return;
+    }
+    const behind = latest !== current;
+    process.stdout.write(
+      `dolly ${current}${behind ? ` — ${latest} is available` : ' — up to date'}\n`,
+    );
+    return;
+  }
+
+  process.stdout.write(`${color.bold('updating dolly')} (${current})\n`);
+  process.stdout.write(`  ${color.dim(plan.reason)}\n`);
+  for (const step of plan.steps) process.stdout.write(`  ${color.dim('$')} ${step.join(' ')}\n`);
+  if (bool(args, 'dry-run')) {
+    process.stdout.write(`\n${color.dim('dry run — nothing executed')}\n`);
+    return;
+  }
+
+  if (kind === 'clone') {
+    const dirty = dirtyClone();
+    if (dirty && !bool(args, 'force')) {
+      fail(
+        `${dirty} — a pull would mix your edits with the update. Commit or stash first, or run with --force.`,
+      );
+    }
+  }
+
+  try {
+    applyPlan(plan);
+  } catch (err) {
+    fail(`update failed: ${(err as Error).message}`);
+  }
+  const after = installedVersion();
+  if (after === current) {
+    process.stdout.write(`still dolly ${current} — already at the newest commit/tag\n`);
+  } else {
+    process.stdout.write(`${color.green('✓')} dolly ${current} → ${after}\n`);
+  }
+  process.stdout.write(
+    color.dim('restart any running agent session so it picks up the new binary\n'),
   );
 }
 
@@ -1470,45 +1556,44 @@ async function main(): Promise<void> {
     case 'ls':
       return cmdBoard(args);
     case 'show':
-      return cmdShow(args);
+      return await cmdShow(args);
     case 'context':
-      return cmdContext(args);
+      return await cmdContext(args);
     case 'current':
-      return cmdContext(args, 'current');
+      return await cmdContext(args, 'current');
     case 'new':
     case 'add':
       return cmdNew(args);
     case 'step':
-      return cmdStep(args);
+      return await cmdStep(args);
     case 'spec':
-      return cmdSpec(args);
+      return await cmdSpec(args);
     case 'status':
     case 'move':
-      return cmdStatus(args);
+      return await cmdStatus(args);
     case 'retitle':
     case 'rename':
-      return cmdRetitle(args);
+      return await cmdRetitle(args);
     case 'project':
       return cmdProject(args);
     case 'related':
-      return cmdRelated(args);
+      return await cmdRelated(args);
     case 'archive':
-      return cmdArchive(args);
     case 'restore':
-      return cmdRestore(args);
     case 'plan':
-      return cmdPlan(args);
+      return await cmdPlan(args);
     case 'reindex':
     case 'adopt':
-      return cmdReindex(args);
+      return await cmdReindex(args);
     case 'continue':
     case 'resume':
-      return cmdContinue(args);
+      return await cmdContinue(args);
+    case 'update':
+      return cmdUpdate(args);
     case 'migrate':
       return cmdMigrate(args);
-    case 'housekeep':
-    case 'hk':
-      return cmdHousekeep(args);
+    case 'memo':
+      return cmdMemo(args);
     case 'config':
       return cmdConfig(args);
     case 'projects':

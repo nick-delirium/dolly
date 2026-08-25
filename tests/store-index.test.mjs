@@ -150,7 +150,8 @@ test('moving a store carries every task across and leaves one store behind', (t)
   const from = path.join(g.project, '.dolly');
   dolly(g.project, ['init', '--yes', '--no-agents'], { DOLLY_DIR: from });
   dolly(g.project, ['new', 'first task', '--short', 'a'], { DOLLY_DIR: from });
-  dolly(g.project, ['step', '0001', '-m', 'did a thing', '--files', 'x.ts'], { DOLLY_DIR: from });
+  const taskId = fs.readdirSync(path.join(from, 'tasks'))[0].split('-')[0];
+  dolly(g.project, ['step', taskId, '-m', 'did a thing', '--files', 'x.ts'], { DOLLY_DIR: from });
   const before = fs.readdirSync(path.join(from, 'tasks'));
   const task = fs.readFileSync(path.join(from, 'tasks', before[0], 'task.md'), 'utf8');
 

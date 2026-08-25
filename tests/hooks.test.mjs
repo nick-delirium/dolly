@@ -92,7 +92,7 @@ test('the Stop hook auto-logs a turn the agent never logged', (t) => {
   assert.match(out, /"systemMessage"/);
   assert.match(out, /auto-logged 1 step/);
 
-  const after = Store.open().resolve('1');
+  const after = Store.open().loadTasks()[0];
   assert.equal(after.meta.steps, 1);
   // the summary is the agent's own account, not the request
   assert.match(logSection(after), /Swapped the linear scan for a map lookup/);
@@ -106,7 +106,7 @@ test('the Stop hook auto-logs a turn the agent never logged', (t) => {
     DOLLY_TRANSCRIPT_DIR: tRoot,
   });
   assert.doesNotMatch(again, /auto-logged/);
-  assert.equal(Store.open().resolve('1').meta.steps, 1);
+  assert.equal(Store.open().loadTasks()[0].meta.steps, 1);
 });
 
 test('a turn the agent logged itself is left alone', (t) => {
@@ -127,7 +127,7 @@ test('a turn the agent logged itself is left alone', (t) => {
     DOLLY_TRANSCRIPT_DIR: tRoot,
   });
   assert.doesNotMatch(out, /auto-logged/);
-  assert.equal(Store.open().resolve('1').meta.steps, 0);
+  assert.equal(Store.open().loadTasks()[0].meta.steps, 0);
 });
 
 test('auto-log respects the config switches', (t) => {
@@ -145,7 +145,7 @@ test('auto-log respects the config switches', (t) => {
 
   // onlyWhenWorking is on by default, so `validating` is skipped
   assert.doesNotMatch(dolly(sb.dir, ['hook', 'stop'], env), /auto-logged/);
-  assert.equal(Store.open().resolve('1').meta.steps, 0);
+  assert.equal(Store.open().loadTasks()[0].meta.steps, 0);
 
   dolly(sb.dir, ['config', 'set', 'reindex.autoLogOnlyWhenWorking', 'false'], env);
   assert.match(dolly(sb.dir, ['hook', 'stop'], env), /auto-logged 1 step/);
@@ -157,7 +157,7 @@ test('auto-log respects the config switches', (t) => {
     turn('t4', '2031-01-01T10:00:00.000Z', 'y', '2031-01-01T10:01:00.000Z', 'Also rewrote the migration to be idempotent.'),
   ]);
   assert.doesNotMatch(dolly(sb.dir, ['hook', 'stop'], env), /auto-logged/);
-  assert.equal(Store.open().resolve('1').meta.steps, 1);
+  assert.equal(Store.open().loadTasks()[0].meta.steps, 1);
 });
 
 test('session-start injects an index that points at the full read', (t) => {
@@ -171,11 +171,11 @@ test('session-start injects an index that points at the full read', (t) => {
   const payload = JSON.parse(out);
   assert.equal(payload.hookSpecificOutput.hookEventName, 'SessionStart');
   const ctx = payload.hookSpecificOutput.additionalContext;
-  assert.match(ctx, /Active task 0001 "Injected" \(working\)/);
+  assert.match(ctx, /Active task [a-z0-9]{8} "Injected" \(working\)/);
   assert.match(ctx, /do the thing well/);
   assert.match(ctx, /## Most recent events/);
   assert.match(ctx, /index, not the record/);
-  assert.match(ctx, /dolly context 0001/);
+  assert.match(ctx, /dolly context [a-z0-9]{8}/);
   assert.match(ctx, /what you understood and did/);
 });
 
@@ -190,7 +190,7 @@ test('session-start --raw emits plain context, no Claude JSON envelope', (t) => 
   // no envelope — harnesses that are not Claude consume the text directly
   assert.doesNotMatch(out, /hookSpecificOutput/);
   // the same context that would have been wrapped, as-is
-  assert.match(out, /Active task 0001 "Injected" \(working\)/);
+  assert.match(out, /Active task [a-z0-9]{8} "Injected" \(working\)/);
   assert.match(out, /do the thing well/);
   assert.match(out, /index, not the record/);
 });

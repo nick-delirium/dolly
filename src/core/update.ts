@@ -156,6 +156,11 @@ function latestFromGit(root: string): string | null {
   }
 }
 
+/** synchronous remote check for `dolly update --check` — explicit, so in-band is fine */
+export function latestFromGitForCheck(root = PKG_ROOT): string | null {
+  return latestFromGit(root);
+}
+
 async function latestFromNpm(name: string): Promise<string | null> {
   try {
     const res = await fetch(`https://registry.npmjs.org/${name}/latest`, {
@@ -231,7 +236,7 @@ export function updateNotice(
 
   return (
     `dolly ${cache.latest} is available (you have ${current})\n` +
-    `  ${upgradeCommand()}\n` +
+    `  run: dolly update\n` +
     `  silence this: dolly config set updateCheck false`
   );
 }

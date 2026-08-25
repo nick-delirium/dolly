@@ -22,7 +22,7 @@ import {
 import { Store, sharedUserLeak } from '../dist/core/store.js';
 import { migrate } from '../dist/migrate.js';
 import { addStep, createTask, setStatus } from '../dist/core/task.js';
-import { sandbox } from './helpers.mjs';
+import { ageTask, daysAgo, sandbox } from './helpers.mjs';
 
 test('the project brief tracks which sections are still unanswered', (t) => {
   const sb = sandbox();
@@ -84,19 +84,19 @@ test('tasks are linked by the files their steps touched', (t) => {
   const unrelated = createTask(Store.open(), { title: 'Docs pass' });
   addStep(Store.open(), unrelated, { summary: 'typos', files: ['README.md'], detail: 'x' });
 
-  assert.deepEqual(filesOfTask(Store.open().resolve('1')), ['src/auth/index.ts', 'src/auth/token.ts']);
+  assert.deepEqual(filesOfTask(auth), ['src/auth/index.ts', 'src/auth/token.ts']);
 
-  const related = relatedToTask(Store.open(), Store.open().resolve('1'));
-  assert.deepEqual(related.map((r) => r.task.meta.id), ['0002'], 'only the task sharing a file');
+  const related = relatedToTask(Store.open(), auth);
+  assert.deepEqual(related.map((r) => r.task.meta.id), [rate.meta.id], 'only the task sharing a file');
   assert.deepEqual(related[0].shared, ['src/auth/token.ts']);
   assert.match(related[0].outcome, /Bucket per token/, 'and what it concluded');
 
   // a task never counts as related to itself
-  assert.equal(relatedToTask(Store.open(), Store.open().resolve('3')).length, 0);
+  assert.equal(relatedToTask(Store.open(), unrelated).length, 0);
 
   // ad-hoc lookup before a task exists, ranked by overlap
   const byFiles = relatedByFiles(Store.open(), ['src/auth/token.ts', 'src/auth/index.ts']);
-  assert.deepEqual(byFiles.map((r) => r.task.meta.id), ['0001', '0002']);
+  assert.deepEqual(byFiles.map((r) => r.task.meta.id), [auth.meta.id, rate.meta.id]);
   assert.deepEqual(byFiles[0].shared.length, 2);
 });
 
@@ -104,11 +104,11 @@ test('overlapping titles are flagged so a new task does not duplicate one', (t) 
   const sb = sandbox();
   t.after(sb.cleanup);
   const store = Store.open();
-  createTask(store, { title: 'Add replay country filter' });
+  const replay = createTask(store, { title: 'Add replay country filter' });
   createTask(Store.open(), { title: 'Upgrade the build pipeline' });
 
   const hits = overlappingTasks(Store.open(), 'Add replay browser filter');
-  assert.deepEqual(hits.map((h) => h.task.meta.id), ['0001']);
+  assert.deepEqual(hits.map((h) => h.task.meta.id), [replay.meta.id]);
   assert.ok(hits[0].words.includes('replay') && hits[0].words.includes('filter'));
 
   // stopwords alone never trigger it
@@ -124,10 +124,11 @@ test('recently finished work is surfaced newest first', (t) => {
   createTask(Store.open(), { title: 'Still todo' });
 
   setStatus(Store.open(), a, 'done');
+  ageTask(a.dir, daysAgo(2)); // a finished before b — recency must not depend on id order
   setStatus(Store.open(), b, 'validating');
 
   const recent = recentlyFinished(Store.open(), 5);
-  assert.deepEqual(recent.map((x) => x.meta.id), ['0002', '0001'], 'newest first, todo excluded');
+  assert.deepEqual(recent.map((x) => x.meta.id), [b.meta.id, a.meta.id], 'newest first, todo excluded');
   assert.match(latestOutcome(recent[0]), /status todo → validating/);
 });
 
@@ -165,7 +166,7 @@ test('the store gitignores its per-machine files', (t) => {
   t.after(sb.cleanup);
   Store.open().init();
   const ignore = fs.readFileSync(path.join(sb.store, '.gitignore'), 'utf8').split('\n');
-  for (const line of ['local.json', '.housekeep.json']) assert.ok(ignore.includes(line), line);
+  for (const line of ['local.json']) assert.ok(ignore.includes(line), line);
 });
 
 test('migrate refreshes the gitignore, or moving identity to local.json is moot', (t) => {
@@ -206,18 +207,18 @@ test('files and outcomes come from the log, not just detailed steps', (t) => {
   const task = createTask(store, { title: 'Mixed steps' });
 
   // a step WITHOUT detail writes no steps.md entry — its files live only in the log
-  addStep(Store.open(), Store.open().resolve('1'), {
+  addStep(Store.open(), Store.open().loadTasks()[0], {
     summary: 'Tightened the parser.',
     files: ['src/parse.ts'],
   });
-  addStep(Store.open(), Store.open().resolve('1'), {
+  addStep(Store.open(), Store.open().loadTasks()[0], {
     summary: 'Added the index.',
     files: ['src/index.ts'],
     detail: 'composite index on (a, b)',
   });
-  setStatus(Store.open(), Store.open().resolve('1'), 'validating', 'check the suite');
+  setStatus(Store.open(), Store.open().loadTasks()[0], 'validating', 'check the suite');
 
-  const fresh = Store.open().resolve('1');
+  const fresh = Store.open().loadTasks()[0];
   assert.deepEqual(filesOfTask(fresh), ['src/index.ts', 'src/parse.ts'], 'both, not just the detailed one');
 
   const log = parseLog(fresh);
@@ -233,6 +234,6 @@ test('a task whose only entries are status moves says so', (t) => {
   t.after(sb.cleanup);
   const store = Store.open();
   const task = createTask(store, { title: 'No steps yet' });
-  setStatus(Store.open(), Store.open().resolve('1'), 'working');
-  assert.match(latestOutcome(Store.open().resolve('1')), /^\(no step logged yet\)/);
+  setStatus(Store.open(), Store.open().loadTasks()[0], 'working');
+  assert.match(latestOutcome(Store.open().loadTasks()[0]), /^\(no step logged yet\)/);
 });

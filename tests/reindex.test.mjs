@@ -298,7 +298,7 @@ test('imports link the conversation to the task for dolly continue', (t) => {
   assert.deepEqual(res.task.meta.sessions, [SESSION]);
 
   // and it survives a reload from disk
-  assert.deepEqual(Store.open().resolve('1').meta.sessions, [SESSION]);
+  assert.deepEqual(Store.open().loadTasks()[0].meta.sessions, [SESSION]);
 });
 
 test('onlyNewerThan skips turns the agent already logged itself', (t) => {

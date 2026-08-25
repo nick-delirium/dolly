@@ -68,6 +68,8 @@ export interface SessionRef {
   file: string;
   mtime: number;
   size: number;
+  /** which harness produced this transcript */
+  kind: 'claude' | 'opencode';
 }
 
 function projectsRoot(): string {
@@ -78,14 +80,26 @@ function projectsRoot(): string {
   );
 }
 
+/**
+ * Root of the per-turn JSONL mirrors the generated opencode plugin appends to.
+ * opencode itself keeps sessions in SQLite with no stable on-disk format, so
+ * reindexing an opencode conversation reads this mirror instead
+ * (`~/.local/share/opencode/dolly/<escaped-cwd>/<session>.jsonl`).
+ */
+function opencodeRoot(): string {
+  return (
+    process.env.DOLLY_OPENCODE_DIR?.trim() ||
+    path.join(os.homedir(), '.local', 'share', 'opencode', 'dolly')
+  );
+}
+
 /** Claude Code flattens the cwd into a directory name by replacing non-alphanumerics */
 function escapeCwd(cwd: string): string {
   return cwd.replace(/[^a-zA-Z0-9]/g, '-');
 }
 
 /** transcript directories that could belong to this project, best match first */
-function candidateDirs(cwd: string): string[] {
-  const root = projectsRoot();
+function candidateDirs(root: string, cwd: string): string[] {
   if (!isDir(root)) return [];
   const wanted = escapeCwd(cwd);
   let real = wanted;
@@ -110,7 +124,8 @@ function candidateDirs(cwd: string): string[] {
 
 export function listSessions(cwd: string): SessionRef[] {
   const out: SessionRef[] = [];
-  for (const dir of candidateDirs(cwd)) {
+  for (const dir of [...candidateDirs(projectsRoot(), cwd), ...candidateDirs(opencodeRoot(), cwd)]) {
+    const kind: SessionRef['kind'] = dir.startsWith(opencodeRoot()) ? 'opencode' : 'claude';
     for (const name of listFiles(dir)) {
       if (!name.endsWith('.jsonl')) continue;
       const file = path.join(dir, name);
@@ -125,6 +140,7 @@ export function listSessions(cwd: string): SessionRef[] {
         file,
         mtime: st.mtimeMs,
         size: st.size,
+        kind,
       });
     }
   }
@@ -146,12 +162,13 @@ export function resolveSession(cwd: string, opts: { file?: string; session?: str
       file,
       mtime: st.mtimeMs,
       size: st.size,
+      kind: file.startsWith(opencodeRoot()) ? 'opencode' : 'claude',
     };
   }
   const all = listSessions(cwd);
   if (!all.length) {
     throw new Error(
-      `no Claude Code transcripts found for ${cwd} under ${projectsRoot()} — pass --file <path.jsonl>`,
+      `no transcripts found for ${cwd} — looked in ${projectsRoot()} (Claude Code) and ${opencodeRoot()} (opencode). Pass --file <path.jsonl>`,
     );
   }
   if (opts.session) {
@@ -327,7 +344,61 @@ function relFile(p: string, cwd: string): string | null {
   return rel;
 }
 
+/**
+ * The opencode plugin mirrors one finished turn per JSONL line, already in the
+ * Segment shape — there is nothing to reconstruct beyond validation.
+ */
+function parseOpencodeMirror(ref: SessionRef): Transcript {
+  const raw = readTextOr(ref.file);
+  const segments: Segment[] = [];
+  for (const line of raw.split('\n')) {
+    const s = line.trim();
+    if (!s) continue;
+    try {
+      const o = JSON.parse(s) as Partial<Segment>;
+      if (!o || typeof o.prompt !== 'string' || !o.uuid) continue;
+      segments.push({
+        index: segments.length + 1,
+        uuid: String(o.uuid),
+        at: String(o.at ?? ''),
+        endedAt: String(o.endedAt ?? o.at ?? ''),
+        prompt: o.prompt,
+        files: Array.isArray(o.files) ? o.files.map(String) : [],
+        commands: Array.isArray(o.commands) ? o.commands.map(String) : [],
+        tools: o.tools && typeof o.tools === 'object' ? (o.tools as Record<string, number>) : {},
+        assistantTexts: Array.isArray(o.assistantTexts) ? o.assistantTexts.map(String) : [],
+        workChain: Array.isArray(o.workChain) ? o.workChain.map(String) : [],
+        thinking: [],
+        sidechains: 0,
+      });
+    } catch {
+      /* a partially flushed last line is normal while a session is live */
+    }
+  }
+
+  const tools: Record<string, number> = {};
+  for (const s of segments) {
+    for (const [k, v] of Object.entries(s.tools)) tools[k] = (tools[k] ?? 0) + v;
+  }
+  const first = segments[0];
+  const last = segments[segments.length - 1];
+  return {
+    sessionId: ref.sessionId,
+    file: ref.file,
+    cwd: process.cwd(),
+    branch: '',
+    title: firstLine(first?.prompt ?? '') || 'Imported opencode session',
+    slug: '',
+    startedAt: first?.at ?? '',
+    endedAt: last?.endedAt ?? '',
+    segments,
+    tools,
+    skipped: 0,
+  };
+}
+
 export function parseTranscript(ref: SessionRef, opts: ParseOpts = {}): Transcript {
+  if (ref.kind === 'opencode') return parseOpencodeMirror(ref);
   const raw = readTextOr(ref.file);
   const objs: Json[] = [];
   for (const line of raw.split('\n')) {

@@ -2,6 +2,7 @@
 description: Show the dolly task board
 argument-hint: "[--all] [--status working]"
 allowed-tools: Bash(dolly:*)
+direct: true
 ---
 
 !`dolly board $ARGUMENTS`

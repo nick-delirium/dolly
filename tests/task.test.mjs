@@ -33,7 +33,7 @@ test('createTask lays out the store and stamps identity', (t) => {
     tags: ['auth'],
   });
 
-  assert.equal(task.meta.id, '0001');
+  assert.match(task.meta.id, /^[23456789bcdfghjkmnpqrstvwxyz]{8}$/);
   assert.equal(task.meta.slug, 'add-oauth-login');
   assert.equal(task.meta.status, 'todo');
   assert.equal(task.meta.owner, 'tester');
@@ -52,13 +52,15 @@ test('createTask lays out the store and stamps identity', (t) => {
   assert.match(fullSpec(fresh), /Authorization code flow/);
 });
 
-test('ids increment and slugs stay unique per title', (t) => {
+test('ids are unique hashes and slugs stay unique per title', (t) => {
   const sb = sandbox();
   t.after(sb.cleanup);
   const store = Store.open();
-  createTask(store, { title: 'First thing' });
+  const first = createTask(store, { title: 'First thing' });
   const second = createTask(store, { title: 'Second thing' });
-  assert.equal(second.meta.id, '0002');
+  assert.notEqual(first.meta.id, second.meta.id);
+  assert.match(first.meta.id, /^[23456789bcdfghjkmnpqrstvwxyz]{8}$/);
+  assert.match(second.meta.id, /^[23456789bcdfghjkmnpqrstvwxyz]{8}$/);
   assert.equal(Store.open().loadTasks().length, 2);
 });
 
@@ -164,21 +166,23 @@ test('setStatus validates against config and logs the transition', (t) => {
   assert.throws(() => setStatus(store, task, 'nonsense'), /unknown status/);
 });
 
-test('refs resolve by id, padded id, slug, substring and current', (t) => {
+test('refs resolve by id, slug, substring, fuzzy and current', (t) => {
   const sb = sandbox();
   t.after(sb.cleanup);
   const store = Store.open();
-  createTask(store, { title: 'Alpha feature' });
+  const alpha = createTask(store, { title: 'Alpha feature' });
   const beta = createTask(store, { title: 'Beta feature' });
   setStatus(store, beta, 'working');
 
   const s = Store.open();
-  assert.equal(s.resolve('1').meta.slug, 'alpha-feature');
-  assert.equal(s.resolve('0001').meta.slug, 'alpha-feature');
-  assert.equal(s.resolve('beta-feature').meta.id, '0002');
-  assert.equal(s.resolve('alpha').meta.id, '0001');
-  assert.equal(s.resolve('current').meta.id, '0002');
-  assert.equal(s.resolve('@').meta.id, '0002');
+  assert.equal(s.resolve(alpha.meta.id).meta.slug, 'alpha-feature');
+  assert.equal(s.resolve(beta.meta.id).meta.slug, 'beta-feature');
+  assert.equal(s.resolve('beta-feature').meta.id, beta.meta.id);
+  assert.equal(s.resolve('alpha').meta.id, alpha.meta.id);
+  // fuzzy on the title when nothing else hits
+  assert.equal(s.resolve('alphafeatur').meta.id, alpha.meta.id);
+  assert.equal(s.resolve('current').meta.id, beta.meta.id);
+  assert.equal(s.resolve('@').meta.id, beta.meta.id);
   assert.throws(() => s.resolve('feature'), /ambiguous/);
   assert.throws(() => s.resolve('nope'), /no task matching/);
 });
@@ -211,7 +215,7 @@ test('collaborators accumulate across users', (t) => {
   const asAlice = Store.open();
   addStep(asAlice, reload(asAlice, task), { summary: 'Alice did a thing.' });
 
-  const after = Store.open().resolve('1');
+  const after = Store.open().loadTasks()[0];
   assert.deepEqual(after.meta.collaborators, ['tester', 'alice']);
   process.env.DOLLY_USER = 'tester';
 });
@@ -245,17 +249,17 @@ test('the live conversation is recorded on every touch, for dolly continue', (t)
 
   // a second step in the same session must not duplicate the id
   addStep(store, task, { summary: 'more work' });
-  assert.deepEqual(Store.open().resolve('1').meta.sessions, ['sess-aaa']);
+  assert.deepEqual(Store.open().loadTasks()[0].meta.sessions, ['sess-aaa']);
 
   // resuming the task tomorrow in a new conversation appends
   process.env.DOLLY_SESSION_ID = 'sess-bbb';
   addStep(Store.open(), reload(store, task), { summary: 'next day' });
-  assert.deepEqual(Store.open().resolve('1').meta.sessions, ['sess-aaa', 'sess-bbb']);
+  assert.deepEqual(Store.open().loadTasks()[0].meta.sessions, ['sess-aaa', 'sess-bbb']);
 
   // no session id (a plain shell) leaves the list untouched
   delete process.env.DOLLY_SESSION_ID;
-  setStatus(Store.open(), Store.open().resolve('1'), 'working');
-  assert.deepEqual(Store.open().resolve('1').meta.sessions, ['sess-aaa', 'sess-bbb']);
+  setStatus(Store.open(), Store.open().loadTasks()[0], 'working');
+  assert.deepEqual(Store.open().loadTasks()[0].meta.sessions, ['sess-aaa', 'sess-bbb']);
 });
 
 test('retitle renames the task, its heading and its directory', (t) => {
@@ -268,19 +272,19 @@ test('retitle renames the task, its heading and its directory', (t) => {
   const moved = retitle(Store.open(), reload(store, task), 'Brand new name');
   assert.equal(moved.meta.title, 'Brand new name');
   assert.equal(moved.meta.slug, 'brand-new-name');
-  assert.equal(path.basename(moved.dir), '0001-brand-new-name');
+  assert.equal(path.basename(moved.dir), `${task.meta.id}-brand-new-name`);
   assert.equal(fs.existsSync(task.dir), false, 'old directory gone');
 
   // the id is stable, and nothing about the history is lost
-  const fresh = Store.open().resolve('1');
-  assert.equal(fresh.meta.id, '0001');
-  assert.match(fresh.body, /^# 0001 · Brand new name$/m);
+  const fresh = Store.open().loadTasks()[0];
+  assert.equal(fresh.meta.id, task.meta.id);
+  assert.match(fresh.body, new RegExp(`^# ${task.meta.id} · Brand new name$`, 'm'));
   assert.match(logSection(fresh), /retitled: "Old name here" → "Brand new name"/);
   assert.match(logSection(fresh), /some work/);
   assert.deepEqual(stepEntries(fresh.dir).map((e) => e.id), ['0001']);
 
   // resolving by the new slug works, and a no-op retitle is harmless
-  assert.equal(Store.open().resolve('brand-new-name').meta.id, '0001');
+  assert.equal(Store.open().resolve('brand-new-name').meta.id, task.meta.id);
   assert.equal(retitle(Store.open(), fresh, 'Brand new name').meta.slug, 'brand-new-name');
   assert.throws(() => retitle(Store.open(), fresh, '   '), /needs a title/);
 });

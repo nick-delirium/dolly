@@ -91,11 +91,7 @@ export function storeNote(store: Store): string {
   }
 }
 
-export function renderBoard(
-  store: Store,
-  tasks: Task[],
-  opts: { showArchived?: boolean } = {},
-): string {
+export function renderBoard(store: Store, tasks: Task[]): string {
   const out: string[] = [];
   // Say out loud when the store is not in the repo. Otherwise the only clue is
   // an unusual path, and "why can my teammate not see these tasks?" has no
@@ -108,23 +104,13 @@ export function renderBoard(
 
   let printed = 0;
   for (const status of statuses) {
-    const group = tasks.filter((t) => t.meta.status === status && !t.archived);
+    const group = tasks.filter((t) => t.meta.status === status);
     if (!group.length) continue;
     const style = STATUS_STYLE[status] ?? ((s: string) => s);
     out.push(style(`${STATUS_ICON[status] ?? '·'} ${status.toUpperCase()}  ${C.dim(`(${group.length})`)}`));
     for (const t of group) out.push(`  ${taskLine(t)}`);
     out.push('');
     printed += group.length;
-  }
-
-  if (opts.showArchived) {
-    const arch = tasks.filter((t) => t.archived);
-    if (arch.length) {
-      out.push(C.dim(`⌸ ARCHIVED  (${arch.length})`));
-      for (const t of arch) out.push(`  ${taskLine(t)}`);
-      out.push('');
-      printed += arch.length;
-    }
   }
 
   if (!printed) out.push(C.dim('no tasks — `dolly new "<title>"` or `dolly plan start "<idea>"`'));
@@ -141,7 +127,6 @@ function taskLine(t: Task): string {
   ];
   if (t.meta.spec_version > 1) bits.push(C.dim(`spec v${t.meta.spec_version}`));
   if (t.meta.tags.length) bits.push(C.dim(t.meta.tags.map((x) => `#${x}`).join(' ')));
-  if (t.meta.stale) bits.push(C.red('stale'));
   return bits.join('  ');
 }
 
@@ -155,7 +140,6 @@ export function renderShow(task: Task, opts: { full?: boolean } = {}): string {
       C.dim(`@${task.meta.owner}`),
       C.dim(`${task.meta.steps} steps`),
       C.dim(humanAge(task.meta.updated)),
-      task.archived ? C.dim('archived') : '',
     ]
       .filter(Boolean)
       .join(' · '),

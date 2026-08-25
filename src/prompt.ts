@@ -393,3 +393,98 @@ export function heading(term: Term, s: string): void {
 export function note(term: Term, s: string): void {
   term.write(`${color.dim(s)}\n`);
 }
+
+/* ------------------------------ fuzzy picker ------------------------------ */
+
+export interface FilterSelectOpts<T> {
+  question: string;
+  choices: Choice<T>[];
+  /** query the list starts filtered by — usually what the user already typed */
+  initial?: string;
+}
+
+/**
+ * Type-to-filter picker for ambiguous refs. Raw mode live-filters as you type;
+ * the numbered path lists everything and takes a number. Enter picks, escape
+ * cancels.
+ */
+export async function filterSelect<T>(term: Term, opts: FilterSelectOpts<T>): Promise<T> {
+  if (!term.raw) return filterNumbered(term, opts);
+  const { question, choices } = opts;
+  let query = opts.initial ?? '';
+  let i = 0;
+
+  const visible = () => {
+    const q = query.toLowerCase();
+    if (!q) return choices;
+    const hits = choices.filter(
+      (c) => c.label.toLowerCase().includes(q) || (c.hint ?? '').toLowerCase().includes(q),
+    );
+    if (hits.length) return hits;
+    // the prefilled query came from a fuzzy ref match — its text may not be a
+    // substring of any label. An empty list helps nobody; fall back to all
+    // candidates ranked best-first, which is exactly what the caller ordered.
+    return choices;
+  };
+
+  const draw = (): number => {
+    const list = visible();
+    if (i >= list.length) i = Math.max(0, list.length - 1);
+    const window = 9;
+    const from = Math.max(0, Math.min(i - Math.floor(window / 2), list.length - window));
+    const shown = list.slice(from, from + window);
+    const lines = [
+      `${color.bold(question)} ${color.dim(`— ${list.length} match${list.length === 1 ? '' : 'es'}`)}`,
+      `${POINTER} ${query}${color.dim('▏')}`,
+      ...shown.map((c, n) => optionLine(OFF, c.label, c.hint, from + n === i, term.columns)),
+      color.dim('type to filter · ↑↓ move · enter select · esc cancel'),
+    ];
+    term.write(`${lines.join('\n')}\n`);
+    return lines.length;
+  };
+
+  let drawn = draw();
+  for (;;) {
+    const k = await term.key();
+    if (k.ctrl && k.name === 'c') {
+      eraseLines(term, drawn);
+      throw new PromptCancelled();
+    }
+    let redraw = true;
+    if (k.name === 'backspace' || k.name === 'delete') query = query.slice(0, -1);
+    else if (k.name === 'escape') {
+      eraseLines(term, drawn);
+      throw new PromptCancelled();
+    } else if (k.name === 'up' || k.name === 'k') i = Math.max(0, i - 1);
+    else if (k.name === 'down' || k.name === 'j') i = Math.min(visible().length - 1, i + 1);
+    else if (k.name === 'return' || k.name === 'enter') {
+      const list = visible();
+      if (!list.length) continue;
+      eraseLines(term, drawn);
+      term.write(answered(question, list[i]?.label ?? ''));
+      return list[i].value;
+    } else if (k.seq && !k.ctrl && k.seq.length === 1 && k.seq >= ' ') query += k.seq;
+    else redraw = false;
+    if (redraw) {
+      eraseLines(term, drawn);
+      drawn = draw();
+    }
+  }
+}
+
+async function filterNumbered<T>(term: Term, opts: FilterSelectOpts<T>): Promise<T> {
+  const { choices } = opts;
+  for (;;) {
+    term.write(`${opts.question}\n`);
+    choices.forEach((c, n) => {
+      const tail = c.hint ? `  — ${c.hint}` : '';
+      term.write(clip(`  ${n + 1}) ${c.label}${tail}`, term.columns) + '\n');
+    });
+    term.write('> ');
+    const raw = (await term.line()).trim();
+    const n = Number(raw);
+    if (!raw) continue;
+    if (Number.isInteger(n) && n >= 1 && n <= choices.length) return choices[n - 1].value;
+    term.write(`  ${raw} is not one of 1-${choices.length}\n`);
+  }
+}

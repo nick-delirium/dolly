@@ -1,0 +1,222 @@
+/**
+ * The daily memo. dolly already records everything that happens — task logs,
+ * and (via transcripts or the opencode mirror) whole conversations — but it is
+ * scattered across tasks. A memo is one file per day: what was worked on, what
+ * changed, which tasks it belonged to.
+ *
+ * The CLI builds the mechanical digest; the agent (or a human) turns it into
+ * prose. The CLI never writes the memo itself — like steps, a memo is only
+ * ever saved on purpose.
+ */
+import { spawnSync } from 'node:child_process';
+import path from 'node:path';
+import { exists, readTextOr } from './fsx.js';
+import { listSessions, parseTranscript } from './transcript.js';
+import type { Store } from './store.js';
+import { logSection, type Task } from './task.js';
+
+export const MEMO_DIR = 'memo';
+
+export function memoDir(storeRoot: string): string {
+  return path.join(storeRoot, MEMO_DIR);
+}
+
+export function memoFile(storeRoot: string, date: string): string {
+  return path.join(memoDir(storeRoot), `${date}.md`);
+}
+
+/** today in local time as YYYY-MM-DD — memos are for the day you are in */
+export function today(): string {
+  const d = new Date();
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
+function isValidDate(s: string): boolean {
+  return /^\d{4}-\d{2}-\d{2}$/.test(s) && !Number.isNaN(Date.parse(`${s}T00:00:00`));
+}
+
+/** local-time date string of an ISO timestamp */
+function localDate(iso: string): string {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
+/** does an ISO timestamp fall on the target date, in local time? */
+function onDate(iso: string, date: string): boolean {
+  return Boolean(iso) && localDate(iso) === date;
+}
+
+/* ------------------------------- task events ------------------------------ */
+
+export interface MemoEvent {
+  time: string;
+  user: string;
+  text: string;
+}
+
+/**
+ * One-line-per-event log entries stamped with the target date. The Log section
+ * format is dolly's own (`- \`YYYY-MM-DD HH:mmZ\` @user: text`), so parsing it
+ * here stays in sync with how every event is written.
+ */
+export function eventsOn(task: Task, date: string): MemoEvent[] {
+  const out: MemoEvent[] = [];
+  for (const line of logSection(task).split('\n')) {
+    const m = /^- `(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}Z?)` @([^:]+): (.*)$/.exec(line.trim());
+    if (!m || m[1] !== date) continue;
+    out.push({ time: `${m[1]} ${m[2]}`, user: m[3], text: m[4] });
+  }
+  return out;
+}
+
+/** repo-relative files a task recorded today, from its short-log trailers */
+function filesTouchedToday(task: Task, date: string): string[] {
+  // the `- `stamp` @user: summary` lines + their indented trailers live in
+  // task.md; steps.md holds the full step bodies, which have no such trailers
+  const raw = readTextOr(path.join(task.dir, 'task.md'));
+  if (!raw) return [];
+  const out = new Set<string>();
+  // one entry = the `- ` line plus its indented trailer lines (`files:` …);
+  // greedy is safe because the next entry always starts at column 0
+  for (const m of raw.matchAll(/^- `.*?` @.*(?:\n(?:(?!- `).)*)?$/gm)) {
+    const block = m[0];
+    if (!block.includes(date)) continue;
+    for (const f of block.matchAll(/`([^`]+\.[A-Za-z0-9]+)`/g)) {
+      if (!f[1].startsWith('.dolly/')) out.add(f[1]);
+    }
+  }
+  return [...out];
+}
+
+/* -------------------------------- git facts ------------------------------- */
+
+export interface GitFact {
+  hash: string;
+  subject: string;
+  author: string;
+}
+
+/** commits authored inside the window, from the project repo (best effort) */
+export function gitOn(project: string, date: string, until?: string): GitFact[] {
+  const end = until ?? nextDay(date);
+  const res = spawnSync(
+    'git',
+    [
+      'log',
+      '--since', `${date}T00:00:00`,
+      '--until', `${end}T00:00:00`,
+      '--pretty=%h%x09%an%x09%s',
+    ],
+    { cwd: project, encoding: 'utf8' },
+  );
+  if (res.status !== 0 || !res.stdout) return [];
+  return res.stdout
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => {
+      const [hash, author, ...subject] = line.split('\t');
+      return { hash, author, subject: subject.join('\t') };
+    });
+}
+
+function nextDay(date: string): string {
+  const d = new Date(`${date}T00:00:00`);
+  d.setDate(d.getDate() + 1);
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
+/* --------------------------------- digest --------------------------------- */
+
+export interface MemoDigest {
+  date: string;
+  /** task id → what happened on it today */
+  tasks: { task: Task; events: MemoEvent[] }[];
+  conversations: {
+    sessionId: string;
+    span: string;
+    turns: number;
+    prompts: string[];
+    files: string[];
+  }[];
+  commits: GitFact[];
+}
+
+/** build the full mechanical picture of one day */
+export function buildDigest(store: Store, date: string): MemoDigest {
+  if (!isValidDate(date)) throw new Error(`bad date "${date}" — use YYYY-MM-DD`);
+
+  const tasks: MemoDigest['tasks'] = [];
+  for (const task of store.loadTasks()) {
+    const events = eventsOn(task, date);
+    if (events.length) tasks.push({ task, events });
+  }
+
+  const conversations: MemoDigest['conversations'] = [];
+  try {
+    for (const ref of listSessions(store.project).slice(0, 20)) {
+      try {
+        // the ref already points at the exact session — re-resolving by a
+        // prefix could collide with a sibling id, and the error would be
+        // swallowed here. parseTranscript(ref) reads exactly that file.
+        const t = parseTranscript(ref);
+        const segs = t.segments.filter((s: { at: string }) => onDate(s.at, date));
+        if (!segs.length) continue;
+        conversations.push({
+          sessionId: t.sessionId,
+          span: `${segs[0].at ?? '?'} → ${segs[segs.length - 1].endedAt ?? '?'}`,
+          turns: segs.length,
+          prompts: segs.map((s) => s.prompt.split('\n')[0]).filter(Boolean).slice(0, 5),
+          files: [...new Set(segs.flatMap((s) => s.files))].slice(0, 20),
+        });
+      } catch {
+        /* unreadable transcript — skip it */
+      }
+    }
+  } catch {
+    /* no transcripts at all — fine */
+  }
+
+  return { date, tasks, conversations, commits: gitOn(store.project, date) };
+}
+
+const clip = (s: string, n: number): string => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
+
+/** human-readable digest the agent turns into the memo prose */
+export function renderDigest(d: MemoDigest): string {
+  const out: string[] = [`# dolly memo digest — ${d.date}`, ''];
+
+  out.push('## Task activity', '');
+  if (!d.tasks.length) out.push('_no task events recorded this day_', '');
+  for (const { task, events } of d.tasks) {
+    out.push(`### ${task.meta.id} ${task.meta.title} (${task.meta.status})`, '');
+    for (const e of events) out.push(`- \`${e.time}\` @${e.user}: ${clip(e.text, 200)}`);
+    const files = filesTouchedToday(task, d.date);
+    if (files.length) out.push(`  files: ${files.map((f) => `\`${f}\``).join(', ')}`);
+    out.push('');
+  }
+
+  out.push('## Conversations', '');
+  if (!d.conversations.length) out.push('_none recorded for this day_', '');
+  for (const c of d.conversations) {
+    out.push(`### session ${c.sessionId.slice(0, 8)} · ${c.turns} turn(s) · ${c.span}`);
+    for (const p of c.prompts) out.push(`> ${clip(p, 160)}`);
+    if (c.files.length) out.push(`files: ${c.files.map((f) => `\`${f}\``).join(', ')}`);
+    out.push('');
+  }
+
+  out.push('## Commits', '');
+  if (!d.commits.length) out.push('_none this day_', '');
+  for (const c of d.commits) out.push(`- ${c.hash} ${clip(c.subject, 120)} (@${c.author})`);
+
+  return out.join('\n');
+}
+
+/** does a finished memo exist for this date? */
+export function hasMemo(storeRoot: string, date: string): boolean {
+  return exists(memoFile(storeRoot, date));
+}

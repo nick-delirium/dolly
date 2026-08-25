@@ -9,14 +9,16 @@
  *             context/steps.md holding every step entry
  */
 import path from 'node:path';
-import { exists, isDir, listFiles, move, readJson, readTextOr, rmrf, writeJson, writeText } from './core/fsx.js';
+import { exists, ensureDir, isDir, listDirs, listFiles, move, readJson, readTextOr, rmrf, writeJson, writeText } from './core/fsx.js';
 import { appendBlock } from './core/md.js';
 import {
   LEGACY_STORE_DIRNAME,
   LOCAL_CONFIG,
   STORE_DIRNAME,
   Store,
+  newHashId,
   missingIgnores,
+  readTaskDir,
   sharedUserLeak,
   stampVersion,
   storeVersion,
@@ -123,7 +125,7 @@ function renameStore(store: Store, dryRun: boolean, actions: MigrateAction[]): S
 
 /** rewrite markers in every file dolly parses */
 function migrateMarkers(store: Store, dryRun: boolean, actions: MigrateAction[]): void {
-  for (const task of store.loadTasks(true)) {
+  for (const task of store.loadTasks()) {
     const files = [
       path.join(task.dir, 'task.md'),
       specFile(task.dir),
@@ -195,7 +197,7 @@ const MIGRATIONS: Migration[] = [
       const orphan = path.join(path.dirname(store.root), LEGACY_STORE_DIRNAME);
       if (exists(orphan)) return `${orphan} still exists beside the current store`;
       const stale = store
-        .loadTasks(true)
+        .loadTasks()
         .filter((t) => markerFiles(t).some((f) => hasLegacyMarkers(readTextOr(f))));
       return stale.length ? `rename markers in ${stale.length} task(s)` : null;
     },
@@ -210,7 +212,7 @@ const MIGRATIONS: Migration[] = [
     name: 'merged layout: one spec.md with history, one steps.md',
     safe: false, // merges and then deletes the old per-entry files
     detect(store) {
-      const tasks = store.loadTasks(true).filter(
+      const tasks = store.loadTasks().filter(
         (t) => isDir(legacyStepsDir(t.dir)) || legacySpecFiles(t.dir).length,
       );
       return tasks.length ? `merge per-step / per-version files in ${tasks.length} task(s)` : null;
@@ -239,7 +241,88 @@ const MIGRATIONS: Migration[] = [
       return store;
     },
   },
+  {
+    to: 5,
+    name: 'housekeeping removed: every task lives in tasks/',
+    safe: false, // moves directories
+    detect(store) {
+      const n = archivedTaskDirs(store).length;
+      return n ? `move ${n} archived task(s) back into tasks/` : null;
+    },
+    apply(store, actions, dryRun) {
+      flattenArchives(store, dryRun, actions);
+      return store;
+    },
+  },
+  {
+    to: 6,
+    name: 'sequential ids rewritten to hash ids',
+    safe: false, // renames task directories and rewrites id references
+    detect(store) {
+      const n = store.loadTasks().filter((t) => /^\d+$/.test(t.meta.id)).length;
+      return n ? `rewrite ids on ${n} task(s)` : null;
+    },
+    apply(store, actions, dryRun) {
+      hashIds(store, dryRun, actions);
+      return store;
+    },
+  },
 ];
+
+/** task directories sitting under archive/YYYY-MM/ from pre-v5 stores */
+function archivedTaskDirs(store: Store): { bucket: string; name: string }[] {
+  const root = path.join(store.root, 'archive');
+  if (!isDir(root)) return [];
+  const out: { bucket: string; name: string }[] = [];
+  for (const bucket of listDirs(root)) {
+    for (const name of listDirs(path.join(root, bucket))) {
+      out.push({ bucket, name });
+    }
+  }
+  return out;
+}
+
+/**
+ * Undo archiving: every archived task returns to tasks/ under its own name,
+ * and the `archived:` frontmatter stamp is dropped. The git history keeps both
+ * sides of each move, so nothing is lost by flattening.
+ */
+function flattenArchives(store: Store, dryRun: boolean, actions: MigrateAction[]): void {
+  const tasks = path.join(store.root, 'tasks');
+  let leftovers = 0;
+  for (const { bucket, name } of archivedTaskDirs(store)) {
+    const src = path.join(store.root, 'archive', bucket, name);
+    const dest = path.join(tasks, name);
+    actions.push({
+      kind: 'chain',
+      task: name.replace(/-.*$/, ''),
+      detail: `archive/${bucket}/${name} → tasks/${name}`,
+    });
+    if (dryRun) continue;
+    ensureDir(tasks);
+    if (exists(dest)) {
+      // same-named live task should not exist alongside its archive, but never
+      // overwrite one if it does — leave both and say so
+      leftovers++;
+      actions.push({
+        kind: 'chain',
+        task: name.replace(/-.*$/, ''),
+        detail: `tasks/${name} already exists — left archive copy in place, merge by hand`,
+      });
+      continue;
+    }
+    move(src, dest);
+    const moved = readTaskDir(dest, `tasks/${name}`);
+    if (moved) {
+      saveTask(moved);
+    }
+  }
+  // only clean up when nothing was deliberately left behind — removing the tree
+  // unconditionally would delete a copy we just promised to preserve
+  if (!dryRun && !leftovers && isDir(path.join(store.root, 'archive'))) {
+    rmrf(path.join(store.root, 'archive'));
+  }
+}
 
 function markerFiles(task: Task): string[] {
   return [
@@ -355,7 +438,7 @@ export function migrate(store: Store, opts: { dryRun?: boolean } = {}): MigrateR
 
 /** the pre-0.2 per-step and per-version file merge */
 function mergeLegacyLayout(store: Store, dryRun: boolean, actions: MigrateAction[]): void {
-  for (const task of store.loadTasks(true)) {
+  for (const task of store.loadTasks()) {
     const label = `${task.meta.id} ${task.meta.slug}`;
 
     const stepsDir = legacyStepsDir(task.dir);
@@ -466,4 +549,58 @@ function mergeSpecs(task: Task, specs: string[]): void {
     ].join('\n'),
   );
   for (const f of specs) rmrf(path.join(contextDir(task.dir), f));
+}
+
+/* ------------------------- v6: numeric ids → hash ------------------------- */
+
+/** rename every numerically-id'd task to a fresh hash id, references included */
+function hashIds(store: Store, dryRun: boolean, actions: MigrateAction[]): void {
+  const tasksDir = path.join(store.root, 'tasks');
+  const taken = new Set(
+    listDirs(tasksDir).map((d) => path.basename(d).split('-')[0]),
+  );
+  for (const task of store.loadTasks().sort((a, b) => a.meta.id.localeCompare(b.meta.id))) {
+    if (!/^\d+$/.test(task.meta.id)) continue;
+    let id = newHashId();
+    while (taken.has(id)) id = newHashId();
+    taken.add(id);
+
+    const slug = task.meta.slug;
+    const dest = path.join(tasksDir, `${id}-${slug}`);
+    actions.push({
+      kind: 'chain',
+      task: task.meta.id,
+      detail: `${task.meta.id} → ${id} (${slug})`,
+    });
+    if (dryRun) continue;
+
+    // rewrite machine markers before the move; saveTask below rewrites frontmatter
+    for (const rel of ['task.md', path.join('context', 'steps.md'), path.join('context', 'spec.md')]) {
+      const f = path.join(task.dir, rel);
+      if (!exists(f)) continue;
+      const raw = readTextOr(f);
+      const next = rewriteIdReferences(raw, task.meta.id, id);
+      if (next !== raw) writeText(f, next);
+    }
+
+    move(task.dir, dest);
+    const moved = readTaskDir(dest, `tasks/${id}-${slug}`);
+    if (!moved) throw new Error(`migrate lost task ${task.meta.id} during the id rewrite`);
+    moved.meta.id = id;
+    saveTask(moved);
+  }
+}
+
+/**
+ * Exact-token replacement of the task id in the places dolly itself writes it:
+ * the task heading and the file-header comments. Anything else — prose,
+ * step numbers, other tasks' ids quoted in a log — is history, not state.
+ */
+export function rewriteIdReferences(text: string, oldId: string, newId: string): string {
+  return text
+    .replace(new RegExp(`^# ${oldId} ·`, 'm'), `# ${newId} ·`)
+    .replace(
+      new RegExp(`^(<!-- dolly (?:steps|spec|plan) · task )${oldId}\\b`, 'gm'),
+      `$1${newId}`,
+    );
 }

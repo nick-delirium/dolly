@@ -10,19 +10,18 @@ Three things it does:
 - **Plans.** A planning interview that refuses to finish while any section is `_TBD_` or any question unanswered, then derives the spec from the answers.
 - **Tracks.** `todo → planning → working → validating → done`, where `validating` means the agent is done and a human must verify. Agents never mark work done.
 
-Installs into Claude Code (plugin, skills, slash commands, MCP, hooks), pi (skills, MCP, and an extension giving the same auto-inject and auto-logging hooks), and seven other agents. Zero runtime dependencies.
+Installs into Claude Code (plugin, skills, slash commands, MCP, hooks), pi (skills, MCP, and an extension giving the same auto-inject and auto-logging hooks), opencode (skills, slash commands, MCP, and a plugin giving the same context injection and auto-logging), and five other agents. Zero runtime dependencies.
 
 ```
 .dolly/
   config.json
   tasks/
-    0001-oauth-login/
+    b4tk7s2m-oauth-login/
       task.md          # meta + short spec + criteria + one line per event   ← what everyone skims
       context/
         spec.md        # current full spec on top, every superseded version below it
         steps.md       # full context of every step, append-only
         plan.md        # planning interview record (only when the task was planned)
-  archive/2026-08/…    # aged-out tasks
 ```
 
 Three files per task, not thirty. A task's whole history is two diffs in a PR.
@@ -63,7 +62,7 @@ cd your-project
 dolly init
 ```
 
-`dolly init` opens a short setup screen: where task memory lives, which of the coding agents on your machine to wire, whether to register the MCP server and the hooks, your handle, and the housekeeping windows. Every prompt opens on dolly's default, so pressing enter through it is the whole setup.
+`dolly init` opens a short setup screen: where task memory lives, which of the coding agents on your machine to wire, whether to register the MCP server and the hooks, and your handle. Every prompt opens on dolly's default, so pressing enter through it is the whole setup.
 
 Two answers are worth knowing before you run it:
 
@@ -88,8 +87,8 @@ The plugin drives the CLI, so install that too (see above) — `bin/dolly-hook.m
 You get:
 
 - **skills** `dolly` (memory, step logging) and `dolly-planning` (interview) — loaded automatically when relevant
-- **slash commands** `/dolly:board` `/dolly:resume` `/dolly:step` `/dolly:update` `/dolly:plan` `/dolly:spec` `/dolly:validate` `/dolly:adopt` `/dolly:housekeep`
-- **MCP server** — 17 tools, so the agent can drive dolly without shelling out
+- **slash commands** `/dolly:board` `/dolly:resume` `/dolly:step` `/dolly:checkpoint` `/dolly:memo` `/dolly:plan` `/dolly:spec` `/dolly:validate` `/dolly:adopt`
+- **MCP server** — 15 tools, so the agent can drive dolly without shelling out
 - **SessionStart hook** — spec, criteria and recent events injected into every new session automatically
 - **Stop hook** — auto-logs a step for each finished turn (see [Automatic logging](#automatic-logging)), and nudges when a task goes quiet
 
@@ -122,7 +121,7 @@ dolly install cursor codex gemini    # or name them
 | Windsurf | `.windsurf/rules/dolly.md` |
 | GitHub Copilot | `.github/copilot-instructions.md` block |
 | Gemini CLI | `GEMINI.md` block, `.gemini/settings.json` MCP entry |
-| opencode | `AGENTS.md` block, `opencode.json` MCP entry |
+| opencode | `.opencode/skills/`, `.opencode/commands/dolly-*.md`, `.opencode/plugins/dolly.js`, `AGENTS.md` block, `opencode.json` MCP entry |
 | pi | `~/.pi/agent/skills/` (or `.pi/skills/` local), `SYSTEM.md`/`AGENTS.md` block, `mcp.json`, and `~/.pi/agent/extensions/dolly.ts` — a global-only extension that injects task context at session start and auto-logs a step per finished turn |
 | anything else | `AGENTS.md` block |
 
@@ -134,10 +133,12 @@ All writes are idempotent, delimited by `<!-- dolly:instructions -->` markers. R
 
 ```bash
 dolly new "Fix token expiry off-by-one" --short "Expiry check uses < instead of <=."
-dolly status 1 working
+# prints: k7x2mq9v fix-token-expiry-off-by-one → todo
+
+dolly status token-expiry working      # by slug, by hash, or by fuzzy title — all the same task
 # … agent works …
-dolly step 1 -m "Fixed comparison, added regression test." --auto-files --detail-file notes.md
-dolly status 1 validating --note "run the auth suite"
+dolly step token-expiry -m "Fixed comparison, added regression test." --auto-files --detail-file notes.md
+dolly status token-expiry validating --note "run the auth suite"
 ```
 
 ### A feature — planning mode
@@ -162,12 +163,12 @@ unfilled sections (8):
 The agent reads the codebase, asks you the rest in one batch, and records what you say:
 
 ```bash
-dolly plan qa 2 -q "Country from GeoIP or profile?" -a "GeoIP at session start, already stored."
+dolly plan qa "$ID" -q "Country from GeoIP or profile?" -a "GeoIP at session start, already stored."
 dolly plan set 2 "Success Criteria" --text "- [ ] country filter returns only matching sessions
 - [ ] combined filters AND together
 - [ ] p95 under 300ms on 1M sessions"
 dolly plan check 2          # → plan complete
-dolly plan finalize 2       # → spec + criteria generated, status → todo
+dolly plan finalize "$ID"    # → spec + criteria generated, status → todo
 ```
 
 `finalize` derives the full spec from the plan into `context/spec.md`, puts a short summary in `task.md`, and moves the task to `todo`. `plan.md` stays forever as the interview record. Blocked while any section is `_TBD_` or any Open Question unchecked — `--force` to override, then log the unknown as a Risk.
@@ -219,7 +220,7 @@ One line per event, flat and chronological — spec changes and status moves lan
 
 ## Adopting a conversation in progress
 
-You rarely remember to start a task before you start working. `dolly reindex` reads this project's Claude Code transcript and turns what already happened into a task:
+You rarely remember to start a task before you start working. `dolly reindex` reads this project's transcript — Claude Code's own, or the per-turn mirror the opencode plugin writes under `~/.local/share/opencode/dolly/` (opencode keeps its real sessions in SQLite with no stable format, so the plugin mirrors each finished turn out as JSONL) — and turns what already happened into a task:
 
 ```bash
 dolly reindex            # digest — read it first
@@ -255,7 +256,7 @@ Each imported step records `source: session <id> · turn <uuid>`, so re-running 
 **The import is deliberately mechanical.** The spec it writes is the raw requests stitched together, and it says so. The agent — which has the conversation in context — is instructed to immediately replace it:
 
 ```bash
-dolly spec 1 --short "<2-5 lines>" --file spec.md --reason "reindexed from session faa33f88"
+dolly spec "$ID" --short "<2-5 lines>" --file spec.md --reason "reindexed from session faa33f88"
 ```
 
 ## Upgrading between versions
@@ -268,11 +269,11 @@ A human at a terminal gets one line on stderr:
 
 ```
 dolly 0.2.0 is available (you have 0.1.0)
-  git -C /path/to/dolly pull && npm install
+  run: dolly update
   silence this: dolly config set updateCheck false
 ```
 
-The command matches how *your* copy was installed — a linked checkout needs a pull and a rebuild, not `npm install -g`.
+`dolly update` does the right thing for how this copy was installed — a linked checkout is pulled (`--ff-only`, refusing on uncommitted changes) and rebuilt; an npm-installed copy is reinstalled with `npm install -g github:nick-delirium/dolly`. `--check` compares versions without touching anything, `--dry-run` prints the plan.
 
 It is deliberately timid, because dolly runs on every SessionStart, every Stop and every MCP tool call:
 
@@ -305,7 +306,7 @@ So after `git pull` and a rebuild, you usually do nothing.
 
 ```
 $ dolly step 1 -m "..."
-dolly: this store is at schema version 5, but this dolly understands 4.
+dolly: this store is at schema version 7, but this dolly understands 6.
 It was written by a newer dolly — upgrade dolly before writing to it.
 ```
 
@@ -330,7 +331,7 @@ dolly reindex --apply --rebuild    # re-derive imported steps from the transcrip
 
 ## Big repos: one repo, many tasks
 
-The failure mode in a large codebase is an agent treating task 0007 as a greenfield project — reinventing conventions, re-deriving the architecture, and undoing a decision task 0003 made deliberately. Three things push against that, and they are injected automatically rather than left for the agent to remember.
+The failure mode in a large codebase is an agent treating one task as a greenfield project — reinventing conventions, re-deriving the architecture, and undoing a decision another task made deliberately. Three things push against that, and they are injected automatically rather than left for the agent to remember.
 
 ### The project brief
 
@@ -350,14 +351,14 @@ It is **not a second CLAUDE.md**. CLAUDE.md tells an agent how to behave; the br
 dolly already records the files every step touched, which makes it the only thing in the toolchain that can answer *who else has been in this code, and what did they conclude?*
 
 ```bash
-dolly related 7                              # tasks sharing files with task 7
+dolly related "$ID"                          # tasks sharing files with this task
 dolly related --files src/auth/token.ts      # before you edit something
 ```
 
 ```
 tasks sharing code with 2 file(s)
 
-- **0003 Rate limit the API** (done) — shares `src/auth/token.ts`
+- **2rhqyc8c Rate limit the API** (done) — shares `src/auth/token.ts`
   last: Bucket per token; reused the token parser rather than re-parsing.
 ```
 
@@ -407,6 +408,8 @@ Yes, it wires itself up on install. With the plugin (or `dolly install claude`),
 
 pi gets the same behavior through its extension, by a different route: pi's `turn_end` event already carries the finished turn, so the extension reads it in memory and pipes it to `dolly hook stop --from-stdin` — no transcript file involved. Auto-inject works the same way via `before_agent_start`. The gating and dedup rules below apply identically.
 
+opencode gets it through its generated plugin (`.opencode/plugins/dolly.js`): on `session.idle` — opencode's turn-end event — the plugin pulls the finished turn from the SDK, mirrors it to `~/.local/share/opencode/dolly/<escaped-cwd>/<session>.jsonl`, and pipes the same stdin payload dolly's Stop hook consumes. Context injection rides `experimental.chat.system.transform` (fires every LLM call, so context is never staler than the last turn) and `experimental.session.compacting` re-injects it across compaction. The same gating and dedup rules apply.
+
 It stays out of the way of real work:
 
 - a turn the agent logged itself is **skipped** — dolly compares the turn's start time against the task's last-updated time
@@ -418,7 +421,7 @@ dolly config set reindex.autoLog false                 # off
 dolly config set reindex.autoLogOnlyWhenWorking false  # log in any status
 ```
 
-Agent-written steps are still much better, because auto-entries lift the agent's last message verbatim. The instructions tell the agent to keep logging real steps and treat auto-entries as a floor. `/dolly:update` is the manual checkpoint.
+Agent-written steps are still much better, because auto-entries lift the agent's last message verbatim. The instructions tell the agent to keep logging real steps and treat auto-entries as a floor. `/dolly:checkpoint` (same as `/dolly:step`) is the manual checkpoint.
 
 ## Logs record what the agent did, not what you asked
 
@@ -447,9 +450,9 @@ The honest trade-off: reasoning is verbose, frequently contradicted later in the
 Every step records the Claude Code session it happened in — `CLAUDE_CODE_SESSION_ID`, which is exactly the transcript's filename — so a task knows its own conversation history:
 
 ```bash
-dolly continue 3           # claude --resume <latest session for task 3>
-dolly continue 3 --fork    # resume as a branch, leaving the original intact
-dolly continue 3 --print   # just print the command
+dolly continue b4tk7s2m           # claude --resume <latest session for that task>
+dolly continue oauth login --fork # fuzzy title works too; resume as a new branch
+dolly continue b4tk7s2m --print   # just print the command
 ```
 
 From a terminal it execs `claude` directly. From inside Claude Code — where spawning an interactive TUI out of a tool call would be wrong — it prints the command and says why. Sessions appear in `dolly show <ref>` and in the frontmatter as `sessions: [...]`.
@@ -472,38 +475,28 @@ dolly board --json           # for scripts
 dolly · /repo/.dolly
 
 ○ TODO  (1)
-  0002  Replay filters               @nick-delirium   2h ago   0✎  spec v2
+  xb925jmt  Replay filters            @nick-delirium   2h ago   0✎  spec v2
 ◐ WORKING  (1)
-  0001  OAuth login                  @nick-delirium   5m ago   3✎  #auth
+  b4tk7s2m  OAuth login               @nick-delirium   5m ago   3✎  #auth
 ◑ VALIDATING  (1)
-  0004  Rate-limit the search API    @alice           1d ago   7✎
+  6mq9hmg4  Rate-limit the search API @alice           1d ago   7✎
 ```
 
-## Housekeeping
+## The daily memo
 
 ```bash
-dolly housekeep --dry-run
-dolly housekeep
+dolly memo                    # digest of today: task events, conversations, commits
+dolly memo --date 2026-08-20  # backfill any day
+dolly memo --save --file notes.md   # save agent-written prose as the day's memo
 ```
 
-Runs automatically at most once a day on any write. Defaults in `.dolly/config.json`:
+`dolly memo` gathers everything that happened on a day — every task's log lines, the conversations (Claude Code transcripts and the opencode mirror), and the repo's commits — and prints a mechanical digest. You or your agent write it up as a few sentences and save it with `--save`; the result lands in `.dolly/memo/YYYY-MM-DD.md`, committed with the repo, so the project's own history answers "what happened Tuesday?".
 
-| Key | Default | Effect |
-|---|---:|---|
-| `archiveDoneAfterDays` | 14 | `done` tasks untouched this long → `archive/YYYY-MM/` |
-| `staleAfterDays` | 60 | unfinished tasks untouched this long → flagged `stale` |
-| `deleteArchivedAfterDays` | 0 | delete archived dirs after N days. 0 = keep forever |
-| `keepFullStepsPerTask` | 0 | 0 = keep every step body. Set >0 to drop the oldest past that count; the one-line summaries always survive |
-| `keepSpecVersions` | 0 | 0 = keep every superseded spec version in `spec.md` |
-| `auto` | true | run automatically |
-| `autoEveryHours` | 24 | how often auto may run |
+`memo.auto = true` makes the session-start hook note it when today has no memo yet — a nudge, never an auto-write.
 
-```bash
-dolly config set housekeep.archiveDoneAfterDays 30
-dolly config get housekeep
-```
+## No housekeeping
 
-Nothing is destroyed by default: pruning and archive-deletion are both off unless you turn them on, archiving moves directories rather than removing them, and every spec version is kept. Automatic runs also never touch the task you are currently working on.
+There is none. Tasks are never archived, flagged stale, pruned or touched based on time — the only thing that moves a task or changes its status is an explicit `dolly status` / `dolly archive`-style command typed by a human or run by an agent on request. A quiet task stays exactly where it is, visible on the board forever. (`dolly migrate` flattens any `archive/YYYY-MM/` left behind by older versions back into `tasks/`.)
 
 ## Sharing and attribution
 
@@ -513,7 +506,7 @@ Each step and status change is stamped with your handle, resolved in this order:
 DOLLY_USER  →  .dolly/local.json  →  gh api user (cached)  →  git user.email / user.name  →  $USER
 ```
 
-`.dolly/` holds two config files and the split matters: **`config.json` is shared policy** (statuses, plan sections, housekeeping) and is committed; **`local.json` is per-person** and gitignored. Identity belongs in `local.json` — `dolly config set user` writes there. A `user` in the shared `config.json` is deliberately **ignored**, because a committed handle stamps every teammate's steps with one name and destroys the attribution the store exists to provide. `dolly migrate` moves a stale one out and reports it.
+`.dolly/` holds two config files and the split matters: **`config.json` is shared policy** (statuses, plan sections) and is committed; **`local.json` is per-person** and gitignored. Identity belongs in `local.json` — `dolly config set user` writes there. A `user` in the shared `config.json` is deliberately **ignored**, because a committed handle stamps every teammate's steps with one name and destroys the attribution the store exists to provide. `dolly migrate` moves a stale one out and reports it.
 
 Because it's all files in the repo, two people working the same feature see each other's steps on `git pull`, and a step log shows up in PR diffs as a readable narrative of how the change happened. `collaborators` in the frontmatter accumulates everyone who touched the task.
 
@@ -554,13 +547,14 @@ project [show | init | set "<Section>" --text t]
 related [<ref>] [--files a,b] [--json]
 continue <ref> [--fork] [--print] [--session id]
 current                                    alias for: context current
+update [--check] [--dry-run] [--force]     self-update in place (clone: pull+rebuild; npm: reinstall)
+memo [--date d] [--json] [--save --file f|-]  today's digest → .dolly/memo/YYYY-MM-DD.md
 
 new "<title>" [--short t] [--file f|-] [--status s] [--tag x] [--criteria c]
 step <ref> -m "<summary>" [--files a,b | --auto-files]
            [--detail t | --detail-file f] [--status s]
 spec <ref> [--short t] [--file f|-] [--criteria c] [--reason why]
 status <ref> <status> [--note t]
-archive <ref> [--note t] | restore <ref>
 
 plan start "<title>" [--brief t]
 plan show <ref>
@@ -572,17 +566,16 @@ plan finalize <ref> [--file f] [--short t] [--force] [--status s]
 reindex [--list] [--session id] [--file f.jsonl] [--apply] [--into ref]
         [--all-turns] [-n N] [--rebuild] [--title t] [--status s]
         [--include-thinking] [--json]
-housekeep [--dry-run] [--json]
 migrate [--dry-run]
 config [get <key> | set <key> <value>]
 whoami
 install [agent…] [--list] [--local|--global] [--no-mcp] [--no-hooks] [--dry-run]
 mcp                                        MCP stdio server
-hook <session-start|stop>                  Claude Code hook payloads
+hook <session-start|stop>                  harness hook payloads (Claude/pi/opencode feed these)
 statusline                                 one line for a statusline
 ```
 
-`<ref>` is an id (`3`, `0003`), a slug, a unique substring, or `current` / `@` for the active task — the most recently touched task in `working`, else `validating`, else `planning`.
+`<ref>` is an id (a random 8-character hash like `b4tk7s2m`, or a legacy sequential number), a slug, a unique substring, or a fuzzy title match — `dolly continue oauth login` finds the OAuth task. One clear match selects directly; several open a type-to-filter picker in a TTY (a numbered list when scripted). `current` / `@` is the active task: most recently touched in `working`, else `validating`, else `planning`.
 
 Every command that produces data takes `--json`. Text input flags accept `-` for stdin, or a piped heredoc.
 
@@ -590,7 +583,7 @@ Every command that produces data takes `--json`. Text input flags accept `-` for
 
 `dolly mcp` speaks MCP over stdio, no dependencies. Registered automatically by `dolly init` for agents that support it.
 
-`dolly_board` · `dolly_context` · `dolly_task_show` · `dolly_task_new` · `dolly_step_add` · `dolly_spec_update` · `dolly_status_set` · `dolly_plan_start` · `dolly_plan_set` · `dolly_plan_qa` · `dolly_plan_check` · `dolly_plan_finalize` · `dolly_project` · `dolly_related` · `dolly_reindex` · `dolly_archive` · `dolly_housekeep`
+`dolly_board` · `dolly_context` · `dolly_task_show` · `dolly_task_new` · `dolly_step_add` · `dolly_spec_update` · `dolly_status_set` · `dolly_plan_start` · `dolly_plan_set` · `dolly_plan_qa` · `dolly_plan_check` · `dolly_plan_finalize` · `dolly_project` · `dolly_related` · `dolly_reindex`
 
 ## Agent instructions
 

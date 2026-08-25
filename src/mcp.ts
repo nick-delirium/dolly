@@ -4,7 +4,6 @@
  */
 import { changedFiles } from './core/git.js';
 import { VERSION } from './core/pkg.js';
-import { archiveTask, housekeep } from './core/housekeep.js';
 import {
   addPlanQA,
   checkPlan,
@@ -54,10 +53,10 @@ function store(): Store {
   return Store.open();
 }
 
-function open(ref: string, includeArchived = true): { s: Store; t: Task } {
+function open(ref: string): { s: Store; t: Task } {
   const s = store();
   if (!s.exists) throw new Error('dolly not initialized here — run `dolly init` in the project');
-  return { s, t: s.resolve(ref, includeArchived) };
+  return { s, t: s.resolve(ref) };
 }
 
 function writable(): Store {
@@ -82,16 +81,15 @@ const TOOLS: Tool[] = [
       type: 'object',
       properties: {
         status: S('Only this status.'),
-        includeArchived: { type: 'boolean', description: 'Include archived tasks.' },
       },
     },
     run(a) {
       const s = store();
       if (!s.exists) return `dolly not initialized. Run \`dolly init\` (store would be ${s.root}).`;
-      let tasks = s.loadTasks(Boolean(a.includeArchived));
+      let tasks = s.loadTasks();
       if (a.status) tasks = tasks.filter((t) => t.meta.status === a.status);
       const active = currentTask(tasks, s.config);
-      const board = renderBoard(s, tasks, { showArchived: Boolean(a.includeArchived) });
+      const board = renderBoard(s, tasks);
       return `${board}\n\nactive task: ${active ? `${active.meta.id} ${active.meta.slug}` : 'none'}`;
     },
   },
@@ -174,7 +172,7 @@ const TOOLS: Tool[] = [
       required: ['summary'],
     },
     run(a) {
-      const { s, t } = open(a.ref ?? 'current', false);
+      const { s, t } = open(a.ref ?? 'current');
       let files: string[] = Array.isArray(a.files) ? a.files : [];
       if (a.autoFiles) {
         files = [
@@ -206,7 +204,7 @@ const TOOLS: Tool[] = [
       required: ['ref'],
     },
     run(a) {
-      const { s, t } = open(a.ref, false);
+      const { s, t } = open(a.ref);
       const v = updateSpec(s, t, {
         short: a.short,
         full: a.full,
@@ -226,7 +224,7 @@ const TOOLS: Tool[] = [
       required: ['ref', 'status'],
     },
     run(a) {
-      const { s, t } = open(a.ref, false);
+      const { s, t } = open(a.ref);
       const from = t.meta.status;
       setStatus(s, t, a.status, a.note);
       const tail =
@@ -266,7 +264,7 @@ const TOOLS: Tool[] = [
       required: ['ref', 'section', 'text'],
     },
     run(a) {
-      const { s, t } = open(a.ref, false);
+      const { s, t } = open(a.ref);
       setPlanSection(s, t, a.section, a.text);
       const c = checkPlan(s, t);
       return `plan ${t.meta.id} "${a.section}" updated.\n${describeCheck(c)}`;
@@ -281,7 +279,7 @@ const TOOLS: Tool[] = [
       required: ['ref', 'question', 'answer'],
     },
     run(a) {
-      const { s, t } = open(a.ref, false);
+      const { s, t } = open(a.ref);
       addPlanQA(s, t, a.question, a.answer);
       return `Q&A recorded on ${t.meta.id}`;
     },
@@ -312,7 +310,7 @@ const TOOLS: Tool[] = [
       required: ['ref'],
     },
     run(a) {
-      const { s, t } = open(a.ref, false);
+      const { s, t } = open(a.ref);
       const c = finalizePlan(s, t, {
         force: Boolean(a.force),
         short: a.short,
@@ -321,20 +319,6 @@ const TOOLS: Tool[] = [
       });
       if (!c.ok) return `finalize blocked.\n${describeCheck(c)}\n\nAnswer these with the user, or pass force=true.`;
       return `plan ${t.meta.id} finalized · spec v${t.meta.spec_version} · status ${t.meta.status}`;
-    },
-  },
-  {
-    name: 'dolly_archive',
-    description: 'Move a task to archive/YYYY-MM immediately, regardless of age.',
-    inputSchema: {
-      type: 'object',
-      properties: { ref: REF, note: S('Why.') },
-      required: ['ref'],
-    },
-    run(a) {
-      const { s, t } = open(a.ref, false);
-      const moved = archiveTask(s, t, a.note);
-      return `${moved.meta.id} archived -> ${moved.rel}`;
     },
   },
   {
@@ -432,7 +416,7 @@ const TOOLS: Tool[] = [
         let target: Task | null = null;
         if (s.exists) {
           try {
-            target = s.resolve(opts.into ?? 'current', false);
+            target = s.resolve(opts.into ?? 'current');
           } catch {
             target = null;
           }
@@ -448,22 +432,6 @@ const TOOLS: Tool[] = [
         'The spec is a mechanical import of the raw requests. Replace it now with dolly_spec_update — write the spec from your own understanding of the conversation, and set reason to "reindexed from session ' +
           transcript.sessionId.slice(0, 8) +
           '".',
-      ].join('\n');
-    },
-  },
-  {
-    name: 'dolly_housekeep',
-    description:
-      'Age out finished work: archive old done tasks, flag stale ones, prune old full step context. dryRun=true to preview.',
-    inputSchema: { type: 'object', properties: { dryRun: { type: 'boolean' } } },
-    run(a) {
-      const s = store();
-      if (!s.exists) return 'dolly not initialized here.';
-      const r = housekeep(s, { dryRun: Boolean(a.dryRun) });
-      if (!r.actions.length) return `housekeeping${r.dryRun ? ' (dry run)' : ''}: nothing to do`;
-      return [
-        `housekeeping${r.dryRun ? ' (dry run)' : ''}: ${r.actions.length} action(s)`,
-        ...r.actions.map((x) => `- ${x.kind} · ${x.task} · ${x.detail}`),
       ].join('\n');
     },
   },
@@ -486,7 +454,7 @@ function describeCheck(c: ReturnType<typeof checkPlan>): string {
 const WRITE_TOOLS = new Set([
   'dolly_task_new', 'dolly_step_add', 'dolly_spec_update', 'dolly_status_set',
   'dolly_plan_start', 'dolly_plan_set', 'dolly_plan_qa', 'dolly_plan_finalize',
-  'dolly_project', 'dolly_archive', 'dolly_housekeep', 'dolly_reindex',
+  'dolly_project', 'dolly_reindex',
 ]);
 
 /**

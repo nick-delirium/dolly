@@ -15,6 +15,7 @@ import {
 } from './md.js';
 import { Store, readTaskDir, slugify } from './store.js';
 import type { Status, Task, TaskMeta } from './types.js';
+export type { Task };
 import { currentSessionId } from './session.js';
 import { nowIso, shortStamp } from './time.js';
 
@@ -64,8 +65,6 @@ function metaToFront(meta: TaskMeta): Front {
     updated: meta.updated,
   };
   if (meta.sessions.length) front.sessions = meta.sessions;
-  if (meta.stale) front.stale = true;
-  if (meta.archived) front.archived = meta.archived;
   return front;
 }
 
@@ -77,7 +76,6 @@ function headerLine(meta: TaskMeta): string {
     `${meta.steps} step${meta.steps === 1 ? '' : 's'}`,
     `updated ${shortStamp(meta.updated)}`,
   ];
-  if (meta.stale) bits.push('**stale**');
   return bits.join(' · ');
 }
 
@@ -94,7 +92,6 @@ function ensureLead(body: string): string {
 
 export function touch(task: Task, user?: string): void {
   task.meta.updated = nowIso();
-  task.meta.stale = undefined;
   if (user && !task.meta.collaborators.includes(user)) task.meta.collaborators.push(user);
   // remember which conversation touched this task so `dolly continue` can reopen it
   const session = currentSessionId();
@@ -235,7 +232,7 @@ export function createTask(store: Store, opts: CreateOpts): Task {
   ].join('\n');
 
   ensureDir(contextDir(dir));
-  const task: Task = { meta, dir, rel: path.relative(store.root, dir), body, archived: false };
+  const task: Task = { meta, dir, rel: path.relative(store.root, dir), body };
   saveTask(task);
 
   const specBody = (opts.specFull ?? opts.specShort ?? '').trim() || '_Spec not written yet._';
@@ -478,20 +475,6 @@ export function stepEntries(dir: string): StepEntry[] {
     }));
 }
 
-/** drop full context for the given step ids; the short log keeps its summaries */
-export function dropStepEntries(task: Task, ids: string[]): void {
-  const raw = readTextOr(stepsFile(task.dir));
-  if (raw) {
-    let next = raw;
-    for (const id of ids) next = removeBlock(next, `step ${id}`);
-    writeText(stepsFile(task.dir), next);
-  }
-  for (const id of ids) {
-    const re = new RegExp(`full: \`steps\\.md#${id}\``, 'g');
-    task.body = task.body.replace(re, 'full: _pruned by housekeeping_');
-  }
-}
-
 /* -------------------------------- retitle -------------------------------- */
 
 /**
@@ -516,7 +499,7 @@ export function retitle(store: Store, task: Task, title: string): Task {
   const dest = path.join(path.dirname(task.dir), `${task.meta.id}-${slug}`);
   if (exists(dest)) throw new Error(`cannot move task: ${dest} already exists`);
   move(task.dir, dest);
-  const moved = readTaskDir(dest, path.relative(store.root, dest), task.archived);
+  const moved = readTaskDir(dest, path.relative(store.root, dest));
   if (!moved) throw new Error(`retitle failed for ${task.meta.id}`);
   moved.meta.slug = slug;
   saveTask(moved);
@@ -541,15 +524,10 @@ export function setStatus(store: Store, task: Task, status: Status, note?: strin
   saveTask(task);
 }
 
-/** used by housekeeping and archive/restore to add a plain log line */
-export function note(store: Store, task: Task, text: string, trailers: string[] = []): void {
-  appendLog(task, store.user, text, trailers);
-}
-
 /* ---------------------------------- read --------------------------------- */
 
 export function reload(_store: Store, task: Task): Task {
-  const t = readTaskDir(task.dir, task.rel, task.archived);
+  const t = readTaskDir(task.dir, task.rel);
   if (!t) throw new Error(`task disappeared: ${task.dir}`);
   return t;
 }

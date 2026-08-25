@@ -4,9 +4,12 @@ import path from 'node:path';
 import { test } from 'node:test';
 import { listBlocks } from '../dist/core/md.js';
 import { Store } from '../dist/core/store.js';
-import { createTask, fullSpec, logSection, specHistory, stepEntries } from '../dist/core/task.js';
+import { createTask, fullSpec, logSection, setStatus, specHistory, stepEntries } from '../dist/core/task.js';
 import { hasLegacyMarkers, migrate, rewriteMarkers } from '../dist/migrate.js';
+import { addStep } from '../dist/core/task.js';
 import { sandbox } from './helpers.mjs';
+import fs2 from 'node:fs';
+const readText = (f) => fs.readFileSync(f, 'utf8');
 
 /** rewrite a current-format task into the pre-0.2 layout */
 function downgrade(task) {
@@ -93,7 +96,7 @@ test('migrate merges per-step files and spec appendices into the current layout'
   assert.match(steps, /first step full context/);
   assert.match(steps, /second step full context/);
 
-  const fresh = Store.open().resolve('1');
+  const fresh = Store.open().loadTasks()[0];
   assert.match(fullSpec(fresh), /the v2 spec/);
   assert.match(specHistory(fresh), /## v1 —/);
   assert.match(specHistory(fresh), /> superseded: scope grew|the v1 spec/);
@@ -238,7 +241,7 @@ test('migrate moves the store, renames markers and keeps every step readable', (
 
   const migrated = Store.open(sb.dir);
   assert.equal(migrated.legacy, false);
-  const task = migrated.resolve('1');
+  const task = migrated.loadTasks()[0];
 
   // the load-bearing assertion: step blocks are still parseable after the rename
   assert.deepEqual(stepEntries(task.dir).map((e) => e.id), ['0001', '0002']);
@@ -313,4 +316,96 @@ test('marker migration touches structure only, never prose', (t) => {
   );
   assert.equal(hasLegacyMarkers('a line then <!-- dollie:header --> inline'), false);
   assert.equal(hasLegacyMarkers('<!-- dollie:header -->'), true);
+});
+
+test('migrate flattens archive/YYYY-MM/ back into tasks/ and drops the stamp', (t) => {
+  const sb = sandbox();
+  t.after(sb.cleanup);
+  const store = Store.open();
+  store.init();
+  const task = createTask(store, { title: 'Old work', specShort: 's' });
+  setStatus(store, task, 'done');
+  // simulate a pre-v5 store: task moved under archive/, frontmatter stamped
+  const bucket = path.join(sb.store, 'archive', '2026-07');
+  fs.mkdirSync(bucket, { recursive: true });
+  fs.renameSync(task.dir, path.join(bucket, path.basename(task.dir)));
+  const file = path.join(bucket, path.basename(task.dir), 'task.md');
+  fs.writeFileSync(file, readText(file).replace(/^status: done$/m, 'status: done\narchived: "2026-07-01T00:00:00Z"'));
+  // an empty bucket must not block flattening
+  fs.mkdirSync(path.join(sb.store, 'archive', '2026-06'), { recursive: true });
+
+  const dry = migrate(Store.open(), { dryRun: true });
+  assert.match(dry.actions.map((a) => a.detail).join('\n'), /archive\/2026-07\//, 'dry run previews the move');
+  assert.equal(fs.existsSync(bucket), true, 'dry run moves nothing');
+
+  migrate(Store.open());
+  const back = Store.open().loadTasks().find((x) => x.meta.id === task.meta.id);
+  assert.ok(back, 'archived task visible again');
+  assert.equal(back.rel, `tasks/${path.basename(task.dir)}`);
+  assert.doesNotMatch(readText(path.join(back.dir, 'task.md')), /^archived:/m, 'stamp dropped');
+  assert.equal(fs.existsSync(path.join(sb.store, 'archive')), false, 'empty archive tree removed');
+
+  const again = migrate(Store.open());
+  assert.equal(again.actions.length, 0, 'idempotent');
+});
+
+test('migrate rewrites sequential ids to hash ids, references included', (t) => {
+  const sb = sandbox();
+  t.after(sb.cleanup);
+  const store = Store.open();
+  store.init();
+  // build the pre-v6 fixture by hand: createTask already generates hash ids
+  const oldId = '0001';
+  const dir = path.join(sb.store, 'tasks', `${oldId}-legacy-id-here`);
+  fs.mkdirSync(path.join(dir, 'context'), { recursive: true });
+  fs.writeFileSync(
+    path.join(dir, 'task.md'),
+    [
+      '---',
+      `id: ${oldId}`,
+      'slug: legacy-id-here',
+      'title: Legacy id here',
+      'status: working',
+      'owner: tester',
+      'created: 2026-08-01T00:00:00Z',
+      'updated: 2026-08-01T00:00:00Z',
+      '---',
+      '',
+      `# ${oldId} · Legacy id here`,
+    ].join('\n'),
+  );
+  fs.writeFileSync(
+    path.join(dir, 'context', 'steps.md'),
+    [
+      `<!-- dolly steps · task ${oldId} · append-only -->`,
+      '# Full step context',
+      '',
+      '<!-- dolly:step 0001 -->',
+      'some work — full context',
+      '<!-- /dolly:step 0001 -->',
+      '',
+    ].join('\n'),
+  );
+
+  const dry = migrate(Store.open(), { dryRun: true });
+  assert.match(dry.actions.map((a) => a.detail).join('\n'), new RegExp(`${oldId} → `), 'dry run previews');
+  assert.equal(fs.existsSync(dir), true, 'dry run renames nothing');
+
+  migrate(Store.open());
+  assert.equal(fs.existsSync(dir), false, 'old directory gone');
+  const fresh = Store.open().loadTasks()[0];
+  assert.match(fresh.meta.id, /^[23456789bcdfghjkmnpqrstvwxyz]{8}$/);
+  assert.notEqual(fresh.meta.id, oldId);
+  assert.equal(fresh.meta.title, 'Legacy id here');
+  // the heading and the steps header comment follow the id; prose does not
+  assert.match(fs.readFileSync(path.join(fresh.dir, 'task.md'), 'utf8'),
+    new RegExp(`^# ${fresh.meta.id} · Legacy id here$`, 'm'));
+  const steps = fs.readFileSync(path.join(fresh.dir, 'context', 'steps.md'), 'utf8');
+  assert.match(steps, new RegExp(`<!-- dolly steps · task ${fresh.meta.id}\\b`));
+  assert.doesNotMatch(steps, new RegExp(`task ${oldId}\\b`));
+  // step entries keep their own numbers
+  assert.deepEqual(stepEntries(fresh.dir).map((e) => e.id), ['0001']);
+
+  const again = migrate(Store.open());
+  assert.equal(again.actions.length, 0, 'idempotent');
 });

@@ -75,26 +75,29 @@ test('config set/get walks dotted keys', (t) => {
   const got = dolly(sb.dir, ['config', 'get', 'install'], { DOLLY_DIR: sb.store });
   assert.deepEqual(JSON.parse(got), { scope: 'global', mcp: true });
 
-  dolly(sb.dir, ['config', 'set', 'housekeep.archiveDoneAfterDays', '30'], {
+  dolly(sb.dir, ['config', 'set', 'reindex.includeThinking', 'true'], {
     DOLLY_DIR: sb.store,
   });
-  const days = dolly(sb.dir, ['config', 'get', 'housekeep.archiveDoneAfterDays'], {
+  const thinking = dolly(sb.dir, ['config', 'get', 'reindex.includeThinking'], {
     DOLLY_DIR: sb.store,
   });
-  assert.equal(JSON.parse(days), 30);
+  assert.equal(JSON.parse(thinking), true);
 });
 
 test('repeated prose flags are not split on commas', (t) => {
   const sb = sandbox();
   t.after(sb.cleanup);
   Store.open().init();
-  dolly(sb.dir, ['new', 'Comma task',
-    '--criteria', 'filters, sorted by name, return only matches',
-    '--criteria', 'p95 under 300ms',
-    '--tag', 'a,b',
-  ], { DOLLY_DIR: sb.store });
+  const commaTask = JSON.parse(
+    dolly(sb.dir, ['new', 'Comma task',
+      '--criteria', 'filters, sorted by name, return only matches',
+      '--criteria', 'p95 under 300ms',
+      '--tag', 'a,b',
+      '--json',
+    ], { DOLLY_DIR: sb.store }),
+  );
 
-  const got = JSON.parse(dolly(sb.dir, ['show', '1', '--json'], { DOLLY_DIR: sb.store }));
+  const got = JSON.parse(dolly(sb.dir, ['show', commaTask.id, '--json'], { DOLLY_DIR: sb.store }));
   assert.deepEqual(got.criteria.split('\n'), [
     '- [ ] filters, sorted by name, return only matches',
     '- [ ] p95 under 300ms',
@@ -256,4 +259,81 @@ test('install pi is idempotent on rerun', (t) => {
   // instructions + mcp report no change the second time round
   assert.match(second, /up-to-date .*AGENTS\.md/);
   assert.match(second, /up-to-date .*\.mcp\.json/);
+});
+
+test('install opencode wires skills, commands, plugin, instructions and mcp', (t) => {
+  const sb = sandbox();
+  t.after(sb.cleanup);
+  Store.open().init();
+  fs.mkdirSync(path.join(sb.dir, '.config'), { recursive: true });
+
+  const out = dolly(sb.dir, ['install', 'opencode', '--local'], { DOLLY_DIR: sb.store });
+  assert.match(out, /scope: local/);
+
+  assert.ok(
+    fs.existsSync(path.join(sb.dir, '.opencode', 'skills', 'dolly', 'SKILL.md')),
+    'dolly skill copied into project .opencode/skills',
+  );
+  assert.ok(
+    fs.existsSync(path.join(sb.dir, '.opencode', 'skills', 'dolly-planning', 'SKILL.md')),
+    'dolly-planning skill copied into project .opencode/skills',
+  );
+
+  // flat command files named dolly-<cmd>.md → invoked as /dolly-<cmd>
+  assert.ok(fs.existsSync(path.join(sb.dir, '.opencode', 'commands', 'dolly-board.md')));
+  // opencode runs !`cmd` natively — the inline shell syntax must survive
+  const board = fs.readFileSync(path.join(sb.dir, '.opencode', 'commands', 'dolly-board.md'), 'utf8');
+  assert.match(board, /!`dolly board \$ARGUMENTS`/);
+
+  // the ambient-behavior plugin
+  const plugin = path.join(sb.dir, '.opencode', 'plugins', 'dolly.js');
+  assert.ok(fs.existsSync(plugin), 'plugin written to .opencode/plugins/dolly.js');
+  const body = fs.readFileSync(plugin, 'utf8');
+  assert.match(body, /experimental\.chat\.system\.transform/, 'session-start injection hook');
+  assert.match(body, /experimental\.session\.compacting/, 'compaction reinjection hook');
+  assert.match(body, /session\.idle/, 'turn-end auto-log trigger');
+  assert.match(body, /hook.*stop.*--from-stdin/s, 'auto-log feeds the stdin path');
+  assert.match(body, /hook.*session-start.*--raw/s, 'context shells the raw variant');
+  assert.match(body, /agent: "opencode"/, 'steps are stamped with the harness name');
+  assert.doesNotMatch(body, /@opencode-ai/, 'no hard dependency on an opencode package');
+
+  // display-only commands: intercepted, run via session.shell, LLM skipped
+  assert.match(body, /command\.execute\.before/);
+  assert.match(body, /session\.shell/);
+
+  assert.ok(fs.existsSync(path.join(sb.dir, 'AGENTS.md')), 'instructions in AGENTS.md');
+  assert.ok(fs.existsSync(path.join(sb.dir, 'opencode.json')), 'mcp registered');
+
+  const cfg = JSON.parse(fs.readFileSync(path.join(sb.dir, 'opencode.json'), 'utf8'));
+  assert.deepEqual(cfg.mcp.dolly, { type: 'local', command: ['dolly', 'mcp'], enabled: true });
+});
+
+test('install opencode is idempotent on rerun', (t) => {
+  const sb = sandbox();
+  t.after(sb.cleanup);
+  Store.open().init();
+
+  dolly(sb.dir, ['install', 'opencode', '--local'], { DOLLY_DIR: sb.store });
+  const second = dolly(sb.dir, ['install', 'opencode', '--local'], { DOLLY_DIR: sb.store });
+
+  assert.match(second, /up-to-date .*plugins[/\\]dolly\.js/);
+  assert.match(second, /up-to-date .*AGENTS\.md/);
+});
+
+test('install opencode --global resolves under ~/.config/opencode', (t) => {
+  const sb = sandbox();
+  t.after(sb.cleanup);
+  Store.open().init();
+  const fakeHome = path.join(sb.dir, 'home');
+  fs.mkdirSync(path.join(fakeHome, '.config', 'opencode'), { recursive: true });
+
+  dolly(sb.dir, ['install', 'opencode', '--global'], { DOLLY_DIR: sb.store, HOME: fakeHome });
+
+  assert.ok(fs.existsSync(path.join(fakeHome, '.config', 'opencode', 'skills', 'dolly', 'SKILL.md')));
+  assert.ok(fs.existsSync(path.join(fakeHome, '.config', 'opencode', 'plugins', 'dolly.js')));
+  assert.ok(fs.existsSync(path.join(fakeHome, '.config', 'opencode', 'AGENTS.md')));
+  const cfg = JSON.parse(
+    fs.readFileSync(path.join(fakeHome, '.config', 'opencode', 'opencode.json'), 'utf8'),
+  );
+  assert.equal(cfg.mcp.dolly.enabled, true, 'mcp registered in global config');
 });

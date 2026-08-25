@@ -49,7 +49,7 @@ test('a safe migration runs unattended and stamps the version', (t) => {
   const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
   cfg.user = 'someone-else';
   fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2), 'utf8');
-  fs.writeFileSync(path.join(sb.store, '.gitignore'), '.housekeep.json\n', 'utf8');
+  fs.writeFileSync(path.join(sb.store, '.gitignore'), '*.tmp-*\n', 'utf8');
 
   const p = pending(Store.open());
   assert.equal(p.length, 1);

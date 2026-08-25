@@ -119,7 +119,7 @@ export function renderDigest(
   out.push('');
   out.push(
     [
-      `- title (from Claude Code): ${t.title}`,
+      `- title: ${t.title}`,
       `- transcript: ${t.file}`,
       `- cwd: ${t.cwd}${t.branch ? ` · branch: ${t.branch}` : ''}`,
       `- span: ${t.startedAt || '?'} → ${t.endedAt || '?'}`,
@@ -214,7 +214,7 @@ export function applyReindex(store: Store, t: Transcript, opts: ReindexOpts): Ap
   let created = false;
 
   if (opts.into) {
-    task = store.resolve(opts.into, false);
+    task = store.resolve(opts.into);
   } else {
     const existing = findImportedTask(store, t.sessionId);
     if (existing) {
@@ -264,7 +264,7 @@ export function applyReindex(store: Store, t: Transcript, opts: ReindexOpts): Ap
 
 /** a task that already carries steps from this session */
 function findImportedTask(store: Store, sessionId: string): Task | null {
-  for (const task of store.loadTasks(false)) {
+  for (const task of store.loadTasks()) {
     const raw = readTextOr(stepsFile(task.dir));
     if (raw.includes(`session ${sessionId}`)) return task;
   }
@@ -378,14 +378,14 @@ function importedShortSpec(t: Transcript): string {
   return [
     lines || '_no opening request found in the transcript_',
     '',
-    `_Imported from Claude Code session ${t.sessionId.slice(0, 8)}. Replace with a written spec: \`dolly spec <ref> --short … --file …\`._`,
+    `_Imported from session ${t.sessionId.slice(0, 8)}. Replace with a written spec: \`dolly spec <ref> --short … --file …\`._`,
   ].join('\n');
 }
 
 function importedFullSpec(t: Transcript): string {
   const out: string[] = [`# ${t.title}`, ''];
   out.push(
-    `> Reconstructed by \`dolly reindex\` from Claude Code session \`${t.sessionId}\`.`,
+    `> Reconstructed by \`dolly reindex\` from session \`${t.sessionId}\`.`,
     '> The requests below are verbatim; nothing here has been reviewed by a human.',
     '',
   );

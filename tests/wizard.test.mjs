@@ -134,8 +134,6 @@ test('the defaults the wizard opens on are the shipped defaults', async (t) => {
   assert.equal(cfg.install.scope, 'local');
   assert.equal(cfg.install.mcp, true);
   assert.equal(cfg.reindex.autoLog, true);
-  assert.equal(cfg.housekeep.archiveDoneAfterDays, 14);
-  assert.equal(cfg.housekeep.staleAfterDays, 60);
   assert.equal(fs.existsSync(path.join(g.project, '.dolly', 'local.json')), false, 'no pinned handle');
 });
 
@@ -245,7 +243,8 @@ test('switching back to the repo moves the tasks and drops the link', async (t) 
     cwd: g.project,
   });
   dolly(g.project, ['new', 'survivor', '--short', 'must live']);
-  dolly(g.project, ['step', '0001', '-m', 'a step that must survive the move']);
+  const survivorId = JSON.parse(dolly(g.project, ['board', '--json'])).tasks[0].id;
+  dolly(g.project, ['step', survivorId, '-m', 'a step that must survive the move']);
 
   const res = await runWizard({
     term: replyTerm({ reply: [[/task memory live/i, ['up', 'return']], NO_AGENTS, NO_STAGE] }),
@@ -325,7 +324,6 @@ test('every non-default answer lands in the file that owns it', async (t) => {
       [/MCP server/i, 'n'],
       [/hooks/i, 'n'],
       [/Auto-log/i, 'n'],
-      [/Housekeeping/i, ['down', 'down', 'return']], // tidy
       NO_BRIEF,
       NO_STAGE,
     ],
@@ -340,8 +338,6 @@ test('every non-default answer lands in the file that owns it', async (t) => {
   assert.equal(cfg.install.scope, 'global');
   assert.equal(cfg.install.mcp, false);
   assert.equal(cfg.reindex.autoLog, false);
-  assert.equal(cfg.housekeep.archiveDoneAfterDays, 7);
-  assert.equal(cfg.housekeep.staleAfterDays, 30);
   assert.equal(cfg.user, undefined, 'the handle never reaches the shared config');
 
   const local = JSON.parse(fs.readFileSync(path.join(root, 'local.json'), 'utf8'));
@@ -358,18 +354,6 @@ test('every non-default answer lands in the file that owns it', async (t) => {
     false,
     'hooks declined, so settings.json was never touched',
   );
-});
-
-test('custom housekeeping windows are typed in', async (t) => {
-  const g = ground(t);
-  const term = replyTerm({
-    reply: [NO_AGENTS, [/Housekeeping/i, ['down', 'down', 'down', 'return']], NO_BRIEF, NO_STAGE],
-    lines: ['', '3', '9'], // handle (default), archive days, stale days
-  });
-  await runWizard({ term, cwd: g.project });
-  const cfg = JSON.parse(fs.readFileSync(path.join(g.project, '.dolly', 'config.json'), 'utf8'));
-  assert.equal(cfg.housekeep.archiveDoneAfterDays, 3);
-  assert.equal(cfg.housekeep.staleAfterDays, 9);
 });
 
 test('accepting the project brief offer creates it, declining does not', async (t) => {
@@ -455,8 +439,8 @@ test('the numbered path reaches the same result as the arrow-key path', async (t
 
   const typed = ground(t);
   // store: 2 (private) · agents: n then enter · scope/mcp/hooks skipped (no agents)
-  // handle: enter · autolog: enter · housekeeping: enter · brief: n
-  const term = replyTerm({ raw: false, lines: ['2', 'n', '', '', '', '', 'n'] });
+  // handle: enter · autolog: enter · brief: n
+  const term = replyTerm({ raw: false, lines: ['2', 'n', '', '', '', 'n'] });
   const res = await runWizard({ term, cwd: typed.project });
 
   assert.equal(res.storeChoice, 'global');
@@ -517,7 +501,6 @@ test('--yes takes the defaults and prints no prompt', (t) => {
   assert.doesNotMatch(out, /Where should|↑↓|\[Y\/n\]/);
   const cfg = JSON.parse(fs.readFileSync(path.join(g.project, '.dolly', 'config.json'), 'utf8'));
   assert.equal(cfg.install.scope, 'local');
-  assert.equal(cfg.housekeep.archiveDoneAfterDays, 14);
 });
 
 test('--store is honoured on the non-interactive path, not silently dropped', (t) => {

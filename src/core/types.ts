@@ -5,11 +5,13 @@
  * 2 — the dollie -> dolly rename: directory name and parsed block markers
  * 3 — merged layout: one spec.md with history, one steps.md with every entry
  * 4 — identity split out of the shared config into gitignored local.json
+ * 5 — housekeeping removed: archive/YYYY-MM/ flattened back into tasks/
+ * 6 — sequential ids rewritten to random hash ids
  *
  * Bump this and add a Migration whenever the layout changes. A store stamped
  * higher than this is from a newer dolly and must not be written to.
  */
-export const STORE_VERSION = 4;
+export const STORE_VERSION = 6;
 
 export const DEFAULT_STATUSES = [
   'todo',
@@ -35,9 +37,6 @@ export interface TaskMeta {
   updated: string;
   /** Claude Code session ids this task was worked in, oldest first */
   sessions: string[];
-  stale?: boolean;
-  /** set when housekeeping archived the task */
-  archived?: string;
 }
 
 export interface Task {
@@ -48,7 +47,6 @@ export interface Task {
   rel: string;
   /** raw body of task.md, frontmatter stripped */
   body: string;
-  archived: boolean;
 }
 
 export interface InstallConfig {
@@ -75,20 +73,12 @@ export interface ReindexConfig {
   includeThinking: boolean;
 }
 
-export interface HousekeepConfig {
-  /** archive `done` tasks whose `updated` is older than N days. 0 = never */
-  archiveDoneAfterDays: number;
-  /** flag non-done tasks untouched for N days as stale. 0 = never */
-  staleAfterDays: number;
-  /** delete archived task dirs older than N days. 0 = keep forever */
-  deleteArchivedAfterDays: number;
-  /** keep at most N full step-context files per task. 0 = keep all */
-  keepFullStepsPerTask: number;
-  /** keep at most N superseded spec versions in the history section. 0 = keep all */
-  keepSpecVersions: number;
-  /** run housekeeping automatically at most once per `autoEveryHours` */
+export interface MemoConfig {
+  /**
+   * When true, the session-start hook notes it when today has no memo yet —
+   * a nudge, never an auto-write. The memo itself is always written on purpose.
+   */
   auto: boolean;
-  autoEveryHours: number;
 }
 
 export interface Config {
@@ -100,7 +90,7 @@ export interface Config {
   doneStatus: Status;
   /** sections a plan must fill before `dolly plan check` passes */
   planSections: string[];
-  housekeep: HousekeepConfig;
+  memo: MemoConfig;
   install: InstallConfig;
   reindex: ReindexConfig;
   /** override the auto-detected identity */
@@ -122,16 +112,8 @@ export const DEFAULT_CONFIG: Config = {
     'Test Plan',
     'Open Questions',
   ],
-  housekeep: {
-    archiveDoneAfterDays: 14,
-    staleAfterDays: 60,
-    deleteArchivedAfterDays: 0,
-    // 0 = keep everything. Pruning deletes step bodies, and "never destructive
-    // by default" is a stated invariant of the store — so this is opt-in.
-    keepFullStepsPerTask: 0,
-    keepSpecVersions: 0,
-    auto: true,
-    autoEveryHours: 24,
+  memo: {
+    auto: false,
   },
   install: {
     scope: 'local',

@@ -27,7 +27,7 @@ dolly related --files a.ts,b.ts      # who else has been in this code, and what 
 dolly context <ref>                  # ← includes project brief + related tasks automatically
 ```
 
-`dolly related` is the one nobody else can give you: dolly records the files every step touched, so it can tell you **task 0003 also edited `src/auth/token.ts`, and here is what it decided**. Read that before changing shared code — you may be about to undo a deliberate choice.
+`dolly related` is the one nobody else can give you: dolly records the files every step touched, so it can tell you **another task also edited `src/auth/token.ts`, and here is what it decided**. Read that before changing shared code — you may be about to undo a deliberate choice.
 
 Symptoms you skipped this: reinventing a convention that already exists, two tasks editing the same file in opposite directions, asking the user something the repo already answers, "adding" something task 0005 already built.
 
@@ -44,7 +44,7 @@ Symptoms you skipped this: reinventing a convention that already exists, two tas
 
 Session start already inject spec + criteria + last events. That is the index, NOT the record. Still run `dolly context` before editing.
 
-`<ref>` = id (`3`, `0003`) · slug · unique substring · `current` · `@`.
+`<ref>` = 8-char hash id (`3pkndyj2`) · legacy number · slug · unique substring · fuzzy title · `current` · `@`. Ambiguous → interactive picker.
 
 Output written for you, not humans. Read it whole. It carry decisions and dead ends from previous sessions — including other people's sessions.
 
@@ -119,7 +119,7 @@ Feature that need questions answered → use the **dolly-planning** skill instea
 ```
 .dolly/
   config.json
-  tasks/0001-oauth-login/
+  tasks/b4tk7s2m-oauth-login/
     task.md          # meta + short spec + criteria + one-line-per-event log  ← the shared file
     context/
       spec.md        # current full spec on top, superseded versions below it
@@ -141,9 +141,8 @@ Feature that need questions answered → use the **dolly-planning** skill instea
 - Never hand-edit `.dolly/**`. CLI keep frontmatter, versions, step counters consistent. Hand-edit break them.
 - Steps append-only. Wrong step → new step correcting it. No rewriting history.
 - One task = one feature. Scope grow → new task, link it in the step detail.
-- Commit `.dolly/` with the code. Teammates read your steps, you read theirs.
+- Commit `.dolly/` with the code. Teammates read your steps, you read theirs. Exception: store kept outside the repo (`dolly whoami` say `linked`/`global`) — private to that user, nothing to commit, no `.dolly/` in the repo at all.
 - Every step stamped with GitHub handle (`gh api user` → git email → `$USER`). `DOLLY_USER` override.
-- `dolly housekeep --dry-run` show what ages out. Auto-runs once/day. Tune in `.dolly/config.json`.
 
 ## Conversation already started without dolly?
 
@@ -185,8 +184,8 @@ Turn it off: `dolly config set reindex.autoLog false`.
 Every step record the Claude Code session it happened in.
 
 ```
-dolly continue 0003          # prints/opens `claude --resume <session>`
-dolly continue 0003 --fork   # resume as a new branch, leaving the original intact
+dolly continue oauth login   # fuzzy title match; hash ids work too
+dolly continue b4tk7s2m --fork  # resume as a new branch, leaving the original intact
 ```
 
 Useful when the step log is not enough and you want the actual dialogue back.

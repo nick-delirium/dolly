@@ -19,7 +19,7 @@ Task memory live in the dolly store. Usually \`.dolly/\` at repo root — git-tr
 - \`dolly context <ref> -n 0\` — every step in full. Archaeology only.
 - \`dolly continue <ref>\` — reopen the Claude Code conversation a task was worked in (\`claude --resume <session>\`).
 Session-start injection is an index, not the record. Still run \`dolly context\`.
-\`<ref>\` = id (\`3\`, \`0003\`), slug, unique substring, or \`current\`.
+\`<ref>\` = id (8-char hash, e.g. \`3pkndyj2\`), slug, unique substring, fuzzy title, or \`current\`.
 
 **Log every major step. Not optional.**
 \`\`\`
@@ -66,8 +66,6 @@ dolly reindex --apply            # import: creates task, one step per turn. Idem
 Then replace the imported spec with a real one (\`dolly spec\`) — import only stitches raw requests together, you have the actual understanding.
 
 **Auto-logging** — with hooks installed dolly appends a mechanical step per finished turn from the transcript, so the log has no holes. It skips any turn you logged yourself, and its summaries are worse than yours. Keep logging real steps; treat auto-entries as the floor. Off: \`dolly config set reindex.autoLog false\`.
-
-**Housekeeping** — \`dolly housekeep --dry-run\` shows what ages out. Runs automatically once/day. Config in \`.dolly/config.json\`.
 
 **Version skew** — the store carries a schema version. Lossless upgrades apply themselves; anything that moves or rewrites data warns and waits for \`dolly migrate\`. If dolly refuses a write because the store is NEWER than your dolly, do NOT force it — a teammate wrote it with a newer version, so upgrade dolly instead.
 

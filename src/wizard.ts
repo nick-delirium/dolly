@@ -157,26 +157,6 @@ export async function runWizard(opts: WizardOpts): Promise<WizardResult> {
     value: cfg.reindex.autoLog,
   });
 
-  const preset = await select<'keep' | 'default' | 'tidy' | 'custom'>(term, {
-    question: 'Housekeeping',
-    index: housekeepPresetIndex(cfg),
-    choices: [
-      { value: 'default', label: 'balanced', hint: 'archive done after 14d, flag untouched after 60d' },
-      { value: 'keep', label: 'keep everything', hint: 'never archive, never flag' },
-      { value: 'tidy', label: 'tidy', hint: 'archive done after 7d, flag untouched after 30d' },
-      { value: 'custom', label: 'custom…', hint: 'pick both windows' },
-    ],
-  });
-  let archiveDays = cfg.housekeep.archiveDoneAfterDays;
-  let staleDays = cfg.housekeep.staleAfterDays;
-  if (preset === 'default') [archiveDays, staleDays] = [14, 60];
-  else if (preset === 'keep') [archiveDays, staleDays] = [0, 0];
-  else if (preset === 'tidy') [archiveDays, staleDays] = [7, 30];
-  else {
-    archiveDays = await days(term, 'Archive done tasks after how many days? (0 = never)', archiveDays);
-    staleDays = await days(term, 'Flag untouched tasks as stale after how many days? (0 = never)', staleDays);
-  }
-
   /* -------------------------------- apply ------------------------------- */
 
   const wrote: string[] = [];
@@ -223,7 +203,6 @@ export async function runWizard(opts: WizardOpts): Promise<WizardResult> {
     ...cfg,
     install: { scope, mcp },
     reindex: { ...cfg.reindex, autoLog },
-    housekeep: { ...cfg.housekeep, archiveDoneAfterDays: archiveDays, staleAfterDays: staleDays },
   };
   if (changed(cfg, desired)) {
     if (!dryRun) next.saveConfig(desired);
@@ -318,23 +297,6 @@ export async function runWizard(opts: WizardOpts): Promise<WizardResult> {
 function tildify(p: string): string {
   const h = os.homedir();
   return h && p.startsWith(h) ? `~${p.slice(h.length)}` : p;
-}
-
-async function days(term: Term, question: string, value: number): Promise<number> {
-  const raw = await text(term, {
-    question,
-    value: String(value),
-    validate: (s) => (/^\d+$/.test(s.trim()) ? null : 'whole number of days, or 0'),
-  });
-  return Number(raw.trim());
-}
-
-function housekeepPresetIndex(cfg: Config): number {
-  const { archiveDoneAfterDays: a, staleAfterDays: s } = cfg.housekeep;
-  if (a === 14 && s === 60) return 0;
-  if (a === 0 && s === 0) return 1;
-  if (a === 7 && s === 30) return 2;
-  return 3;
 }
 
 /** did any answer actually change the config? `user` is per-person, never here */

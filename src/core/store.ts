@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -13,6 +14,7 @@ import {
   writeJson,
   writeText,
 } from './fsx.js';
+import { fuzzyBest } from './fuzzy.js';
 import { parseFrontmatter } from './md.js';
 import { commonDir, ensureRepo, repoRoot } from './git.js';
 import { resolveIdentity, type Identity } from './identity.js';
@@ -27,7 +29,39 @@ export const LOCAL_CONFIG = 'local.json';
 /** pre-rename directory name; still discovered so `dolly migrate` can move it */
 export const LEGACY_STORE_DIRNAME = '.dollie';
 export const TASKS = 'tasks';
-export const ARCHIVE = 'archive';
+
+/**
+ * Alphabet for generated task ids: base32 minus vowels and the digits/letters
+ * that read as each other. 28^8 ≈ 3.8×10^11 values, none of which spell
+ * anything or get mistyped as another.
+ */
+export const ID_ALPHABET = '23456789bcdfghjkmnpqrstvwxyz';
+const ID_LENGTH = 8;
+
+/** below this an alignment is noise, not a match */
+const FUZZY_THRESHOLD = 30;
+
+/** random id drawn from ID_ALPHABET; uniqueness against existing tasks is the caller's job */
+export function newHashId(): string {
+  let out = '';
+  for (const b of randomBytes(ID_LENGTH)) out += ID_ALPHABET[b % ID_ALPHABET.length];
+  return out;
+}
+
+/** thrown when a ref matches several tasks; carries them ranked best-first */
+export class AmbiguousRef extends Error {
+  candidates: Task[];
+  constructor(ref: string, candidates: Task[]) {
+    super(
+      `ambiguous task ref "${ref}" — matches: ${candidates
+        .slice(0, 5)
+        .map((t) => `${t.meta.id} ${t.meta.slug}`)
+        .join(', ')}${candidates.length > 5 ? `, +${candidates.length - 5} more` : ''}`,
+    );
+    this.name = 'AmbiguousRef';
+    this.candidates = candidates;
+  }
+}
 
 /**
  * The store explains itself to whoever opens it — including the fact that an
@@ -57,7 +91,6 @@ Written and read by coding agents via the \`dolly\` CLI (\`npm i -g dolly\`).
 - \`tasks/NNNN-slug/context/steps.md\` — full context of each step, append-only:
   decisions, rejected options, gotchas, what to do next.
 - \`tasks/NNNN-slug/context/plan.md\` — the planning interview, when there was one.
-- \`archive/YYYY-MM/\` — tasks aged out by \`dolly housekeep\`.
 
 Read with \`dolly board\`, \`dolly show <ref>\`, \`dolly context <ref>\`.
 Do not hand-edit these files — the CLI maintains frontmatter, spec versions and
@@ -498,10 +531,6 @@ export class Store {
     return path.join(this.root, TASKS);
   }
 
-  get archiveDir(): string {
-    return path.join(this.root, ARCHIVE);
-  }
-
   get identity(): Identity {
     if (!this._identity) this._identity = resolveIdentity(this.project, this.config.user);
     return this._identity;
@@ -513,12 +542,7 @@ export class Store {
 
   init(): void {
     ensureDir(this.tasksDir);
-    ensureDir(this.archiveDir);
     if (!exists(this.configPath)) writeJson(this.configPath, DEFAULT_CONFIG);
-    // Machine-local state must never reach the shared store: the housekeeping
-    // marker would conflict on every pull, and agents sometimes drop their own
-    // per-user settings inside whatever directory they are pointed at.
-    // Merged rather than overwritten so an older store gains new entries.
     const ignore = path.join(this.root, '.gitignore');
     const want = REQUIRED_IGNORES;
     const have = readTextOr(ignore).split('\n').map((l) => l.trim());
@@ -554,41 +578,33 @@ export class Store {
     writeJson(this.configPath, shared);
   }
 
-  /** every task dir under tasks/ plus, when asked, archive/<bucket>/ */
-  taskDirs(includeArchived = false): { dir: string; rel: string; archived: boolean }[] {
-    const out: { dir: string; rel: string; archived: boolean }[] = [];
+  /** every task dir under tasks/ */
+  taskDirs(): { dir: string; rel: string }[] {
+    const out: { dir: string; rel: string }[] = [];
     for (const name of listDirs(this.tasksDir)) {
-      out.push({ dir: path.join(this.tasksDir, name), rel: `${TASKS}/${name}`, archived: false });
-    }
-    if (includeArchived) {
-      for (const bucket of listDirs(this.archiveDir)) {
-        for (const name of listDirs(path.join(this.archiveDir, bucket))) {
-          out.push({
-            dir: path.join(this.archiveDir, bucket, name),
-            rel: `${ARCHIVE}/${bucket}/${name}`,
-            archived: true,
-          });
-        }
-      }
+      out.push({ dir: path.join(this.tasksDir, name), rel: `${TASKS}/${name}` });
     }
     return out;
   }
 
-  loadTasks(includeArchived = false): Task[] {
+  loadTasks(): Task[] {
     const tasks: Task[] = [];
-    for (const d of this.taskDirs(includeArchived)) {
-      const t = readTaskDir(d.dir, d.rel, d.archived);
+    for (const d of this.taskDirs()) {
+      const t = readTaskDir(d.dir, d.rel);
       if (t) tasks.push(t);
     }
     return tasks.sort((a, b) => a.meta.id.localeCompare(b.meta.id));
   }
 
   /**
-   * Resolve a user-supplied reference: exact id ("7" or "0007"), exact slug,
-   * unique slug/title substring, or `current` / `@` for the active task.
+   * Resolve a user-supplied reference: exact id ("7", "0007", or a hash),
+   * exact slug, unique substring, fuzzy title match — or `current` / `@` for
+   * the active task. Ambiguity is reported as {@link AmbiguousRef} carrying
+   * the ranked candidates, so an interactive caller can offer a picker while
+   * a scripted one prints them.
    */
-  resolve(ref: string, includeArchived = true): Task {
-    const tasks = this.loadTasks(includeArchived);
+  resolve(ref: string): Task {
+    const tasks = this.loadTasks();
     if (!tasks.length) throw new Error('no tasks yet — run `dolly new "<title>"`');
 
     if (ref === 'current' || ref === '@' || ref === '.') {
@@ -604,40 +620,58 @@ export class Store {
     const bySlug = tasks.filter((t) => t.meta.slug === ref);
     if (bySlug.length === 1) return bySlug[0];
 
-    const needle = ref.toLowerCase();
-    const fuzzy = tasks.filter(
-      (t) =>
-        t.meta.slug.includes(needle) ||
-        t.meta.title.toLowerCase().includes(needle) ||
-        t.rel.toLowerCase().includes(needle),
-    );
-    if (fuzzy.length === 1) return fuzzy[0];
-    if (fuzzy.length > 1) {
-      const list = fuzzy.map((t) => `${t.meta.id} ${t.meta.slug}`).join(', ');
-      throw new Error(`ambiguous task ref "${ref}" — matches: ${list}`);
-    }
-    throw new Error(`no task matching "${ref}"`);
+    const candidates = this.search(ref);
+    if (candidates.length === 1) return candidates[0];
+    if (!candidates.length) throw new Error(`no task matching "${ref}"`);
+    throw new AmbiguousRef(ref, candidates);
   }
 
   nextId(): string {
-    let max = 0;
-    for (const d of this.taskDirs(true)) {
-      const m = /^(\d+)-/.exec(path.basename(d.dir));
-      if (m) max = Math.max(max, Number(m[1]));
+    const taken = new Set(this.taskDirs().map((d) => path.basename(d.dir).split('-')[0]));
+    for (;;) {
+      const id = newHashId();
+      if (!taken.has(id)) return id;
+      // 28^8 ≈ 3.8×10^11 — a collision is rare, regenerating is free
     }
-    return String(max + 1).padStart(4, '0');
+  }
+
+  /**
+   * Ranked candidate tasks for a reference that was not an exact hit:
+   * word-prefix matches first, then substrings, then fuzzy alignment of the
+   * title/slug. Empty when nothing plausibly matches.
+   */
+  search(ref: string): Task[] {
+    const tasks = this.loadTasks();
+    if (!tasks.length || ref === 'current' || ref === '@' || ref === '.') return [];
+    const needle = ref.toLowerCase();
+    const scored: { task: Task; score: number }[] = [];
+    for (const t of tasks) {
+      const title = t.meta.title.toLowerCase();
+      const slug = t.meta.slug.toLowerCase();
+      let score: number | null = null;
+      if (title.startsWith(needle)) score = 5000;
+      else if (slug.startsWith(needle)) score = 4500;
+      else if (title.includes(needle)) score = 4000;
+      else if (slug.includes(needle) || t.rel.toLowerCase().includes(needle)) score = 3500;
+      else {
+        const f = fuzzyBest(ref, [t.meta.title, t.meta.slug]);
+        // threshold keeps one-letter typos from matching half the board
+        if (f !== null && f >= FUZZY_THRESHOLD) score = f;
+      }
+      if (score !== null) scored.push({ task: t, score });
+    }
+    scored.sort(
+      (a, b) =>
+        b.score - a.score ||
+        b.task.meta.updated.localeCompare(a.task.meta.updated) ||
+        a.task.meta.id.localeCompare(b.task.meta.id),
+    );
+    return scored.map((x) => x.task);
   }
 }
 
 /** entries the store's own .gitignore must contain */
-export const REQUIRED_IGNORES = [
-  '.housekeep.json',
-  LOCAL_CONFIG,
-  '*.tmp-*',
-  '.claude/',
-  '.cursor/',
-  '.codex/',
-];
+export const REQUIRED_IGNORES = [LOCAL_CONFIG, '*.tmp-*', '.claude/', '.cursor/', '.codex/'];
 
 /** ignore entries not yet present — a store written by an older dolly lacks them */
 export function missingIgnores(root: string): string[] {
@@ -672,7 +706,7 @@ export function loadConfig(root: string): Config {
   return {
     ...DEFAULT_CONFIG,
     ...raw,
-    housekeep: { ...DEFAULT_CONFIG.housekeep, ...(raw.housekeep ?? {}) },
+    memo: { ...DEFAULT_CONFIG.memo, ...(raw.memo ?? {}) },
     install: { ...DEFAULT_CONFIG.install, ...(raw.install ?? {}) },
     reindex: { ...DEFAULT_CONFIG.reindex, ...(raw.reindex ?? {}) },
     statuses: raw.statuses?.length ? raw.statuses : DEFAULT_CONFIG.statuses,
@@ -687,17 +721,21 @@ export function sharedUserLeak(root: string): string | null {
   return typeof raw.user === 'string' && raw.user.trim() ? raw.user.trim() : null;
 }
 
-export function readTaskDir(dir: string, rel: string, archived: boolean): Task | null {
+export function readTaskDir(dir: string, rel: string): Task | null {
   const file = path.join(dir, 'task.md');
   if (!exists(file)) return null;
   const raw = readTextOr(file);
   const { front, body } = parseFrontmatter(raw);
   const base = path.basename(dir);
-  const m = /^(\d+)-(.*)$/.exec(base);
+  // ids are sequential numbers (pre-v6) or 8-char hashes; the slug follows the
+  // first dash. The frontmatter stays the authority when present.
+  const dash = base.indexOf('-');
+  const dirId = dash > 0 && /^[\da-z]+$/i.test(base.slice(0, dash)) ? base.slice(0, dash) : '';
+  const dirSlug = dash > 0 ? base.slice(dash + 1) : base;
   const meta: TaskMeta = {
-    id: String(front.id ?? m?.[1] ?? base),
-    slug: String(front.slug ?? m?.[2] ?? base),
-    title: String(front.title ?? m?.[2] ?? base),
+    id: String(front.id ?? dirId ?? base),
+    slug: String(front.slug ?? dirSlug ?? base),
+    title: String(front.title ?? dirSlug ?? base),
     status: String(front.status ?? 'todo'),
     owner: String(front.owner ?? 'unknown'),
     collaborators: toStrArray(front.collaborators),
@@ -707,10 +745,8 @@ export function readTaskDir(dir: string, rel: string, archived: boolean): Task |
     created: String(front.created ?? ''),
     updated: String(front.updated ?? front.created ?? ''),
     sessions: toStrArray(front.sessions),
-    stale: front.stale === true ? true : undefined,
-    archived: front.archived ? String(front.archived) : undefined,
   };
-  return { meta, dir, rel, body, archived };
+  return { meta, dir, rel, body };
 }
 
 function toStrArray(v: unknown): string[] {
@@ -731,7 +767,7 @@ export function byRecency(a: Task, b: Task): number {
 /** the task an agent is presumed to be working on right now */
 export function currentTask(tasks: Task[], config: Config): Task | null {
   const priority = ['working', 'validating', 'planning'];
-  const live = tasks.filter((t) => !t.archived && t.meta.status !== config.doneStatus);
+  const live = tasks.filter((t) => t.meta.status !== config.doneStatus);
   for (const status of priority) {
     const hits = live.filter((t) => t.meta.status === status).sort(byRecency);
     if (hits.length) return hits[0];
