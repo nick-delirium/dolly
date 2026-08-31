@@ -3,13 +3,15 @@
  *
  * Claude Code exports `CLAUDE_CODE_SESSION_ID`, and it is exactly the basename
  * of the session's transcript — so dolly can attribute a step to a
- * conversation, and later reopen it, without parsing anything.
+ * conversation, and later reopen it, without parsing anything. zcode injects
+ * the same value as `CLAUDE_SESSION_ID` into hook processes.
  */
 export function currentSessionId(): string | null {
   const v =
     process.env.DOLLY_SESSION_ID?.trim() ||
     process.env.DOLLIE_SESSION_ID?.trim() || // pre-rename name, still honoured
-    process.env.CLAUDE_CODE_SESSION_ID?.trim();
+    process.env.CLAUDE_CODE_SESSION_ID?.trim() ||
+    process.env.CLAUDE_SESSION_ID?.trim(); // zcode hooks
   return v || null;
 }
 

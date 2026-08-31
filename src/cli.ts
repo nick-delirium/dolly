@@ -1,11 +1,10 @@
 #!/usr/bin/env node
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { bool, list, num, parseArgs, repeated, str, type Args } from './core/args.js';
-import fs2 from 'node:fs';
-import path2 from 'node:path';
 import { exists, isDir, readStdin, readTextOr, writeJson, writeText } from './core/fsx.js';
 import { buildDigest, hasMemo, memoFile, renderDigest as renderMemoDigest, today } from './core/memo.js';
 import { applyPlan, dirtyClone, installedVersion, planUpdate } from './core/selfupdate.js';
@@ -53,7 +52,7 @@ import {
   updateSpec,
   linkSession,
 } from './core/task.js';
-import { DEFAULT_CONFIG, type Task } from './core/types.js';
+import { DEFAULT_CONFIG, type Status, type Task } from './core/types.js';
 import { humanAge } from './core/time.js';
 import { installTargets, TARGETS } from './install.js';
 import { runMcpServer } from './mcp.js';
@@ -120,7 +119,6 @@ TASKS
   spec <ref> [--short t] [--file f|-] [--criteria c] [--reason why]
   status <ref> <status> [--note t]
   retitle <ref> "<new title>"                 renames the task and its directory
-  archive <ref> [--note t] | restore <ref>
 
 PLANNING
   plan start "<title>" [--brief t]
@@ -171,7 +169,7 @@ existing, an entry can be stale. \`dolly projects\` lists it.`;
 /** commands that write to the store; a newer store must refuse these */
 const WRITE_COMMANDS = new Set([
   'new', 'add', 'step', 'spec', 'status', 'move', 'retitle', 'rename',
-  'plan', 'reindex', 'adopt', 'memo',
+  'plan', 'reindex', 'adopt',
   'config', 'project', 'setup',
 ]);
 
@@ -188,17 +186,22 @@ const NO_AUTO = new Set([
  * Lossless migrations are applied here without being asked; risky ones only warn
  * and wait for `dolly migrate`.
  */
+/** the message for a store this dolly is too old to write to */
+function newerStoreMsg(state: { store: number; code: number }): string {
+  return (
+    `this store is at schema version ${state.store}, but this dolly understands ${state.code}. ` +
+    'It was written by a newer dolly — upgrade dolly before writing to it.'
+  );
+}
+
 function guardStoreVersion(cmd: string): void {
   const store = Store.open();
   if (!store.exists) return;
   const state = versionState(store);
 
   if (state.newer) {
-    const msg =
-      `this store is at schema version ${state.store}, but this dolly understands ${state.code}. ` +
-      'It was written by a newer dolly — upgrade dolly before writing to it.';
-    if (WRITE_COMMANDS.has(cmd)) fail(msg);
-    process.stderr.write(color.yellow(`dolly: ${msg} Reading anyway.\n`));
+    if (WRITE_COMMANDS.has(cmd)) fail(newerStoreMsg(state));
+    process.stderr.write(color.yellow(`dolly: ${newerStoreMsg(state)} Reading anyway.\n`));
     return;
   }
 
@@ -492,8 +495,9 @@ function cmdBoard(args: Args): void {
 
 async function cmdShow(args: Args): Promise<void> {
   const store = openStore();
-  const ref = args.positional[1];
-  if (!ref) fail('usage: dolly show <ref>');
+  // no ref means current: empty $ARGUMENTS in a generated slash-command (and a
+  // lazier human) still lands on the active task
+  const ref = args.positional[1] ?? 'current';
   const task = await resolveRef(store, ref);
   if (bool(args, 'json')) {
     jsonOut({ ...taskJson(task), spec_full: fullSpec(task), plan: readPlan(task) || null });
@@ -594,8 +598,14 @@ async function cmdSpec(args: Args): Promise<void> {
 
 async function cmdStatus(args: Args): Promise<void> {
   const store = openStore();
-  const ref = args.positional[1];
-  const status = args.positional[2];
+  let ref = args.positional[1];
+  let status = args.positional[2];
+  // `dolly status working` — a lone known status means "the current task"
+  // (the shape the generated slash-commands produce when $ARGUMENTS is empty)
+  if (!status && ref && store.config.statuses.includes(ref as Status)) {
+    ref = 'current';
+    status = args.positional[1];
+  }
   if (!ref || !status) {
     fail(`usage: dolly status <ref> <${store.config.statuses.join('|')}> [--note t]`);
   }
@@ -1303,6 +1313,13 @@ function cmdHook(args: Args): void {
         return; // garbage or empty input — log nothing, never throw
       }
       if (!turn || typeof turn !== 'object') return;
+      // harnesses disagree on field names (pi: session; opencode plugin: what
+      // it writes; zcode/Claude-style Stop payloads: session_id and possibly
+      // no usable text at all). Normalize what we can; what is missing
+      // degrades to a thinner mechanical entry or a silent no-op.
+      turn.session = String(turn.session ?? (turn as any).session_id ?? (turn as any).sessionId ?? '') || undefined;
+      turn.text = String(turn.text ?? (turn as any).response ?? (turn as any).last_response ?? (turn as any).preview ?? '');
+      if (turn.text) turn.text = turn.text.trim();
       const text = (turn.text ?? '').trim();
       const tools = Array.isArray(turn.tools) ? turn.tools.filter(Boolean) : [];
       const files = Array.isArray(turn.files) ? turn.files.filter(Boolean) : [];
@@ -1311,7 +1328,14 @@ function cmdHook(args: Args): void {
       // the agent logged its own step during this turn → don't double-log
       if (turn.turnStartMs && Date.parse(active.meta.updated) >= turn.turnStartMs) return;
 
-      const turnId = `${turn.session ?? 'pi'}:${turn.turn ?? 0}`;
+      // harnesses without a turn counter (zcode's Stop has none) would dedup
+      // on a constant and silently drop every turn after the first — key by
+      // content instead, so a re-fired identical payload dedups and a new
+      // turn logs
+      const turnKey =
+        turn.turn ??
+        createHash('sha1').update(`${text}\u0000${tools.join(',')}\u0000${files.join(',')}`).digest('hex').slice(0, 8);
+      const turnId = `${turn.session ?? 'pi'}:${turnKey}`;
       if (importedTurns(active).has(turnId)) return; // dedup a re-fired/replayed turn
 
       const harness = turn.agent ?? 'pi';
@@ -1438,12 +1462,21 @@ function cmdMemo(args: Args): void {
   const date = str(args, 'date') ?? today();
 
   if (bool(args, 'save')) {
+    // --save writes, the digest only reads — so the write is version-gated here,
+    // not via WRITE_COMMANDS, which would block `dolly memo` on a newer store too
+    const state = versionState(store);
+    if (state.newer) fail(newerStoreMsg(state));
     const src = str(args, 'file');
     if (!src) fail('usage: dolly memo --save --file <prose.md> (or - for stdin) [--date YYYY-MM-DD]');
-    const body = src === '-' ? readStdin() : fs2.readFileSync(src, 'utf8');
+    const body =
+      src === '-'
+        ? readStdin()
+        : exists(src)
+          ? fs.readFileSync(src, 'utf8')
+          : fail(`no such file: ${src}`);
     if (!body.trim()) fail('refusing to save an empty memo');
     const file = memoFile(store.root, date);
-    fs2.mkdirSync(path2.dirname(file), { recursive: true });
+    fs.mkdirSync(path.dirname(file), { recursive: true });
     writeText(file, `${body.trimEnd()}\n`);
     process.stdout.write(`${color.green('✓')} memo saved → ${file}\n`);
     return;
@@ -1580,6 +1613,8 @@ async function main(): Promise<void> {
       return await cmdRelated(args);
     case 'archive':
     case 'restore':
+      fail(`"${cmd}" was removed — finished tasks stay in tasks/ (git history keeps the rest)`);
+      return;
     case 'plan':
       return await cmdPlan(args);
     case 'reindex':

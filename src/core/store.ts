@@ -1,5 +1,4 @@
 import crypto from 'node:crypto';
-import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -14,7 +13,7 @@ import {
   writeJson,
   writeText,
 } from './fsx.js';
-import { fuzzyBest } from './fuzzy.js';
+import { fuzzyBest, FUZZY_MIN_SCORE } from './fuzzy.js';
 import { parseFrontmatter } from './md.js';
 import { commonDir, ensureRepo, repoRoot } from './git.js';
 import { resolveIdentity, type Identity } from './identity.js';
@@ -38,13 +37,16 @@ export const TASKS = 'tasks';
 export const ID_ALPHABET = '23456789bcdfghjkmnpqrstvwxyz';
 const ID_LENGTH = 8;
 
-/** below this an alignment is noise, not a match */
-const FUZZY_THRESHOLD = 30;
-
 /** random id drawn from ID_ALPHABET; uniqueness against existing tasks is the caller's job */
 export function newHashId(): string {
   let out = '';
-  for (const b of randomBytes(ID_LENGTH)) out += ID_ALPHABET[b % ID_ALPHABET.length];
+  while (out.length < ID_LENGTH) {
+    const b = crypto.randomBytes(1)[0];
+    // 256 % 28 != 0: plain `b % 28` favours the first four letters by ~11% vs
+    // ~10% — invisible at this scale, but rejection sampling is one line
+    if (b >= 256 - (256 % ID_ALPHABET.length)) continue;
+    out += ID_ALPHABET[b % ID_ALPHABET.length];
+  }
   return out;
 }
 
@@ -84,13 +86,13 @@ const STORE_README = `# .dolly — shared task memory
 Written and read by coding agents via the \`dolly\` CLI (\`npm i -g dolly\`).
 %OPENING%
 
-- \`tasks/NNNN-slug/task.md\` — short spec, success criteria, and a one-line-per-event
+- \`tasks/<id>-slug/task.md\` — short spec, success criteria, and a one-line-per-event
   log. Start here. Every line is stamped with the GitHub handle of whoever did it.
-- \`tasks/NNNN-slug/context/spec.md\` — current full spec at the top, every
+- \`tasks/<id>-slug/context/spec.md\` — current full spec at the top, every
   superseded version below it under "Superseded versions".
-- \`tasks/NNNN-slug/context/steps.md\` — full context of each step, append-only:
+- \`tasks/<id>-slug/context/steps.md\` — full context of each step, append-only:
   decisions, rejected options, gotchas, what to do next.
-- \`tasks/NNNN-slug/context/plan.md\` — the planning interview, when there was one.
+- \`tasks/<id>-slug/context/plan.md\` — the planning interview, when there was one.
 
 Read with \`dolly board\`, \`dolly show <ref>\`, \`dolly context <ref>\`.
 Do not hand-edit these files — the CLI maintains frontmatter, spec versions and
@@ -620,7 +622,7 @@ export class Store {
     const bySlug = tasks.filter((t) => t.meta.slug === ref);
     if (bySlug.length === 1) return bySlug[0];
 
-    const candidates = this.search(ref);
+    const candidates = this.search(ref, tasks);
     if (candidates.length === 1) return candidates[0];
     if (!candidates.length) throw new Error(`no task matching "${ref}"`);
     throw new AmbiguousRef(ref, candidates);
@@ -636,12 +638,12 @@ export class Store {
   }
 
   /**
-   * Ranked candidate tasks for a reference that was not an exact hit:
-   * word-prefix matches first, then substrings, then fuzzy alignment of the
-   * title/slug. Empty when nothing plausibly matches.
+   * Ranked candidate tasks for a reference that was not an exact hit.
+   * Multi-word needles are supported — `dolly show hash ids` should find
+   * "Hash task ids", and the separators make it possible. Empty when nothing
+   * plausibly matches.
    */
-  search(ref: string): Task[] {
-    const tasks = this.loadTasks();
+  search(ref: string, tasks: Task[] = this.loadTasks()): Task[] {
     if (!tasks.length || ref === 'current' || ref === '@' || ref === '.') return [];
     const needle = ref.toLowerCase();
     const scored: { task: Task; score: number }[] = [];
@@ -656,7 +658,7 @@ export class Store {
       else {
         const f = fuzzyBest(ref, [t.meta.title, t.meta.slug]);
         // threshold keeps one-letter typos from matching half the board
-        if (f !== null && f >= FUZZY_THRESHOLD) score = f;
+        if (f !== null && f >= FUZZY_MIN_SCORE) score = f;
       }
       if (score !== null) scored.push({ task: t, score });
     }

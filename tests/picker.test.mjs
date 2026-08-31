@@ -41,16 +41,29 @@ test('filterSelect live-filters as you type and picks the highlighted row', asyn
 });
 
 test('filterSelect arrows move within the filtered list', async () => {
-  // "a" matches both; down moves to the second hit before enter
+  // "a" is a substring of both labels; down moves to the second hit before enter
   const term = keyTerm(['a', 'down', 'return']);
   const picked = await filterSelect(term, {
     question: 'Which task?',
     choices: [
       { value: 1, label: 'archiving' },
-      { value: 2, label: 'memo' },
+      { value: 2, label: 'hash table' },
     ],
   });
-  assert.equal(picked, 1);
+  assert.equal(picked, 2);
+});
+
+test('filterSelect narrows by the fuzzy matcher when no substring hits', async () => {
+  // "hid" is not a substring of any label — fuzzy must rank "hash ids" first
+  const term = keyTerm(['h', 'i', 'd', 'return']);
+  const picked = await filterSelect(term, {
+    question: 'Which task?',
+    choices: [
+      { value: 1, label: 'hash ids task' },
+      { value: 2, label: 'daily memo' },
+    ],
+  });
+  assert.equal(picked, 1, '"hid" finds the hash-ids task across separators');
 });
 
 test('filterSelect escape cancels', async () => {

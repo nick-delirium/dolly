@@ -337,3 +337,73 @@ test('install opencode --global resolves under ~/.config/opencode', (t) => {
   );
   assert.equal(cfg.mcp.dolly.enabled, true, 'mcp registered in global config');
 });
+
+test('install zcode writes workspace files, converted commands, and the plugin scaffold', (t) => {
+  const sb = sandbox();
+  t.after(sb.cleanup);
+  Store.open().init();
+  const fakeHome = path.join(sb.dir, 'home');
+  fs.mkdirSync(path.join(fakeHome, '.zcode'), { recursive: true });
+
+  const out = dolly(sb.dir, ['install', 'zcode'], { DOLLY_DIR: sb.store, HOME: fakeHome });
+
+  // repo-shared workspace files
+  assert.ok(fs.existsSync(path.join(sb.dir, '.zcode', 'skills', 'dolly', 'SKILL.md')));
+  assert.ok(fs.existsSync(path.join(sb.dir, '.zcode', 'skills', 'dolly-planning', 'SKILL.md')));
+  assert.ok(fs.existsSync(path.join(sb.dir, '.zcode', 'commands', 'dolly-board.md')));
+  assert.ok(fs.existsSync(path.join(sb.dir, 'AGENTS.md')));
+
+  // commands are converted: no inline shell, no conditional-default syntax
+  const board = fs.readFileSync(path.join(sb.dir, '.zcode', 'commands', 'dolly-board.md'), 'utf8');
+  assert.doesNotMatch(board, /!`/, 'inline !`cmd` is rejected by zcode');
+  assert.match(board, /```bash\n+dolly board \$ARGUMENTS/, 'shell becomes a fenced bash block');
+  const step = fs.readFileSync(path.join(sb.dir, '.zcode', 'commands', 'dolly-step.md'), 'utf8');
+  assert.doesNotMatch(step, /\$\{ARGUMENTS:-/, 'zcode has no ${ARGUMENTS:-default} syntax');
+  assert.match(step, /dolly (step|show) \$ARGUMENTS/);
+
+  // MCP entry: nested mcp.servers, string command (array form crashes the UI)
+  const cfg = JSON.parse(fs.readFileSync(path.join(sb.dir, '.zcode', 'config.json'), 'utf8'));
+  assert.equal(cfg.mcp.servers.dolly.command, 'dolly');
+  assert.deepEqual(cfg.mcp.servers.dolly.args, ['mcp']);
+  assert.equal(cfg.mcp.servers.dolly.enabled, true);
+  assert.equal(cfg.mcp.servers.dolly.type, 'stdio');
+
+  // plugin scaffold: marketplace + manifest + hooks, all valid JSON
+  const mp = path.join(fakeHome, '.zcode', 'marketplaces', 'dolly');
+  const marketplace = JSON.parse(fs.readFileSync(path.join(mp, 'marketplace.json'), 'utf8'));
+  assert.equal(marketplace.plugins[0].name, 'dolly');
+  assert.equal(marketplace.plugins[0].source, './dolly');
+  const manifest = JSON.parse(fs.readFileSync(path.join(mp, 'dolly', '.zcode-plugin', 'plugin.json'), 'utf8'));
+  assert.match(manifest.name, /^[a-z0-9][a-z0-9._-]{0,127}$/, 'name passes the zcode pattern');
+  const hooks = JSON.parse(fs.readFileSync(path.join(mp, 'dolly', 'hooks', 'hooks.json'), 'utf8'));
+  // plugin file wraps events in an outer "hooks" object
+  assert.ok(Array.isArray(hooks.hooks.SessionStart) && Array.isArray(hooks.hooks.Stop));
+  const stop = hooks.hooks.Stop[0].hooks[0];
+  assert.equal(stop.type, 'process');
+  assert.equal(stop.command, 'dolly');
+  assert.deepEqual(stop.args, ['hook', 'stop', '--from-stdin']);
+
+  // the human is told about the one manual step
+  assert.match(out, /marketplace/i);
+  assert.match(out, /Get .dolly./);
+});
+
+test('install zcode is idempotent and preserves existing config keys', (t) => {
+  const sb = sandbox();
+  t.after(sb.cleanup);
+  Store.open().init();
+  const fakeHome = path.join(sb.dir, 'home');
+  fs.mkdirSync(path.join(fakeHome, '.zcode'), { recursive: true });
+  const cfgFile = path.join(sb.dir, '.zcode', 'config.json');
+  fs.mkdirSync(path.join(sb.dir, '.zcode'), { recursive: true });
+  fs.writeFileSync(cfgFile, JSON.stringify({ mcp: { servers: { other: { command: 'x' } } } }), 'utf8');
+
+  dolly(sb.dir, ['install', 'zcode'], { DOLLY_DIR: sb.store, HOME: fakeHome });
+  const second = dolly(sb.dir, ['install', 'zcode'], { DOLLY_DIR: sb.store, HOME: fakeHome });
+
+  const cfg = JSON.parse(fs.readFileSync(cfgFile, 'utf8'));
+  assert.equal(cfg.mcp.servers.other.command, 'x', 'foreign server untouched');
+  assert.equal(cfg.mcp.servers.dolly.command, 'dolly');
+  assert.match(second, /up-to-date .*config\.json/);
+  assert.match(second, /up-to-date .*plugins|up-to-date .*hooks\.json|up-to-date .*plugin\.json/);
+});

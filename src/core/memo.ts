@@ -58,6 +58,20 @@ export interface MemoEvent {
   text: string;
 }
 
+/** the short-log line format `logLine()` writes: `- `YYYY-MM-DD HH:mmZ` @user: text` */
+// `m` so it also matches the head line of a multi-line log block
+const STAMP = /^- `(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2})(Z?)` @([^:]+): (.*)$/m;
+
+/**
+ * Local calendar date of a log stamp. Stamps are UTC (`nowIso()` truncated);
+ * memo days are the days you live in, so convert — a step logged at 23:30Z
+ * belongs to tomorrow in Berlin. A stamp without the Z is already local.
+ */
+export function stampLocalDate(day: string, time: string): string {
+  const iso = /Z$/.test(time) ? `${day}T${time.slice(0, 5)}:00Z` : `${day}T${time}:00`;
+  return localDate(iso) || day;
+}
+
 /**
  * One-line-per-event log entries stamped with the target date. The Log section
  * format is dolly's own (`- \`YYYY-MM-DD HH:mmZ\` @user: text`), so parsing it
@@ -66,27 +80,35 @@ export interface MemoEvent {
 export function eventsOn(task: Task, date: string): MemoEvent[] {
   const out: MemoEvent[] = [];
   for (const line of logSection(task).split('\n')) {
-    const m = /^- `(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}Z?)` @([^:]+): (.*)$/.exec(line.trim());
-    if (!m || m[1] !== date) continue;
-    out.push({ time: `${m[1]} ${m[2]}`, user: m[3], text: m[4] });
+    const m = STAMP.exec(line.trim());
+    if (!m || stampLocalDate(m[1], m[2] + m[3]) !== date) continue;
+    out.push({ time: `${m[1]} ${m[2]}${m[3]}`, user: m[4], text: m[5] });
   }
   return out;
 }
 
-/** repo-relative files a task recorded today, from its short-log trailers */
+/** repo-relative files a task recorded on the target day, from its short-log trailers */
 function filesTouchedToday(task: Task, date: string): string[] {
-  // the `- `stamp` @user: summary` lines + their indented trailers live in
-  // task.md; steps.md holds the full step bodies, which have no such trailers
+  // the short log lives in task.md: `- `stamp` @user: summary` lines with
+  // indented trailers below. Only a `files:` trailer names source files —
+  // other backticked words (`spec.md`, `steps.md#0007`) are pointers into the
+  // store, not paths that were edited.
   const raw = readTextOr(path.join(task.dir, 'task.md'));
   if (!raw) return [];
   const out = new Set<string>();
-  // one entry = the `- ` line plus its indented trailer lines (`files:` …);
-  // greedy is safe because the next entry always starts at column 0
+  // one entry = the `- ` line plus its indented trailer lines; greedy is safe
+  // because the next entry always starts at column 0
   for (const m of raw.matchAll(/^- `.*?` @.*(?:\n(?:(?!- `).)*)?$/gm)) {
     const block = m[0];
-    if (!block.includes(date)) continue;
-    for (const f of block.matchAll(/`([^`]+\.[A-Za-z0-9]+)`/g)) {
-      if (!f[1].startsWith('.dolly/')) out.add(f[1]);
+    const head = STAMP.exec(block);
+    if (!head || stampLocalDate(head[1], head[2] + head[3]) !== date) continue;
+    for (const line of block.split('\n')) {
+      if (!/^\s+files:/.test(line)) continue;
+      for (const f of line.matchAll(/`([^`]+)`/g)) {
+        // `full: \`steps.md#0007\`` shares the trailer line — an anchor, not a path
+        if (f[1].includes('#') || f[1].startsWith('.dolly/')) continue;
+        out.add(f[1]);
+      }
     }
   }
   return [...out];
@@ -158,7 +180,12 @@ export function buildDigest(store: Store, date: string): MemoDigest {
 
   const conversations: MemoDigest['conversations'] = [];
   try {
-    for (const ref of listSessions(store.project).slice(0, 20)) {
+    // a session last touched before this day began cannot hold a turn from it —
+    // mtime only ever moves forward. Filtering on that instead of capping the
+    // 20 newest is what makes backfilling an older day actually work.
+    const dayStart = new Date(`${date}T00:00:00`).getTime();
+    const candidates = listSessions(store.project).filter((r) => r.mtime >= dayStart).slice(0, 100);
+    for (const ref of candidates) {
       try {
         // the ref already points at the exact session — re-resolving by a
         // prefix could collide with a sibling id, and the error would be

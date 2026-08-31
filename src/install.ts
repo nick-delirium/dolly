@@ -4,6 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ensureDir, exists, isDir, readJson, readTextOr, rmrf, writeJson, writeText } from './core/fsx.js';
 import { setBlock } from './core/md.js';
+import { VERSION } from './core/pkg.js';
 import { AGENT_BLOCK, MCP_SERVER } from './templates/instructions.js';
 
 /**
@@ -57,6 +58,18 @@ function writeFileIdempotent(file: string, content: string, dry: boolean): strin
  */
 function toPiPrompt(md: string): string {
   return md.replace(/^!`(.+)`\s*$/gm, (_m, cmd) => `\`\`\`bash\n${cmd}\n\`\`\``);
+}
+
+/**
+ * zcode command conversion. zcode rejects inline `!`cmd`` execution and has no
+ * `${ARGUMENTS:-default}` syntax — only `$ARGUMENTS` / `$1`. So inline shell
+ * becomes a fenced bash block (same as pi) and the conditional default
+ * collapses to `$ARGUMENTS`: `dolly show`/`step`/`status`/`context` all treat
+ * a missing ref as `current`, so an empty argument still lands on the active
+ * task.
+ */
+function toZcodeCommand(md: string): string {
+  return toPiPrompt(md).replace(/\$\{ARGUMENTS:-[^}]*\}/g, '$ARGUMENTS');
 }
 
 /**
@@ -481,6 +494,120 @@ function mergeMcpJson(file: string, key: string, dry: boolean): string {
   return `wrote ${file} (${key}.dolly)`;
 }
 
+/**
+ * zcode keeps MCP servers under nested `mcp.servers`, and its `command` is a
+ * STRING with the rest in `args` — the OpenCode-style array form crashes the
+ * settings UI. Only canonical fields: the schema is strict about extra keys.
+ */
+function mergeZcodeMcp(file: string, dry: boolean): string {
+  const cfg = readJson<Record<string, any>>(file, {});
+  cfg.mcp = cfg.mcp ?? {};
+  cfg.mcp.servers = cfg.mcp.servers ?? {};
+  const server = { type: 'stdio', command: 'dolly', args: ['mcp'], enabled: true };
+  const before = JSON.stringify(cfg.mcp.servers.dolly ?? null);
+  cfg.mcp.servers.dolly = server;
+  if (before === JSON.stringify(cfg.mcp.servers.dolly)) return `up-to-date ${file}`;
+  if (!dry) writeJson(file, cfg);
+  return `wrote ${file} (mcp.servers.dolly)`;
+}
+
+/**
+ * Install the dolly slash-commands for zcode (.zcode/commands/dolly-<name>.md),
+ * with the zcode conversion applied. Unlike pi/opencode this is a separate
+ * loop rather than an installNamedPrompts flag: the converter is two rewrites,
+ * not a passthrough/one-rewrite toggle.
+ */
+function installZcodeCommands(dir: string, dry: boolean): string[] {
+  const src = path.join(PKG_ROOT, 'commands');
+  if (!isDir(src)) return [];
+  const out: string[] = [];
+  for (const file of fs.readdirSync(src).sort()) {
+    if (!file.endsWith('.md')) continue;
+    const name = file.replace(/\.md$/, '');
+    const dest = path.join(dir, `dolly-${name}.md`);
+    out.push(writeFileIdempotent(dest, toZcodeCommand(readTextOr(path.join(src, file))), dry));
+  }
+  return out;
+}
+
+/* ---------------------------- zcode plugin files --------------------------- */
+/*
+ * zcode ignores workspace-level hooks entirely in this version — hooks only
+ * load from user config or a plugin. The plugin route needs no edit to files
+ * zcode owns: a local directory acts as a marketplace, so `dolly install
+ * zcode` scaffolds one under ~/.zcode/marketplaces/dolly/ and the human adds
+ * it in Settings → Plugin Management → Discover (the `+` button) and clicks
+ * Get. Session-start emits dolly's Claude-compatible JSON envelope
+ * (hookSpecificOutput.additionalContext), which zcode accepts unchanged.
+ */
+
+function zcodeMarketplaceJson(version: string): string {
+  return `${JSON.stringify(
+    {
+      name: 'dolly-local',
+      plugins: [
+        {
+          name: 'dolly',
+          description: 'dolly task memory — session-start context injection and per-turn auto-log',
+          version,
+          source: './dolly',
+        },
+      ],
+    },
+    null,
+    2,
+  )}\n`;
+}
+
+function zcodePluginJson(version: string): string {
+  return `${JSON.stringify(
+    {
+      name: 'dolly',
+      version,
+      description: 'dolly task memory — session-start context injection and per-turn auto-log',
+      hooks: 'hooks',
+    },
+    null,
+    2,
+  )}\n`;
+}
+
+const ZCODE_HOOKS_JSON = `${JSON.stringify(
+  {
+    hooks: {
+      SessionStart: [
+        {
+          hooks: [{ type: 'process', command: 'dolly', args: ['hook', 'session-start'], timeoutMs: 15000 }],
+        },
+      ],
+      Stop: [
+        {
+          hooks: [
+            { type: 'process', command: 'dolly', args: ['hook', 'stop', '--from-stdin'], timeoutMs: 15000 },
+          ],
+        },
+      ],
+    },
+  },
+  null,
+  2,
+)}\n`;
+
+function installZcodePlugin(marketplaceDir: string, version: string, dry: boolean): string[] {
+  const pluginRoot = path.join(marketplaceDir, 'dolly');
+  return [
+    // the manifest's exact home is not documented; write both candidate paths
+    writeFileIdempotent(path.join(marketplaceDir, 'marketplace.json'), zcodeMarketplaceJson(version), dry),
+    writeFileIdempotent(
+      path.join(marketplaceDir, '.zcode-marketplace', 'marketplace.json'),
+      zcodeMarketplaceJson(version),
+      dry,
+    ),
+    writeFileIdempotent(path.join(pluginRoot, '.zcode-plugin', 'plugin.json'), zcodePluginJson(version), dry),
+    writeFileIdempotent(path.join(pluginRoot, 'hooks', 'hooks.json'), ZCODE_HOOKS_JSON, dry),
+  ];
+}
+
 function tomlBlock(file: string, dry: boolean): string {
   const src = readTextOr(file);
   const marker = '# dolly:start';
@@ -743,6 +870,40 @@ export const TARGETS: Target[] = [
         cfg.mcp.dolly = { type: 'local', command: ['dolly', 'mcp'], enabled: true };
         if (!opts.dryRun) writeJson(file, cfg);
         out.push(`wrote ${file} (mcp.dolly)`);
+      }
+      return out;
+    },
+  },
+  {
+    id: 'zcode',
+    label: 'ZCode',
+    detect: (p) => isDir(path.join(home(), '.zcode')) || isDir(path.join(p, '.zcode')),
+    install(project, opts) {
+      const out: string[] = [];
+      // skills, commands and MCP are repo-shared: teammates get them on
+      // checkout with no install of their own
+      const base = path.join(project, '.zcode');
+      out.push(copyTree(path.join(PKG_ROOT, 'skills', 'dolly'), path.join(base, 'skills', 'dolly'), opts.dryRun));
+      out.push(
+        copyTree(
+          path.join(PKG_ROOT, 'skills', 'dolly-planning'),
+          path.join(base, 'skills', 'dolly-planning'),
+          opts.dryRun,
+        ),
+      );
+      out.push(...installZcodeCommands(path.join(base, 'commands'), opts.dryRun));
+      out.push(writeBlock(path.join(project, 'AGENTS.md'), AGENT_BLOCK, opts.dryRun));
+      if (opts.mcp) out.push(mergeZcodeMcp(path.join(base, 'config.json'), opts.dryRun));
+      // hooks cannot ride along in workspace config — zcode ignores them there
+      // (config_project_hooks_ignored) — so they ship as a plugin the user
+      // enables once: local marketplace, Get on the Discover tab.
+      if (opts.hooks !== false) {
+        const marketplaceDir = path.join(home(), '.zcode', 'marketplaces', 'dolly');
+        out.push(...installZcodePlugin(marketplaceDir, VERSION, opts.dryRun));
+        out.push(
+          `plugin scaffolded at ${marketplaceDir} — one manual step: zcode Settings → ` +
+            'Plugin Management → Discover → "+" → add that folder as a local marketplace → Get "dolly"',
+        );
       }
       return out;
     },

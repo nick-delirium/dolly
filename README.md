@@ -10,7 +10,7 @@ Three things it does:
 - **Plans.** A planning interview that refuses to finish while any section is `_TBD_` or any question unanswered, then derives the spec from the answers.
 - **Tracks.** `todo → planning → working → validating → done`, where `validating` means the agent is done and a human must verify. Agents never mark work done.
 
-Installs into Claude Code (plugin, skills, slash commands, MCP, hooks), pi (skills, MCP, and an extension giving the same auto-inject and auto-logging hooks), opencode (skills, slash commands, MCP, and a plugin giving the same context injection and auto-logging), and five other agents. Zero runtime dependencies.
+Installs into Claude Code (plugin, skills, slash commands, MCP, hooks), pi (skills, MCP, and an extension giving the same auto-inject and auto-logging hooks), opencode (skills, slash commands, MCP, and a plugin giving the same context injection and auto-logging), ZCode (skills, slash commands, MCP, and a hook-carrying plugin), and four other agents. Zero runtime dependencies.
 
 ```
 .dolly/
@@ -122,6 +122,7 @@ dolly install cursor codex gemini    # or name them
 | GitHub Copilot | `.github/copilot-instructions.md` block |
 | Gemini CLI | `GEMINI.md` block, `.gemini/settings.json` MCP entry |
 | opencode | `.opencode/skills/`, `.opencode/commands/dolly-*.md`, `.opencode/plugins/dolly.js`, `AGENTS.md` block, `opencode.json` MCP entry |
+| ZCode | `.zcode/skills/`, `.zcode/commands/dolly-*.md`, `.zcode/config.json` MCP entry, `AGENTS.md` block, plus a plugin scaffold at `~/.zcode/marketplaces/dolly/` carrying the session-start injection and per-turn auto-log hooks — zcode ignores workspace-level hooks, so they ride in a plugin (one manual enable: Settings → Plugin Management → Discover → "+" → add that folder as a local marketplace → Get "dolly") |
 | pi | `~/.pi/agent/skills/` (or `.pi/skills/` local), `SYSTEM.md`/`AGENTS.md` block, `mcp.json`, and `~/.pi/agent/extensions/dolly.ts` — a global-only extension that injects task context at session start and auto-logs a step per finished turn |
 | anything else | `AGENTS.md` block |
 

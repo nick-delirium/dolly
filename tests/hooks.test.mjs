@@ -277,3 +277,39 @@ test('hook stop --from-stdin swallows empty/garbage input', (t) => {
 
   assert.equal(stepEntries(task.dir).length, 0, 'garbage logs nothing');
 });
+
+test('hook stop --from-stdin accepts zcode-shaped Stop payloads', (t) => {
+  const sb = sandbox();
+  t.after(sb.cleanup);
+  const store = Store.open();
+  const task = createTask(store, { title: 'Zcode', specShort: 's' });
+  setStatus(store, task, 'working');
+
+  // zcode sends Claude-style field names; the shape beyond the response
+  // preview is undocumented, so every field here is optional to dolly
+  dollyStdin(
+    sb.dir,
+    ['hook', 'stop', '--from-stdin'],
+    JSON.stringify({ session_id: 'zc-123', response: 'Refactored the parser into a module.' }),
+    { DOLLY_DIR: sb.store },
+  );
+
+  const entries = stepEntries(task.dir);
+  assert.equal(entries.length, 1, 'a payload with only session_id + response logs a step');
+  assert.match(entries[0].text, /parser into a module/);
+  assert.match(entries[0].text, /turn zc-123:/, 'dedup key derived from session');
+
+  // a second, different turn on the same session must NOT be swallowed by the
+  // no-turn-counter dedup (constant key would eat every turn after the first)
+  dollyStdin(
+    sb.dir,
+    ['hook', 'stop', '--from-stdin'],
+    JSON.stringify({ session_id: 'zc-123', response: 'Added tests for the parser.' }),
+    { DOLLY_DIR: sb.store },
+  );
+  assert.equal(stepEntries(task.dir).length, 2, 'new turn content logs a new step');
+
+  // garbage never throws, never logs
+  dollyStdin(sb.dir, ['hook', 'stop', '--from-stdin'], 'not json at all', { DOLLY_DIR: sb.store });
+  assert.equal(stepEntries(task.dir).length, 2);
+});

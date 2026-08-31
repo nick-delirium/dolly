@@ -20,6 +20,26 @@ test('fuzzy score rejects non-subsequences', () => {
   assert.equal(fuzzyScore('toolongneedle', 'short'), null);
 });
 
+test('separators in the query match word edges, so spoken queries find slugs', () => {
+  // the haystack has no spaces — a literal subsequence can never exist
+  assert.ok(fuzzyScore('oa log', 'oauth-login') !== null);
+  assert.ok(fuzzyScore('hash ids', 'hash-task-ids-fuzzy-title-matching') !== null);
+  assert.ok(fuzzyScore('my_func', 'my-func-helper') !== null, '_ skips like any separator');
+  assert.equal(fuzzyScore('oa log', 'log-oauth'), null, 'word order is still enforced');
+  assert.equal(fuzzyScore('hash ids', 'daily memo command'), null);
+  assert.equal(fuzzyScore('---', 'anything'), 0, 'separator-only needle has no opinion');
+  // separators consume no haystack: only real characters count against length
+  assert.equal(fuzzyScore('a b c d e f g h i j', 'abcdefgh'), null);
+  assert.ok(fuzzyScore('a b c d e f g h', 'abcdefgh') !== null);
+});
+
+test('acronym tails are mid-word; camel humps and digit edges are boundaries', () => {
+  // same landing position, only the boundary bonus differs
+  assert.ok(fuzzyScore('t', 'X-t') > fuzzyScore('t', 'XXt'), 'after a separator is a boundary, inside an acronym run is not');
+  assert.ok(fuzzyScore('B', 'aBcd') > fuzzyScore('c', 'aBcd'), 'camel hump beats the tail');
+  assert.ok(fuzzyScore('2p', 'v2patch') > fuzzyScore('2p', 'v2xpatch'), 'letter↔digit edge wins');
+});
+
 test('newHashId draws from the vowel-free alphabet with fixed length', () => {
   for (let i = 0; i < 50; i++) {
     assert.match(newHashId(), new RegExp(`^[${ID_ALPHABET}]{8}$`));
@@ -60,6 +80,20 @@ test('search ranks prefix matches above substrings above fuzzy hits', (t) => {
   // single letters match everything — they stay ambiguous, never auto-picked
   const both = store.search('a');
   assert.ok(both.length >= 2);
+});
+
+test('search resolves multi-word refs the way they are spoken', (t) => {
+  const sb = sandbox();
+  t.after(sb.cleanup);
+  const store = Store.open();
+  store.init();
+  createTask(store, { title: 'Hash task ids + fuzzy title matching' });
+  createTask(store, { title: 'Daily memo command' });
+
+  assert.equal(store.search('hash ids')[0]?.meta.title, 'Hash task ids + fuzzy title matching');
+  assert.equal(store.search('daily memo')[0]?.meta.title, 'Daily memo command');
+  assert.equal(store.search('memo daily').length, 0, 'reversed word order finds nothing');
+  assert.equal(store.search('ids fuzzy')[0]?.meta.title, 'Hash task ids + fuzzy title matching');
 });
 
 test('resolve throws AmbiguousRef carrying ranked candidates', (t) => {

@@ -18,6 +18,7 @@
  */
 import readline from 'node:readline';
 import { color } from './core/render.js';
+import { fuzzyScore, FUZZY_MIN_SCORE } from './core/fuzzy.js';
 
 export class PromptCancelled extends Error {
   constructor() {
@@ -422,8 +423,17 @@ export async function filterSelect<T>(term: Term, opts: FilterSelectOpts<T>): Pr
     );
     if (hits.length) return hits;
     // the prefilled query came from a fuzzy ref match — its text may not be a
-    // substring of any label. An empty list helps nobody; fall back to all
-    // candidates ranked best-first, which is exactly what the caller ordered.
+    // substring of any label. Rank by the same matcher that found the
+    // candidates, so what the picker highlights matches how resolve() ranked
+    // them; multi-word queries work too, since separators match zero-width.
+    const fuzzy: { c: Choice<T>; s: number }[] = [];
+    for (const c of choices) {
+      const s = fuzzyScore(q, `${c.label} ${c.hint ?? ''}`.toLowerCase());
+      if (s !== null && s >= FUZZY_MIN_SCORE) fuzzy.push({ c, s });
+    }
+    if (fuzzy.length) return fuzzy.sort((a, b) => b.s - a.s).map((x) => x.c);
+    // nothing matches at all — an empty list helps nobody; fall back to all
+    // candidates in the caller's order, which is best-first
     return choices;
   };
 
