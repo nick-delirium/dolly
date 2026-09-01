@@ -156,9 +156,27 @@ function latestFromGit(root: string): string | null {
   }
 }
 
-/** synchronous remote check for `dolly update --check` — explicit, so in-band is fine */
-export function latestFromGitForCheck(root = PKG_ROOT): string | null {
-  return latestFromGit(root);
+/**
+ * The newest version available to THIS installation, looked up the same way
+ * `runUpdateCheck` does: a checkout compares against the remote's tags, a
+ * package against the registry (falling back to tags while dolly is unpublished).
+ *
+ * `dolly update --check` asks for this in-band. Reaching for the git path alone
+ * would report "could not reach the remote" to every npm-installed user — the
+ * exact people the passive notice sends here, since PKG_ROOT has no .git.
+ */
+export async function latestForCheck(
+  kind: InstallKind = installKind(),
+  root = PKG_ROOT,
+): Promise<{ latest: string | null; source: UpdateCache['source'] }> {
+  if (kind === 'clone') {
+    const latest = latestFromGit(root);
+    return { latest, source: latest ? 'git' : 'none' };
+  }
+  const fromNpm = await latestFromNpm('dolly');
+  if (fromNpm) return { latest: fromNpm, source: 'npm' };
+  const latest = latestFromGit(root);
+  return { latest, source: latest ? 'git' : 'none' };
 }
 
 async function latestFromNpm(name: string): Promise<string | null> {
@@ -179,22 +197,9 @@ async function latestFromNpm(name: string): Promise<string | null> {
  * take as long as it likes and must never throw into the parent.
  */
 export async function runUpdateCheck(file = CACHE_FILE): Promise<void> {
-  const kind = installKind();
-  let latest: string | null = null;
-  let source: UpdateCache['source'] = 'none';
-
-  if (kind === 'clone') {
-    latest = latestFromGit(PKG_ROOT);
-    if (latest) source = 'git';
-  } else {
-    latest = await latestFromNpm('dolly');
-    if (latest) source = 'npm';
-    if (!latest) {
-      // not published yet: fall back to the tags of the repo it came from
-      latest = latestFromGit(PKG_ROOT);
-      if (latest) source = 'git';
-    }
-  }
+  // not published yet? latestForCheck falls back to the tags of the repo it
+  // came from, so a package install still learns about a new release
+  const { latest, source } = await latestForCheck();
   // a failed lookup is still cached, so a machine offline for a week does not
   // retry on every single command
   writeJson(file, { checkedAt: new Date().toISOString(), latest, source } satisfies UpdateCache);

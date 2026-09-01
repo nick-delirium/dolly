@@ -42,8 +42,11 @@ function mirrorTurn(prompt) {
 test('digest carries today’s task events and leaves yesterday out', (t) => {
   const sb = sandbox();
   t.after(sb.cleanup);
-  delete process.env.DOLLY_OPENCODE_DIR;
-  delete process.env.DOLLY_TRANSCRIPT_DIR;
+  // pin both transcript roots at empty dirs: deleting them points the digest at
+  // the developer's real ~/.claude/projects, whose prompts then land in
+  // renderDigest() and are matched against by the assertions below
+  process.env.DOLLY_OPENCODE_DIR = path.join(sb.dir, 'mirror');
+  process.env.DOLLY_TRANSCRIPT_DIR = path.join(sb.dir, 'claude-transcripts');
   const store = Store.open();
   store.init();
   const task = createTask(store, { title: 'Memoized' });
@@ -89,6 +92,11 @@ test('digest includes mirrored opencode turns from the day', (t) => {
   const sb = sandbox();
   t.after(sb.cleanup);
   process.env.DOLLY_OPENCODE_DIR = path.join(sb.dir, 'mirror');
+  // sandbox() pins the STORE but not the cwd, so store.project is this repo —
+  // and ~/.claude/projects holds today's transcripts for it. Pin the Claude
+  // Code root at an empty dir or the developer's own session counts as a
+  // conversation and this assertion fails on their machine but not in CI.
+  process.env.DOLLY_TRANSCRIPT_DIR = path.join(sb.dir, 'claude-transcripts');
   // the mirror is keyed by the PROJECT cwd (an env-pinned store still describes
   // the directory the CLI ran in)
   const store = Store.open();
@@ -105,6 +113,27 @@ test('digest includes mirrored opencode turns from the day', (t) => {
   assert.equal(d.conversations[0].turns, 1);
   assert.deepEqual(d.conversations[0].files, ['src/thing.ts']);
   assert.match(renderDigest(d), /wrote the memo feature/);
+});
+
+test('the digest reports files even when the step summary spans several lines', (t) => {
+  const sb = sandbox();
+  t.after(sb.cleanup);
+  process.env.DOLLY_OPENCODE_DIR = path.join(sb.dir, 'mirror');
+  process.env.DOLLY_TRANSCRIPT_DIR = path.join(sb.dir, 'claude-transcripts');
+  const store = Store.open();
+  store.init();
+  const task = createTask(store, { title: 'Multi line' });
+
+  // logLine() writes continuation lines first and trailers last, so a two-line
+  // summary pushes `files:` down to the third line of the entry
+  addStep(store, task, {
+    summary: 'first line of the outcome\nsecond line with the why',
+    detail: 'body',
+    files: ['src/deep.ts'],
+  });
+
+  const rendered = renderDigest(buildDigest(store, today()));
+  assert.match(rendered, /`src\/deep\.ts`/, 'the trailer is below the continuation line, not on it');
 });
 
 test('memo --save writes .dolly/memo/<date>.md; empty prose is refused', (t) => {

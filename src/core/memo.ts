@@ -96,9 +96,13 @@ function filesTouchedToday(task: Task, date: string): string[] {
   const raw = readTextOr(path.join(task.dir, 'task.md'));
   if (!raw) return [];
   const out = new Set<string>();
-  // one entry = the `- ` line plus its indented trailer lines; greedy is safe
-  // because the next entry always starts at column 0
-  for (const m of raw.matchAll(/^- `.*?` @.*(?:\n(?:(?!- `).)*)?$/gm)) {
+  // One entry = the `- ` head line plus every INDENTED line under it, which is
+  // exactly what logLine() writes: continuation lines of a multi-line summary
+  // first, trailers last. Anchoring on the indent (rather than "not a new
+  // entry") also keeps the un-indented `### plan finalized` blocks out, and
+  // matching more than one following line is the point — a two-line summary
+  // pushes `files:` down to the third line.
+  for (const m of raw.matchAll(/^- `[^`]*` @[^\n]*(?:\n[ \t]+[^\n]*)*/gm)) {
     const block = m[0];
     const head = STAMP.exec(block);
     if (!head || stampLocalDate(head[1], head[2] + head[3]) !== date) continue;

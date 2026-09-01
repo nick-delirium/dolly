@@ -185,6 +185,11 @@ test('refs resolve by id, slug, substring, fuzzy and current', (t) => {
   assert.equal(s.resolve('@').meta.id, beta.meta.id);
   assert.throws(() => s.resolve('feature'), /ambiguous/);
   assert.throws(() => s.resolve('nope'), /no task matching/);
+
+  // a prefix of the hash id names one task; the store's own path segments name
+  // none — matching `rel` made the literal word "tasks" hit every task there is
+  assert.equal(s.resolve(alpha.meta.id.slice(0, 4)).meta.id, alpha.meta.id);
+  assert.throws(() => s.resolve('tasks'), /no task matching/);
 });
 
 test('current task prefers working, then validating, then planning', (t) => {

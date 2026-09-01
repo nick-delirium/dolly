@@ -8,7 +8,7 @@ import { bool, list, num, parseArgs, repeated, str, type Args } from './core/arg
 import { exists, isDir, readStdin, readTextOr, writeJson, writeText } from './core/fsx.js';
 import { buildDigest, hasMemo, memoFile, renderDigest as renderMemoDigest, today } from './core/memo.js';
 import { applyPlan, dirtyClone, installedVersion, planUpdate } from './core/selfupdate.js';
-import { installKind, latestFromGitForCheck } from './core/update.js';
+import { installKind, latestForCheck } from './core/update.js';
 
 import { changedFiles } from './core/git.js';
 import {
@@ -315,7 +315,10 @@ async function resolveRef(store: Store, ref: string): Promise<Task> {
       label: `${t.meta.id} ${t.meta.title}`,
       hint: t.meta.status,
     }));
-    if (!process.stdout.isTTY) {
+    // both ends must be a terminal: a picker needs somewhere to draw AND
+    // someone to answer. stdout alone is not enough — `dolly show x < /dev/null`
+    // would open a prompt nobody can ever reach the end of.
+    if (!process.stdout.isTTY || !process.stdin.isTTY) {
       process.stderr.write(`${color.red(`ambiguous ref "${ref}"`)} — candidates:\n`);
       for (const c of choices) process.stderr.write(`  ${c.label}  (${c.hint})\n`);
       fail('disambiguate by id/hash, or run from an interactive terminal');
@@ -473,7 +476,8 @@ async function cmdInit(args: Args): Promise<void> {
 
 function cmdBoard(args: Args): void {
   const store = openStore();
-  const all = bool(args, 'all');
+  // `--all` is still accepted and still documented, but it no longer selects
+  // anything: with archiving gone, every task is already on the board.
   let tasks = store.loadTasks();
   const status = str(args, 'status');
   if (status) tasks = tasks.filter((t) => t.meta.status === status);
@@ -1502,20 +1506,24 @@ function cmdMemo(args: Args): void {
 
 /* --------------------------------- update --------------------------------- */
 
-function cmdUpdate(args: Args): void {
+async function cmdUpdate(args: Args): Promise<void> {
   const kind = installKind();
   const plan = planUpdate(kind);
   const current = installedVersion();
 
   if (bool(args, 'check')) {
-    const latest = latestFromGitForCheck();
+    // looked up the way this copy was installed — the registry for a package,
+    // the remote's tags for a checkout
+    const { latest, source } = await latestForCheck(kind);
     if (!latest) {
-      process.stdout.write(`dolly ${current} — could not reach the remote to compare\n`);
+      process.stdout.write(
+        `dolly ${current} — could not reach ${kind === 'clone' ? 'the git remote' : 'the npm registry or the git remote'} to compare\n`,
+      );
       return;
     }
     const behind = latest !== current;
     process.stdout.write(
-      `dolly ${current}${behind ? ` — ${latest} is available` : ' — up to date'}\n`,
+      `dolly ${current}${behind ? ` — ${latest} is available` : ' — up to date'} ${color.dim(`(${source})`)}\n`,
     );
     return;
   }
@@ -1624,7 +1632,7 @@ async function main(): Promise<void> {
     case 'resume':
       return await cmdContinue(args);
     case 'update':
-      return cmdUpdate(args);
+      return await cmdUpdate(args);
     case 'migrate':
       return cmdMigrate(args);
     case 'memo':

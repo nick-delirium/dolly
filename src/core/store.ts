@@ -654,7 +654,10 @@ export class Store {
       if (title.startsWith(needle)) score = 5000;
       else if (slug.startsWith(needle)) score = 4500;
       else if (title.includes(needle)) score = 4000;
-      else if (slug.includes(needle) || t.rel.toLowerCase().includes(needle)) score = 3500;
+      // a hash prefix is a real way to name a task; `rel` is not — it carries
+      // the literal `tasks/` segment, so matching it made `tasks` ambiguous
+      // against the entire board
+      else if (slug.includes(needle) || t.meta.id.toLowerCase().startsWith(needle)) score = 3500;
       else {
         const f = fuzzyBest(ref, [t.meta.title, t.meta.slug]);
         // threshold keeps one-letter typos from matching half the board
@@ -730,14 +733,15 @@ export function readTaskDir(dir: string, rel: string): Task | null {
   const { front, body } = parseFrontmatter(raw);
   const base = path.basename(dir);
   // ids are sequential numbers (pre-v6) or 8-char hashes; the slug follows the
-  // first dash. The frontmatter stays the authority when present.
+  // first dash. The frontmatter stays the authority when present; a directory
+  // that does not split falls back to its whole name, never to an empty id.
   const dash = base.indexOf('-');
-  const dirId = dash > 0 && /^[\da-z]+$/i.test(base.slice(0, dash)) ? base.slice(0, dash) : '';
+  const dirId = dash > 0 && /^[\da-z]+$/i.test(base.slice(0, dash)) ? base.slice(0, dash) : base;
   const dirSlug = dash > 0 ? base.slice(dash + 1) : base;
   const meta: TaskMeta = {
-    id: String(front.id ?? dirId ?? base),
-    slug: String(front.slug ?? dirSlug ?? base),
-    title: String(front.title ?? dirSlug ?? base),
+    id: String(front.id ?? dirId),
+    slug: String(front.slug ?? dirSlug),
+    title: String(front.title ?? dirSlug),
     status: String(front.status ?? 'todo'),
     owner: String(front.owner ?? 'unknown'),
     collaborators: toStrArray(front.collaborators),

@@ -4,18 +4,19 @@ slug: add-zcode-as-an-install-target-workspace-files-p
 title: "Add zcode as an install target: workspace files + plugin-carried hooks"
 status: working
 owner: nick.delirium
-collaborators: [nick.delirium]
+collaborators: [nick.delirium, nick-delirium]
 tags: []
-steps: 0
+steps: 2
 spec_version: 2
 created: 2026-08-30T19:42:35Z
-updated: 2026-08-31T16:46:21Z
+updated: 2026-09-01T07:30:06Z
+sessions: [1db55685-411f-4cb5-8ecf-6c263f7aeb07]
 ---
 
 # 6qp6wxbq · Add zcode as an install target: workspace files + plugin-carried hooks
 
 <!-- dolly:header -->
-`working` · spec v2 · @nick.delirium · 0 steps · updated 2026-08-31 16:46Z
+`working` · spec v2 · @nick.delirium · 2 steps · updated 2026-09-01 07:30Z
 <!-- /dolly:header -->
 
 ## Spec
@@ -50,4 +51,8 @@ Plan complete. Status → todo.
 
 - plan: `context/plan.md`
 - `2026-08-31 16:46Z` @nick.delirium: status todo → working.
+- `2026-09-01 07:21Z` @nick-delirium: Review done. Two commits, ~5.3k insertions. `tsc` clean. **`npm test` is red on main** — details below. `sandbox()` pins `DOLLY_DIR` but never chdirs, so `store.project` is the **dolly repo root**. Test 1 (line 46) dele…
+  full: `steps.md#0001`
+- `2026-09-01 07:30Z` @nick-delirium: All seven fixed. `tsc` clean, **222/222 green**. Verified: Not changed: `npm --prefix root install` does build via `"prepare"`, so `planUpdate`'s comment stands. EOF cancels + numbered path still works (`picker.test.mjs…
+  files: `src/prompt.ts`, `src/cli.ts`, `src/core/memo.ts`, `src/core/update.ts`, `src/core/store.ts`, `tests/memo.test.mjs` +2 more · full: `steps.md#0002`
 

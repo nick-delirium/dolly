@@ -66,6 +66,61 @@ test('filterSelect narrows by the fuzzy matcher when no substring hits', async (
   assert.equal(picked, 1, '"hid" finds the hash-ids task across separators');
 });
 
+/** Non-raw term whose stdin is exhausted: every line() resolves empty, as at EOF. */
+function eofTerm() {
+  const out = [];
+  return {
+    raw: false,
+    columns: 100,
+    text: () => out.join(''),
+    write: (s) => out.push(s),
+    key: async () => ({ name: 'return', ctrl: false, seq: '' }),
+    line: async () => '',
+    close: () => {},
+  };
+}
+
+test('the numbered fallback cancels on an empty line instead of looping forever', async () => {
+  // a closed stdin resolves every line() empty; looping on that spins the CPU
+  // and starves the event loop, so the process never exits
+  const term = eofTerm();
+  await assert.rejects(
+    () =>
+      filterSelect(term, {
+        question: 'Which task?',
+        choices: [
+          { value: 1, label: 'one' },
+          { value: 2, label: 'two' },
+        ],
+      }),
+    PromptCancelled,
+  );
+  assert.match(term.text(), /1\) one/, 'the candidates are still shown before giving up');
+});
+
+test('the numbered fallback takes a number and re-asks on anything else', async () => {
+  const replies = ['nope', '2'];
+  const out = [];
+  const term = {
+    raw: false,
+    columns: 100,
+    text: () => out.join(''),
+    write: (s) => out.push(s),
+    key: async () => ({ name: 'return', ctrl: false, seq: '' }),
+    line: async () => replies.shift() ?? '',
+    close: () => {},
+  };
+  const picked = await filterSelect(term, {
+    question: 'Which task?',
+    choices: [
+      { value: 1, label: 'one' },
+      { value: 2, label: 'two' },
+    ],
+  });
+  assert.equal(picked, 2);
+  assert.match(term.text(), /nope is not one of 1-2/);
+});
+
 test('filterSelect escape cancels', async () => {
   const term = keyTerm(['escape']);
   await assert.rejects(

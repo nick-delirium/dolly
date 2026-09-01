@@ -69,6 +69,8 @@ export function stdioTerm(input: In = process.stdin, output: Out = process.stdou
   let keysOn = false;
   /** bytes read past the newline a previous line() returned, kept for the next one */
   let carry = '';
+  /** the input stream reached EOF — every later line() must resolve, not hang */
+  let ended = false;
 
   const onKeypress = (ch: string | undefined, k: readline.Key | undefined) => {
     const key: Key = {
@@ -154,15 +156,35 @@ export function stdioTerm(input: In = process.stdin, output: Out = process.stdou
       const ready = take(seeded);
       if (ready !== null) return Promise.resolve(ready);
 
+      // stdin closed (`dolly … < /dev/null`, a dead pipe): there is no further
+      // data and no newline coming, so waiting on 'data' would hang forever.
+      // Flush whatever is buffered — callers read an empty line as "no answer".
+      if (ended) {
+        const rest = carry;
+        carry = '';
+        return Promise.resolve(rest);
+      }
+
       return new Promise<string>((resolve) => {
+        const done = (value: string) => {
+          input.off('data', onData);
+          input.off('end', onEnd);
+          input.pause();
+          resolve(value);
+        };
         const onData = (chunk: Buffer | string) => {
           const line = take(carry + String(chunk));
           if (line === null) return;
-          input.off('data', onData);
-          input.pause();
-          resolve(line);
+          done(line);
+        };
+        const onEnd = () => {
+          ended = true;
+          const rest = carry;
+          carry = '';
+          done(rest);
         };
         input.on('data', onData);
+        input.on('end', onEnd);
         input.resume();
       });
     },
@@ -461,8 +483,12 @@ export async function filterSelect<T>(term: Term, opts: FilterSelectOpts<T>): Pr
       throw new PromptCancelled();
     }
     let redraw = true;
-    if (k.name === 'backspace' || k.name === 'delete') query = query.slice(0, -1);
-    else if (k.name === 'escape') {
+    // any edit to the query rebuilds the list, so the old cursor row means
+    // nothing — start from the best match again rather than a leftover index
+    if (k.name === 'backspace' || k.name === 'delete') {
+      query = query.slice(0, -1);
+      i = 0;
+    } else if (k.name === 'escape') {
       eraseLines(term, drawn);
       throw new PromptCancelled();
     } else if (k.name === 'up' || k.name === 'k') i = Math.max(0, i - 1);
@@ -473,8 +499,10 @@ export async function filterSelect<T>(term: Term, opts: FilterSelectOpts<T>): Pr
       eraseLines(term, drawn);
       term.write(answered(question, list[i]?.label ?? ''));
       return list[i].value;
-    } else if (k.seq && !k.ctrl && k.seq.length === 1 && k.seq >= ' ') query += k.seq;
-    else redraw = false;
+    } else if (k.seq && !k.ctrl && k.seq.length === 1 && k.seq >= ' ') {
+      query += k.seq;
+      i = 0;
+    } else redraw = false;
     if (redraw) {
       eraseLines(term, drawn);
       drawn = draw();
@@ -482,6 +510,13 @@ export async function filterSelect<T>(term: Term, opts: FilterSelectOpts<T>): Pr
   }
 }
 
+/**
+ * Numbered fallback for the ambiguous-ref picker. Unlike `select()` there is no
+ * sensible default to fall back on — the whole point is that dolly cannot tell
+ * these apart — so an empty line cancels rather than guessing. That also makes
+ * a closed stdin terminate: `line()` resolves empty at EOF, and looping on it
+ * would spin forever.
+ */
 async function filterNumbered<T>(term: Term, opts: FilterSelectOpts<T>): Promise<T> {
   const { choices } = opts;
   for (;;) {
@@ -490,10 +525,11 @@ async function filterNumbered<T>(term: Term, opts: FilterSelectOpts<T>): Promise
       const tail = c.hint ? `  — ${c.hint}` : '';
       term.write(clip(`  ${n + 1}) ${c.label}${tail}`, term.columns) + '\n');
     });
+    term.write(`  ${color.dim('enter alone cancels')}\n`);
     term.write('> ');
     const raw = (await term.line()).trim();
+    if (!raw) throw new PromptCancelled();
     const n = Number(raw);
-    if (!raw) continue;
     if (Number.isInteger(n) && n >= 1 && n <= choices.length) return choices[n - 1].value;
     term.write(`  ${raw} is not one of 1-${choices.length}\n`);
   }
