@@ -32,7 +32,9 @@ import { TARGETS, installTargets } from './install.js';
 import { confirm, heading, multiselect, note, select, text, type Term } from './prompt.js';
 
 /** agents whose instructions can also register the MCP server */
-const MCP_CAPABLE = new Set(['claude', 'codex', 'cursor', 'gemini', 'opencode']);
+const MCP_CAPABLE = new Set(['claude', 'codex', 'cursor', 'gemini', 'opencode', 'zcode', 'pi']);
+/** agents with session-start / turn-end automation (hooks, plugin, extension) */
+const HOOK_CAPABLE = new Set(['claude', 'opencode', 'zcode', 'pi']);
 
 export interface WizardPre {
   /** where task memory lives — `--store local|global` */
@@ -121,7 +123,7 @@ export async function runWizard(opts: WizardOpts): Promise<WizardResult> {
 
   let scope: 'local' | 'global' = pre.scope ?? cfg.install.scope;
   let mcp = pre.mcp ?? cfg.install.mcp;
-  let hooks = pre.hooks ?? true;
+  let hooks = pre.hooks ?? cfg.install.hooks;
   if (agents.length) {
     scope = await select<'local' | 'global'>(term, {
       question: 'Where should the agent instructions be written?',
@@ -134,9 +136,10 @@ export async function runWizard(opts: WizardOpts): Promise<WizardResult> {
     if (agents.some((a) => MCP_CAPABLE.has(a))) {
       mcp = await confirm(term, { question: 'Register the dolly MCP server?', value: mcp });
     }
-    if (agents.includes('claude')) {
+    const withHooks = agents.filter((a) => HOOK_CAPABLE.has(a));
+    if (withHooks.length) {
       hooks = await confirm(term, {
-        question: 'Install the Claude Code hooks? (context on session start, a step per finished turn)',
+        question: `Install the ${withHooks.join('/')} hooks? (context on session start, a step per finished turn)`,
         value: hooks,
       });
     }
@@ -201,7 +204,9 @@ export async function runWizard(opts: WizardOpts): Promise<WizardResult> {
 
   const desired: Config = {
     ...cfg,
-    install: { scope, mcp },
+    // the hooks answer is saved like the others: a later `install` or `setup`
+    // must not quietly put back hooks the user declined
+    install: { scope, mcp, hooks },
     reindex: { ...cfg.reindex, autoLog },
   };
   if (changed(cfg, desired)) {
@@ -263,7 +268,7 @@ export async function runWizard(opts: WizardOpts): Promise<WizardResult> {
   term.write(`  handle       @${handle}\n`);
   term.write(`  agents       ${agents.length ? agents.join(', ') : color.dim('none')}\n`);
   if (agents.length) {
-    term.write(`  instructions ${scope}${mcp ? ' · mcp' : ''}${hooks && agents.includes('claude') ? ' · hooks' : ''}\n`);
+    term.write(`  instructions ${scope}${mcp ? ' · mcp' : ''}${hooks && agents.some((a) => HOOK_CAPABLE.has(a)) ? ' · hooks' : ''}\n`);
   }
   if (wrote.length) {
     term.write(`\n${color.dim('changes')}\n`);

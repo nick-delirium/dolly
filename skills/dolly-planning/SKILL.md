@@ -1,11 +1,10 @@
 ---
 name: dolly-planning
 description: >
-  Planning mode for a new feature. Interview the user until success criteria, scope,
-  risks, changes and test plan are all pinned down, then generate the spec.
-  Use when: user describes a feature or change rather than a one-line fix, says
-  "plan this", "let's design", "I want to build X", "spec this out", "/dolly-plan",
-  or when a task sits in status `planning`. Not for small bounded fixes.
+  Plan a feature before coding: interview the user until scope, criteria, risks and
+  test plan are pinned down, then generate the spec. Use when the user describes a
+  feature (not a one-line fix), says "plan this" / "spec this out", or a task is in
+  status `planning`.
 ---
 
 Plan before code. Interview until nothing ambiguous. Then spec write itself.

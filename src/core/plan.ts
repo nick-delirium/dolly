@@ -1,11 +1,10 @@
 import { readTextOr, writeText } from './fsx.js';
-import { getSection, sectionNames, setSection, appendToSection } from './md.js';
+import { getSection, sectionNames, setSection, appendToSection, TBD_LINE } from './md.js';
 import type { Store } from './store.js';
 import type { Task } from './types.js';
 import { createTask, planFile, saveTask, touch, updateSpec, SEC_LOG } from './task.js';
 import { nowIso, shortStamp } from './time.js';
 
-const TBD = /^_?\s*(tbd|todo|\?+|n\/a\s*\?)\s*_?$/i;
 
 const PROMPTS: Record<string, string> = {
   Problem: 'What hurts today? Who feels it? Evidence (bug, metric, quote).',
@@ -102,7 +101,7 @@ function isBlank(text: string | null): boolean {
     .map((l) => l.replace(/^[-*]\s+(\[[ xX]\]\s*)?/, '').trim())
     .filter(Boolean);
   if (!meaningful.length) return true;
-  return meaningful.every((l) => TBD.test(l));
+  return meaningful.every((l) => TBD_LINE.test(l));
 }
 
 export function checkPlan(store: Store, task: Task): PlanCheck {
@@ -126,7 +125,7 @@ export function checkPlan(store: Store, task: Task): PlanCheck {
   if (!isNone) {
     for (const line of oq.split('\n')) {
       const m = /^[-*]\s*\[\s\]\s*(.+)$/.exec(line.trim());
-      if (m && !TBD.test(m[1].trim())) openQuestions.push(m[1].trim());
+      if (m && !TBD_LINE.test(m[1].trim())) openQuestions.push(m[1].trim());
     }
   }
   return {
@@ -212,7 +211,7 @@ function composeShort(plan: string): string {
     const items = outOf
       .split('\n')
       .map((l) => l.replace(/^[-*]\s*/, '').trim())
-      .filter((l) => l && !TBD.test(l));
+      .filter((l) => l && !TBD_LINE.test(l));
     if (items.length) lines.push('', `Out of scope: ${items.join('; ')}.`);
   }
   lines.push('', 'Full spec: `context/spec.md` · plan: `context/plan.md`');
@@ -224,7 +223,7 @@ function extractCriteria(plan: string): string[] {
   return sec
     .split('\n')
     .map((l) => /^[-*]\s*(\[[ xX]\]\s*)?(.+)$/.exec(l.trim())?.[2]?.trim() ?? '')
-    .filter((l) => l && !TBD.test(l));
+    .filter((l) => l && !TBD_LINE.test(l));
 }
 
 export { PROMPTS as PLAN_PROMPTS };

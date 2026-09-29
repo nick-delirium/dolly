@@ -8,7 +8,7 @@
  * mechanical import so nothing is lost if the agent never gets that far.
  */
 import { readTextOr, writeText } from './core/fsx.js';
-import { listBlocks, removeBlock } from './core/md.js';
+import { removeBlock } from './core/md.js';
 import type { Store } from './core/store.js';
 import {
   addStep,
@@ -327,30 +327,35 @@ function describeWork(s: Segment): string {
 /**
  * Ordered so the next agent reads what happened before what was asked: its own
  * predecessor's account first, then the mechanical trace, then the request.
+ *
+ * Sized for being read back: the last message (the agent's own wrap-up) whole,
+ * earlier ones as a line each, and no separate command list — every command is
+ * already a `Bash:` line in the work chain.
  */
 function stepDetail(t: Transcript, s: Segment): string {
   const out: string[] = [];
 
   out.push('## What the agent said it did', '');
   if (s.assistantTexts.length) {
-    // every visible message, oldest first — the running account of the turn
-    out.push(s.assistantTexts.map((x) => clip(x, 4000)).join('\n\n---\n\n'));
+    const earlier = s.assistantTexts.slice(0, -1).map((x) => `- ${firstLine(x, 200)}`);
+    const last = clip(s.assistantTexts[s.assistantTexts.length - 1], 4000);
+    out.push([...(earlier.length ? [earlier.join('\n'), ''] : []), last].join('\n'));
   } else {
     out.push('_no visible message — the turn was entirely tool calls, see the work chain_');
   }
 
   if (s.workChain.length) {
-    out.push('', '## Work chain', '', s.workChain.map((a) => `- ${a}`).join('\n'));
+    const MAX = 25;
+    const chain = s.workChain.slice(0, MAX).map((a) => `- ${a}`);
+    if (s.workChain.length > MAX) chain.push(`- … +${s.workChain.length - MAX} more`);
+    out.push('', '## Work chain', '', chain.join('\n'));
   }
   if (s.files.length) {
     out.push('', '## Files touched', '', s.files.map((f) => `- \`${f}\``).join('\n'));
   }
-  if (s.commands.length) {
-    out.push('', '## Commands run', '', s.commands.map((c) => `- \`${c}\``).join('\n'));
-  }
-  out.push('', '## Tools', '', toolSummary(s.tools) + (s.sidechains ? ` · ${s.sidechains} subagent turn(s)` : ''));
+  out.push('', `## Tools: ${toolSummary(s.tools)}${s.sidechains ? ` · ${s.sidechains} subagent turn(s)` : ''}`);
 
-  out.push('', '## Request that opened the turn (verbatim)', '', s.prompt || '_(no text)_');
+  out.push('', '## Request that opened the turn (verbatim)', '', s.prompt ? clip(s.prompt, 1500) : '_(no text)_');
 
   if (s.thinking.length) {
     out.push(
@@ -405,4 +410,3 @@ function importedFullSpec(t: Transcript): string {
   return out.join('\n').trim();
 }
 
-export { listBlocks };

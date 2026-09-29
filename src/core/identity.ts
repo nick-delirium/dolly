@@ -1,10 +1,13 @@
 import { execFileSync } from 'node:child_process';
-import os from 'node:os';
 import path from 'node:path';
 import { gitConfig } from './git.js';
-import { exists, readJson, writeJson } from './fsx.js';
+import { readJson, writeJson } from './fsx.js';
+import { dollyHome } from './home.js';
 
-const CACHE = path.join(os.homedir(), '.dolly', 'identity.json');
+/** resolved per call: DOLLY_HOME must isolate this like every other dolly file */
+const cacheFile = () => path.join(dollyHome(), '.dolly', 'identity.json');
+/** a gh login can change; re-ask after this long */
+const CACHE_TTL_MS = 7 * 86_400_000;
 
 interface IdentityCache {
   user: string;
@@ -55,15 +58,16 @@ export function resolveIdentity(cwd: string, configUser?: string | null): Identi
   if (env) return { user: env, source: 'env' };
   if (configUser) return { user: configUser, source: 'config' };
 
-  if (exists(CACHE)) {
-    const c = readJson<IdentityCache | null>(CACHE, null);
-    if (c?.user) return { user: c.user, source: 'gh' };
-  }
+  const c = readJson<IdentityCache | null>(cacheFile(), null);
+  const fresh = c?.user && Date.now() - Date.parse(c.at) < CACHE_TTL_MS;
+  if (fresh) return { user: c!.user, source: 'gh' };
   const gh = fromGh();
   if (gh) {
-    writeJson(CACHE, { user: gh, source: 'gh', at: new Date().toISOString() });
+    writeJson(cacheFile(), { user: gh, source: 'gh', at: new Date().toISOString() });
     return { user: gh, source: 'gh' };
   }
+  // gh unreachable right now: a stale answer still beats guessing from git
+  if (c?.user) return { user: c.user, source: 'gh' };
   const git = fromGit(cwd);
   if (git) return { user: git, source: 'git' };
   return { user: process.env.USER || process.env.USERNAME || 'unknown', source: 'os' };

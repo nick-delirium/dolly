@@ -8,11 +8,16 @@ import {
   forgetProject,
   globalStoreFor,
   indexFile,
-  linkedStore,
   locateStore,
   recordProject,
   repoIdentity,
 } from '../dist/core/store.js';
+
+/** the store a project resolves to through the registry, or null — production's path */
+function linkedStore(p) {
+  const loc = locateStore(p);
+  return loc.kind === 'linked' ? loc.root : null;
+}
 
 function sandbox(t) {
   const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'dolly-home-')));

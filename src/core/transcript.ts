@@ -113,13 +113,14 @@ function candidateDirs(root: string, cwd: string): string[] {
     const p = path.join(root, name);
     if (isDir(p) && !out.includes(p)) out.push(p);
   }
-  // fall back to any directory whose name ends with this project's basename
+  if (out.length) return out;
+  // no exact directory (the project moved, or was opened through another path):
+  // fall back to a directory named after this project's basename — only then,
+  // and only a unique one. Unconditionally, `/work/app` also collected
+  // `web-app` and `old/app`, and the newest session could be another project's.
   const tail = `-${escapeCwd(path.basename(cwd))}`;
-  for (const name of fs.readdirSync(root)) {
-    const p = path.join(root, name);
-    if (name.endsWith(tail) && isDir(p) && !out.includes(p)) out.push(p);
-  }
-  return out;
+  const guesses = fs.readdirSync(root).filter((name) => name.endsWith(tail) && isDir(path.join(root, name)));
+  return guesses.length === 1 ? [path.join(root, guesses[0])] : [];
 }
 
 export function listSessions(cwd: string): SessionRef[] {
@@ -420,6 +421,16 @@ export function parseTranscript(ref: SessionRef, opts: ParseOpts = {}): Transcri
   const tools: Record<string, number> = {};
   let skipped = 0;
   let cur: Segment | null = null;
+  /** the open segment was cut off by the user — the only case a re-sent prompt folds into it */
+  let interrupted = false;
+  const hasInterrupt = (o: Json) =>
+    textOf(o.message?.content)
+      .split('\n')
+      .some((l) => INTERRUPT.test(l.trim())) ||
+    (Array.isArray(o.message?.content) &&
+      o.message.content.some(
+        (b: Json) => b?.type === 'tool_result' && typeof b.content === 'string' && INTERRUPT.test(b.content.trim()),
+      ));
 
   const push = () => {
     if (cur) segments.push(cur);
@@ -434,15 +445,21 @@ export function parseTranscript(ref: SessionRef, opts: ParseOpts = {}): Transcri
 
     if (isHumanPrompt(o)) {
       const prompt = cleanPrompt(textOf(o.message?.content));
-      // an interrupted-then-resubmitted prompt shows up twice; keep the later one
-      if (cur && !cur.files.length && !cur.commands.length && sameIntent(cur.prompt, prompt)) {
+      // an interrupted-then-resubmitted prompt shows up twice; keep the later
+      // one. Only after an actual interrupt: two turns that merely start alike
+      // ("why", then "why does the build fail") are two turns. The later uuid
+      // becomes the key — an interrupted turn fires no Stop hook, so it was
+      // never auto-logged under the earlier one.
+      if (cur && interrupted && !cur.files.length && !cur.commands.length && sameIntent(cur.prompt, prompt)) {
         skipped++;
         cur.uuid = o.uuid ?? cur.uuid;
         cur.at = stamp || cur.at;
         cur.prompt = prompt.length >= cur.prompt.length ? prompt : cur.prompt;
+        interrupted = hasInterrupt(o);
         continue;
       }
       push();
+      interrupted = hasInterrupt(o);
       cur = {
         index: segments.length + 1,
         uuid: o.uuid ?? `seg-${segments.length + 1}`,
@@ -460,6 +477,7 @@ export function parseTranscript(ref: SessionRef, opts: ParseOpts = {}): Transcri
       continue;
     }
 
+    if (o.type === 'user' && cur && hasInterrupt(o)) interrupted = true;
     if (o.type !== 'assistant' || !cur) continue;
     if (stamp) cur.endedAt = stamp;
 

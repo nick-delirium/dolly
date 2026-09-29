@@ -13,7 +13,7 @@
  */
 import path from 'node:path';
 import { isDir, exists, readTextOr, writeText } from './fsx.js';
-import { getSection, sectionNames, setSection } from './md.js';
+import { getSection, sectionNames, setSection, TBD_LINE } from './md.js';
 import type { Store } from './store.js';
 
 export const PROJECT_SECTIONS = [
@@ -69,7 +69,6 @@ export function setProjectSection(store: Store, section: string, text: string): 
   writeText(projectFile(store), setSection(src, match ?? section, text.trim()));
 }
 
-const TBD = /^_?\s*(tbd|todo|\?+)\s*_?$/i;
 
 function isFilled(body: string | null): boolean {
   if (!body) return false;
@@ -79,7 +78,7 @@ function isFilled(body: string | null): boolean {
     .filter((l) => l && !l.startsWith('<!--'))
     .map((l) => l.replace(/^[-*]\s+/, '').trim())
     .filter(Boolean);
-  return lines.length > 0 && !lines.every((l) => TBD.test(l));
+  return lines.length > 0 && !lines.every((l) => TBD_LINE.test(l));
 }
 
 export interface ProjectStatus {
@@ -102,23 +101,50 @@ export function projectStatus(store: Store): ProjectStatus {
   return { exists: true, filled, missing, prompts: PROMPTS };
 }
 
-/** the brief with interview prompts and unfilled sections stripped, for injection */
-export function projectDigest(store: Store, maxChars = 2500): string {
+export interface DigestOpts {
+  /** only these sections, in this order; the rest are named in a pointer line */
+  sections?: readonly string[];
+  /** per-section cap, cut at a line boundary; 0 = none */
+  maxPerSection?: number;
+}
+
+/**
+ * The brief with interview prompts and unfilled sections stripped, for
+ * injection. Cut per SECTION at line boundaries: one cap over the whole text
+ * stopped mid-word inside Architecture, and Invariants — the part a change must
+ * not break — never made it into any context at all.
+ */
+export function projectDigest(store: Store, opts: DigestOpts = {}): string {
   const src = readProject(store);
   if (!src) return '';
+  const filled: string[] = PROJECT_SECTIONS.filter((name) => isFilled(getSection(src, name)));
+  const chosen = opts.sections ? opts.sections.filter((n) => filled.includes(n)) : filled;
   const out: string[] = [];
-  for (const name of PROJECT_SECTIONS) {
-    const body = getSection(src, name);
-    if (!isFilled(body)) continue;
-    const clean = (body ?? '')
+  for (const name of chosen) {
+    const clean = (getSection(src, name) ?? '')
       .split('\n')
       .filter((l) => !/^<!--\s*ask:/.test(l.trim()))
       .join('\n')
       .trim();
-    out.push(`### ${name}`, '', clean, '');
+    out.push(`### ${name}`, '', clip(clean, opts.maxPerSection ?? 0), '');
   }
-  const text = out.join('\n').trim();
-  return text.length > maxChars ? `${text.slice(0, maxChars).trimEnd()}\n…` : text;
+  const rest = filled.filter((n) => !chosen.includes(n));
+  if (rest.length) out.push(`_Also in the brief: ${rest.join(', ')} — \`dolly project\`._`);
+  return out.join('\n').trim();
+}
+
+/** whole lines up to `max` chars, marked when anything was cut */
+function clip(text: string, max: number): string {
+  if (!max || text.length <= max) return text;
+  const lines = text.split('\n');
+  const kept: string[] = [];
+  let n = 0;
+  for (const l of lines) {
+    if (n + l.length > max && kept.length) break;
+    kept.push(l);
+    n += l.length + 1;
+  }
+  return `${kept.join('\n')}\n_… cut — \`dolly project\` has the rest_`;
 }
 
 /* ------------------------------- code maps -------------------------------- */

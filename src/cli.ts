@@ -4,8 +4,9 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { bool, list, num, parseArgs, repeated, str, type Args } from './core/args.js';
-import { exists, isDir, readStdin, readTextOr, writeJson, writeText } from './core/fsx.js';
+import { ArgError, bool, list, num, parseArgs, repeated, str, type Args, type FlagSpec } from './core/args.js';
+import { exists, isDir, readStdin, readTextOr, writeText } from './core/fsx.js';
+import { withStoreLock, withStoreLockAsync } from './core/lock.js';
 import { buildDigest, hasMemo, memoFile, renderDigest as renderMemoDigest, today } from './core/memo.js';
 import { applyPlan, dirtyClone, installedVersion, planUpdate } from './core/selfupdate.js';
 import { installKind, latestForCheck } from './core/update.js';
@@ -31,6 +32,7 @@ import {
 import {
   Store,
   currentTask,
+  sessionTask,
   forgetProject,
   globalStoreFor,
   locateStore,
@@ -39,6 +41,7 @@ import {
   readProjectIndex,
   storeConflict,
   AmbiguousRef,
+  readTaskDir,
 } from './core/store.js';
 import {
   addStep,
@@ -54,9 +57,9 @@ import {
 } from './core/task.js';
 import { DEFAULT_CONFIG, type Status, type Task } from './core/types.js';
 import { humanAge } from './core/time.js';
-import { installTargets, TARGETS } from './install.js';
+import { installTargets, PKG_ROOT, TARGETS } from './install.js';
 import { runMcpServer } from './mcp.js';
-import { maybeAutoMigrate, migrate, versionState } from './migrate.js';
+import { legacyOrphan, maybeAutoMigrate, migrate, versionState } from './migrate.js';
 import {
   applyReindex,
   importedTurns,
@@ -66,7 +69,14 @@ import {
   type ReindexOpts,
 } from './reindex.js';
 import { listSessions } from './core/transcript.js';
-import { currentSessionId, insideClaudeCode, resumeCommand } from './core/session.js';
+import {
+  currentSessionId,
+  insideClaudeCode,
+  markSessionBoundary,
+  resumeCommand,
+  sessionBoundary,
+  type Boundary,
+} from './core/session.js';
 import {
   codeMapLine,
   ensureProject,
@@ -76,7 +86,6 @@ import {
   setProjectSection,
 } from './core/project.js';
 import {
-  latestOutcome,
   overlappingTasks,
   recentlyFinished,
   relatedByFiles,
@@ -96,62 +105,77 @@ USAGE
   dolly <command> [args] [flags]
 
 BOARD
-  init [--yes] [--store local|global] [--agents a,b] [--local|--global] [--no-mcp]
+  init [--yes] [--store local|global] [--agents a,b] [--local|--global]
+       [--no-mcp|--mcp] [--no-hooks] [--no-agents] [--dry-run]
                                               setup screen: where task memory
                                               lives, which agents to wire.
                                               --yes or no terminal → flags only
   setup                                       reopen the setup screen later
   projects [--json] [--prune]                 every project dolly knows, and
                                               whether its store is in the repo
-  board | list [--all] [--status s] [--mine]  task board grouped by status
-  show <ref> [--full] [--json]                one task
-  context <ref|current> [-n N] [--brief]      rehydrate payload for an agent
-  project [show | set "<Section>" --text t]    repo-level brief: what is true here
-  related [<ref> | --files a,b]               tasks that touched the same files
+  board | list | ls [--status s] [--mine] [--tag x]
+                                              task board grouped by status
+  show [ref] [--full]                         one task
+  context [ref] [-n N] [--brief]              rehydrate payload for an agent
   current                                     alias for: context current
-  continue <ref> [--fork] [--print]           reopen the Claude Code conversation
+  project [show | init | set "<Section>" --text t]
+                                              repo-level brief: what is true here
+  related [ref | --files a,b]                 tasks that touched the same files
+  continue | resume [ref] [--fork] [--print] [--session id]
+                                              reopen the Claude Code conversation
                                               this task was worked in
 
 TASKS
-  new "<title>" [--short t] [--file f] [--status s] [--tag x]
+  new | add "<title>" [--short t] [--full t | --file f] [--criteria c]...
+                      [--status s] [--tag x]
   step <ref> -m "<summary>" [--files a,b | --auto-files]
              [--detail t | --detail-file f] [--status s]
-  spec <ref> [--short t] [--file f|-] [--criteria c] [--reason why]
-  status <ref> <status> [--note t]
-  retitle <ref> "<new title>"                 renames the task and its directory
+  spec <ref> [--short t | --short-file f] [--full t | --file f]
+             [--criteria c]... [--reason why]
+  status | move <ref> <status> [--note t]
+  retitle | rename <ref> "<new title>"        renames the task and its directory
 
 PLANNING
-  plan start "<title>" [--brief t]
+  plan start "<title>" [--brief t | --brief-file f]
   plan show <ref>
-  plan set <ref> "<Section>" (--text t | --file f|-)
+  plan set <ref> "<Section>" (--text t | --file f)
   plan qa <ref> -q "<question>" -a "<answer>"
-  plan check <ref> [--json]
-  plan finalize <ref> [--file f] [--short t] [--force] [--status s]
+  plan check <ref>
+  plan finalize <ref> [--short t] [--full t | --file f] [--force] [--status s]
 
 ADOPT AN ONGOING CONVERSATION
-  reindex [--list] [--session id] [--file f.jsonl] [--all-turns] [-n N]
+  reindex | adopt [--list] [--session id] [--file f.jsonl] [--all-turns] [-n N]
           [--apply] [--into ref] [--title t] [--status s] [--rebuild]
-          [--include-thinking] [--json]
+          [--include-thinking]
                                               read the Claude Code transcript,
                                               print a digest, optionally import it
 
 MAINTENANCE
-  memo [--date YYYY-MM-DD] [--json]           today's digest: tasks, chats, commits
-      [--save --file f|-]                      save agent-written prose as the day's memo
+  memo [--date YYYY-MM-DD]                    today's digest: tasks, chats, commits
+      [--save --file f]                        save agent-written prose as the day's memo
   update [--check] [--dry-run] [--force]      self-update: pull+rebuild (clone) or reinstall (npm)
   migrate [--dry-run]                         upgrade an older .dolly/ layout
   config [get <key> | set <key> <value>]
+  guide [planning]                            the full agent guide (the skill text)
+  defaults                                    the default config, as JSON
   whoami
+  version
 
 INTEGRATION
-  install [agent...] [--local|--global] [--no-mcp] [--no-hooks] [--dry-run] [--list]
+  install [agent...] [--agents a,b] [--local|--global] [--mcp|--no-mcp]
+          [--no-hooks] [--dry-run] [--list]
                                               scope default: install.scope in config (local)
   mcp                                         run MCP stdio server
-  hook <session-start|stop>                   Claude Code hook payloads
+  hook session-start [--raw]                  agent hook payloads; --raw = plain text
+  hook stop [--from-stdin]                    auto-log; --from-stdin = turn JSON on stdin
   statusline                                  one-line status for a statusline
 
+Every command that prints data takes --json. Every text or file flag takes -
+to read stdin.
+
 REFS
-  <ref> = id (3 | 0003) | slug | unique substring | current | @
+  <ref> = 8-char id | slug | unique substring | fuzzy title | current | @
+  Omitted = current. Commands that take only a ref accept several words.
 
 Every step is stamped with your handle: DOLLY_USER -> .dolly/local.json ->
 gh api user -> git user.email / user.name -> $USER. Identity lives in
@@ -166,17 +190,38 @@ That registry records every project and whether its store is in the repo, but a
 .dolly/ on disk always wins over it — a directory cannot be wrong about
 existing, an entry can be stale. \`dolly projects\` lists it.`;
 
-/** commands that write to the store; a newer store must refuse these */
-const WRITE_COMMANDS = new Set([
-  'new', 'add', 'step', 'spec', 'status', 'move', 'retitle', 'rename',
-  'plan', 'reindex', 'adopt',
-  'config', 'project', 'setup',
-]);
+/**
+ * Does this invocation write to the store? Decided per operation, not per
+ * command name: `plan check` and `project` only read and must work on a newer
+ * store, while `hook stop` — the most frequent writer of all — must not.
+ */
+function writesStore(cmd: string, args: Args): boolean {
+  const sub = args.positional[1];
+  switch (cmd) {
+    case 'new': case 'add': case 'step': case 'spec': case 'status': case 'move':
+    case 'retitle': case 'rename': case 'setup': case 'init':
+      return true;
+    case 'plan':
+      return ['start', 'set', 'qa', 'finalize'].includes(sub ?? '');
+    case 'project':
+      return sub === 'set' || sub === 'init';
+    case 'config':
+      return sub === 'set';
+    case 'reindex': case 'adopt':
+      return bool(args, 'apply');
+    case 'memo':
+      return bool(args, 'save');
+    case 'migrate':
+      return !bool(args, 'dry-run');
+    case 'hook':
+      return sub === 'stop';
+    default:
+      return false;
+  }
+}
 
 /** commands that must never touch the store on their own */
-const NO_AUTO = new Set([
-  'help', 'version', 'mcp', 'install', 'init', 'setup', 'migrate', 'projects',
-]);
+const NO_AUTO = new Set(['mcp', 'install', 'init', 'setup', 'migrate', 'projects']);
 
 /**
  * Version skew is the real hazard for a shared store: a teammate on an older
@@ -194,13 +239,13 @@ function newerStoreMsg(state: { store: number; code: number }): string {
   );
 }
 
-function guardStoreVersion(cmd: string): void {
+function guardStoreVersion(cmd: string, args: Args): void {
   const store = Store.open();
   if (!store.exists) return;
   const state = versionState(store);
 
   if (state.newer) {
-    if (WRITE_COMMANDS.has(cmd)) fail(newerStoreMsg(state));
+    if (writesStore(cmd, args)) fail(newerStoreMsg(state));
     process.stderr.write(color.yellow(`dolly: ${newerStoreMsg(state)} Reading anyway.\n`));
     return;
   }
@@ -211,6 +256,8 @@ function guardStoreVersion(cmd: string): void {
   for (const a of applied) {
     process.stderr.write(color.dim(`dolly: auto-migrated — ${a.detail}\n`));
   }
+  const orphan = legacyOrphan(store);
+  if (orphan) process.stderr.write(color.yellow(`dolly: ${orphan}\n`));
   const risky = versionState(Store.open()).unsafePending;
   if (risky.length) {
     process.stderr.write(
@@ -244,7 +291,7 @@ function notifyUpdate(cmd: string): void {
  * see. Kept off machine-read streams.
  */
 function warnStoreConflict(cmd: string): void {
-  if (cmd === 'mcp' || cmd === 'hook' || cmd === 'statusline' || cmd === 'setup') return;
+  if (cmd === 'mcp' || cmd === 'statusline' || cmd === 'setup') return;
   try {
     const clash = storeConflict(locateStore());
     if (!clash) return;
@@ -272,10 +319,16 @@ function openStore(requireInit = true): Store {
   return store;
 }
 
-/** text from --text/--short/--detail, a --file (or `-` for stdin), or piped stdin */
+/**
+ * Text from an inline flag (--text/--short/--detail) or a file flag. `-` for
+ * either reads stdin. Stdin is read ONLY on an explicit `-`: reading it whenever
+ * it was not a TTY swallowed the rest of a `while read` loop into one step, and
+ * hung under a parent that holds stdin open.
+ */
 function textFrom(args: Args, keys: { inline?: string; file?: string }): string | undefined {
   if (keys.inline) {
     const v = str(args, keys.inline);
+    if (v === '-') return readStdin();
     if (v !== undefined) return v;
   }
   if (keys.file) {
@@ -289,10 +342,13 @@ function textFrom(args: Args, keys: { inline?: string; file?: string }): string 
   return undefined;
 }
 
-function pipedStdin(): string | undefined {
-  if (process.stdin.isTTY) return undefined;
-  const v = readStdin();
-  return v.trim() ? v : undefined;
+/**
+ * The ref of a command that takes nothing else: every remaining word, so
+ * `dolly continue oauth login` means the task titled like that. Empty means
+ * the current task — what an empty $ARGUMENTS in a slash command produces.
+ */
+function refArg(args: Args): string {
+  return args.positional.slice(1).join(' ').trim() || 'current';
 }
 
 function jsonOut(data: unknown): void {
@@ -357,7 +413,8 @@ function installOpts(args: Args, store: Store) {
       ? false
       : store.config.install.scope === 'global';
   const mcp = bool(args, 'no-mcp') ? false : bool(args, 'mcp') ? true : store.config.install.mcp;
-  return { global, mcp, hooks: !bool(args, 'no-hooks'), dryRun: bool(args, 'dry-run') };
+  const hooks = bool(args, 'no-hooks') ? false : store.config.install.hooks;
+  return { global, mcp, hooks, dryRun: bool(args, 'dry-run') };
 }
 
 /* ------------------------------- commands -------------------------------- */
@@ -440,9 +497,10 @@ async function cmdInit(args: Args): Promise<void> {
   }
   const store = new Store({ ...loc, root: target, kind: want === 'global' ? 'linked' : loc.kind });
   const fresh = !store.exists;
-  store.init();
+  const dry = bool(args, 'dry-run');
+  if (!dry) store.init();
   process.stdout.write(
-    `${fresh ? 'created' : 'store exists'} ${store.root} ` +
+    `${fresh ? (dry ? 'would create' : 'created') : 'store exists'} ${store.root} ` +
       `${color.dim(`(${store.inProject ? 'in the repo' : 'private to you'})`)}\n`,
   );
   process.stdout.write(`identity: @${store.user} ${color.dim(`(${store.identity.source})`)}\n`);
@@ -501,8 +559,7 @@ async function cmdShow(args: Args): Promise<void> {
   const store = openStore();
   // no ref means current: empty $ARGUMENTS in a generated slash-command (and a
   // lazier human) still lands on the active task
-  const ref = args.positional[1] ?? 'current';
-  const task = await resolveRef(store, ref);
+  const task = await resolveRef(store, refArg(args));
   if (bool(args, 'json')) {
     jsonOut({ ...taskJson(task), spec_full: fullSpec(task), plan: readPlan(task) || null });
     return;
@@ -512,7 +569,7 @@ async function cmdShow(args: Args): Promise<void> {
 
 async function cmdContext(args: Args, refOverride?: string): Promise<void> {
   const store = openStore();
-  const ref = refOverride ?? args.positional[1] ?? 'current';
+  const ref = refOverride ?? refArg(args);
   const task = await resolveRef(store, ref);
   const brief = bool(args, 'brief');
   const steps = brief ? 0 : (num(args, 'limit') ?? num(args, 'steps') ?? 3);
@@ -534,7 +591,7 @@ function cmdNew(args: Args): void {
   const title = args.positional.slice(1).join(' ').trim();
   if (!title) fail('usage: dolly new "<title>"');
   const short = textFrom(args, { inline: 'short' });
-  const full = textFrom(args, { inline: 'full', file: 'file' }) ?? pipedStdin();
+  const full = textFrom(args, { inline: 'full', file: 'file' });
   warnOverlap(store, title);
   const task = createTask(store, {
     title,
@@ -561,7 +618,7 @@ async function cmdStep(args: Args): Promise<void> {
     const changed = changedFiles(store.project).filter((f) => !f.startsWith('.dolly/'));
     files = [...new Set([...files, ...changed])];
   }
-  const detail = textFrom(args, { inline: 'detail', file: 'detail-file' }) ?? pipedStdin();
+  const detail = textFrom(args, { inline: 'detail', file: 'detail-file' });
   const n = addStep(store, task, {
     summary,
     files,
@@ -581,7 +638,7 @@ async function cmdSpec(args: Args): Promise<void> {
   const ref = args.positional[1] ?? 'current';
   const task = await resolveRef(store, ref);
   const short = textFrom(args, { inline: 'short', file: 'short-file' });
-  const full = textFrom(args, { inline: 'full', file: 'file' }) ?? pipedStdin();
+  const full = textFrom(args, { inline: 'full', file: 'file' });
   const crit = repeated(args, 'criteria');
   if (!short && !full && !crit.length) {
     fail('nothing to change — pass --short, --file/--full, or --criteria');
@@ -645,7 +702,7 @@ async function cmdPlan(args: Args): Promise<void> {
     store.init();
     const title = args.positional.slice(2).join(' ').trim();
     if (!title) fail('usage: dolly plan start "<title>" [--brief t]');
-    const brief = textFrom(args, { inline: 'brief', file: 'brief-file' }) ?? pipedStdin() ?? '';
+    const brief = textFrom(args, { inline: 'brief', file: 'brief-file' }) ?? '';
     warnOverlap(store, title);
     const task = startPlan(store, title, brief);
     if (bool(args, 'json')) {
@@ -685,8 +742,8 @@ async function cmdPlan(args: Args): Promise<void> {
     const task = await resolveRef(store, ref);
     const section = args.positional[3];
     if (!section) fail('usage: dolly plan set <ref> "<Section>" --text "..."');
-    const text = textFrom(args, { inline: 'text', file: 'file' }) ?? pipedStdin();
-    if (text === undefined) fail('need --text, --file, or piped stdin');
+    const text = textFrom(args, { inline: 'text', file: 'file' });
+    if (text === undefined) fail('need --text or --file (either one takes - for stdin)');
     setPlanSection(store, task, section, text);
     const check = checkPlan(store, task);
     if (bool(args, 'json')) return jsonOut({ task: task.meta.id, section, check });
@@ -808,8 +865,10 @@ async function cmdReindex(args: Args): Promise<void> {
   if (!opts.apply) {
     let target: Task | null = null;
     if (store.exists) {
+      // the digest is informational: an unresolvable target means "none", so
+      // resolve without the picker (resolveRef exits on ambiguity off a TTY)
       try {
-        target = await resolveRef(store, opts.into ?? 'current');
+        target = store.resolve(opts.into ?? 'current');
       } catch {
         target = null;
       }
@@ -868,7 +927,7 @@ async function cmdReindex(args: Args): Promise<void> {
  */
 async function cmdContinue(args: Args): Promise<void> {
   const store = openStore();
-  const task = await resolveRef(store, args.positional[1] ?? 'current');
+  const task = await resolveRef(store, refArg(args));
   const sessions = task.meta.sessions;
   if (!sessions.length) {
     fail(
@@ -904,7 +963,8 @@ async function cmdContinue(args: Args): Promise<void> {
     stdio: 'inherit',
   });
   if (res.error) fail(`could not launch claude — run manually: ${cmd}`);
-  process.exit(res.status ?? 0);
+  // killed by a signal: status is null, and 0 would report success
+  process.exit(res.status ?? (res.signal ? 128 + (os.constants.signals[res.signal] ?? 0) : 1));
 }
 
 /**
@@ -933,8 +993,8 @@ function cmdProject(args: Args): void {
   if (sub === 'set') {
     const section = args.positional[2];
     if (!section) fail('usage: dolly project set "<Section>" --text "..."');
-    const text = textFrom(args, { inline: 'text', file: 'file' }) ?? pipedStdin();
-    if (text === undefined) fail('need --text, --file, or piped stdin');
+    const text = textFrom(args, { inline: 'text', file: 'file' });
+    if (text === undefined) fail('need --text or --file (either one takes - for stdin)');
     ensureProject(store);
     setProjectSection(store, section, text);
     const st = projectStatus(store);
@@ -982,7 +1042,6 @@ function cmdProject(args: Args): void {
 async function cmdRelated(args: Args): Promise<void> {
   const store = openStore();
   const explicit = list(args, 'files');
-  const ref = args.positional[1];
 
   let related: ReturnType<typeof relatedByFiles>;
   let subject = '';
@@ -990,7 +1049,7 @@ async function cmdRelated(args: Args): Promise<void> {
     related = relatedByFiles(store, explicit);
     subject = `${explicit.length} file(s)`;
   } else {
-    const task = await resolveRef(store, ref ?? 'current');
+    const task = await resolveRef(store, refArg(args));
     related = relatedToTask(store, task);
     subject = `${task.meta.id} ${task.meta.title}`;
   }
@@ -1018,7 +1077,9 @@ function cmdMigrate(args: Args): void {
   const store = openStore();
   const before = versionState(store);
   const report = migrate(store, { dryRun: bool(args, 'dry-run') });
-  if (bool(args, 'json')) return jsonOut({ ...report, version: before });
+  const orphan = legacyOrphan(store);
+  if (bool(args, 'json')) return jsonOut({ ...report, version: before, warning: orphan });
+  if (orphan) process.stderr.write(color.yellow(`dolly: ${orphan}\n`));
   if (!report.actions.length) {
     process.stdout.write(
       `${color.dim(`store already at schema version ${before.store} — nothing to migrate`)}\n`,
@@ -1031,8 +1092,9 @@ function cmdMigrate(args: Args): void {
   for (const a of report.actions) {
     process.stdout.write(`  ${color.cyan(a.kind.padEnd(6))} ${a.task.padEnd(28)} ${a.detail}\n`);
   }
+  const changes = report.actions.filter((a) => !a.header).length;
   process.stdout.write(
-    `\n${report.actions.length} change(s)${report.dryRun ? ' — rerun without --dry-run to apply' : ' applied'}\n`,
+    `\n${changes} change(s)${report.dryRun ? ' — rerun without --dry-run to apply' : ' applied'}\n`,
   );
 }
 
@@ -1190,6 +1252,92 @@ function cmdInstall(args: Args): void {
 
 /* --------------------------------- hooks --------------------------------- */
 
+/** a task untouched this long is shown as a pointer, not injected in full */
+const FRESH_DAYS = 7;
+
+/**
+ * What a new session is told. An index, not the record — every line of it is
+ * paid on every session, so it carries only what changes the first move: where
+ * the store is, what the repo is, what just shipped, and the one task this
+ * conversation is most likely about. The how-to lives in the instruction block.
+ */
+function sessionStartContext(store: Store, tasks: Task[], session: string | null): string {
+  const lines: string[] = [];
+  const counts = store.config.statuses
+    .map((s) => ({ s, n: tasks.filter((t) => t.meta.status === s).length }))
+    .filter((x) => x.n > 0)
+    .map((x) => `${x.s} ${x.n}`)
+    .join(' · ');
+  lines.push(`dolly · ${store.root}${counts ? ` — ${counts}` : ' — empty'}`);
+  // The instruction block says task memory is a committed `.dolly/`. When it is
+  // not, say so here — otherwise the agent looks for a directory that is not
+  // there, or tells the user to commit a store that is deliberately private.
+  if (store.kind === 'linked' || store.kind === 'global') {
+    lines.push(`Store is outside this repo, private to this user: nothing to commit. Use the \`dolly\` CLI as normal.`);
+  }
+
+  const brief = projectDigest(store, { sections: ['Overview'], maxPerSection: 700 });
+  lines.push(
+    '',
+    brief
+      ? `## This repo\n${brief.replace(/^### Overview\n\n/, '')}`
+      : 'No project brief yet — record durable repo facts with `dolly project set "<Section>" --text "..."`.',
+  );
+  const maps = codeMapLine(store.project);
+  if (maps) lines.push('', `Code map available — prefer it over grep: ${maps}`);
+
+  const active = currentTask(tasks, store.config, { session, user: store.user });
+  const finished = recentlyFinished(store, 3).filter((t) => t.meta.id !== active?.meta.id);
+  if (finished.length) {
+    lines.push('', `Recently finished: ${finished.map((t) => `${t.meta.id} ${t.meta.title} (${t.meta.status})`).join(' · ')}`);
+  }
+
+  if (active) {
+    const linked = session ? active.meta.sessions.includes(session) : false;
+    const fresh = Date.parse(active.meta.updated) > Date.now() - FRESH_DAYS * 86_400_000;
+    lines.push(
+      '',
+      `${linked ? 'This conversation’s task' : 'Most recent open task'}: ${active.meta.id} "${active.meta.title}" (${active.meta.status}, ${active.meta.steps} steps, updated ${humanAge(active.meta.updated)}).`,
+    );
+    if (linked || fresh) {
+      lines.push(shortSpec(active) || '_no spec yet_');
+      const last = tailLines(logSection(active), 1);
+      if (last) lines.push(`Last: ${last.replace(/^- /, '').slice(0, 240)}`);
+    }
+    lines.push(
+      linked
+        ? `Before touching code: \`dolly context ${active.meta.id}\`.`
+        : `Continuing it? \`dolly status ${active.meta.id} working\` attaches this conversation (auto-log follows), then \`dolly context ${active.meta.id}\`. Otherwise \`dolly board\`.`,
+    );
+  } else {
+    lines.push(
+      '',
+      'No open task. New feature → `dolly plan start "<title>"`; small fix → `dolly new "<title>"` — after `dolly board` and `dolly related --files <files you expect to touch>`.',
+    );
+  }
+
+  if (store.config.memo?.auto && !hasMemo(store.root, today())) {
+    lines.push('', 'No memo today (memo.auto): at a natural stop, `dolly memo`, then `dolly memo --save --file <notes.md>`.');
+  }
+  return lines.join('\n');
+}
+
+/**
+ * What the harness handed the hook on stdin. Claude Code and zcode send JSON
+ * with `session_id` (and `transcript_path` on Stop); pi and opencode send the
+ * turn itself under `--from-stdin`. A terminal on stdin means a human ran it:
+ * read nothing.
+ */
+function hookPayload(): Record<string, any> {
+  if (process.stdin.isTTY) return {};
+  try {
+    const v = JSON.parse(readStdin() || '{}');
+    return v && typeof v === 'object' && !Array.isArray(v) ? v : {};
+  } catch {
+    return {};
+  }
+}
+
 function cmdHook(args: Args): void {
   const which = args.positional[1];
   const store = Store.open();
@@ -1197,103 +1345,49 @@ function cmdHook(args: Args): void {
     if (which === 'session-start') emitSessionStart('', args.flags.raw === true);
     return;
   }
+  const payload = hookPayload();
+  // harnesses disagree on the field name; the env var is the last resort
+  const session =
+    String(payload.session_id ?? payload.session ?? payload.sessionId ?? '').trim() || currentSessionId();
   const tasks = store.loadTasks();
-  const active = currentTask(tasks, store.config);
 
   if (which === 'session-start') {
-    const lines: string[] = [];
-    const counts = store.config.statuses
-      .map((s) => ({ s, n: tasks.filter((t) => t.meta.status === s).length }))
-      .filter((x) => x.n > 0)
-      .map((x) => `${x.s} ${x.n}`)
-      .join(' · ');
-    lines.push(`dolly store: ${store.root}${counts ? ` — ${counts}` : ' — empty'}`);
-    lines.push('');
-    lines.push(
-      'This repo has task history. Work here is a slice of an ongoing codebase, not a new project — check what already exists before deciding anything.',
-    );
-    // The instruction block says task memory is a committed `.dolly/`. When it is
-    // not, say so here — otherwise the agent looks for a directory that is not
-    // there, or tells the user to commit a store that is deliberately private.
-    if (store.kind === 'linked' || store.kind === 'global') {
-      lines.push(
-        `The store is NOT in this repo — it lives at ${store.root}, private to this user. Nothing to commit, no \`.dolly/\` to find here, and teammates have their own. Read and write it exactly as normal through the \`dolly\` CLI.`,
-      );
-    }
-
-    const brief = projectDigest(store, 1800);
-    if (brief) {
-      lines.push('', '## Project brief (what is true about this repo)', brief);
-    } else {
-      lines.push(
-        '',
-        'No project brief yet. If you learn something durable about this codebase — architecture, a convention, an invariant — record it with `dolly project set "<Section>" --text "..."` so the next task starts informed.',
-      );
-    }
-
-    const maps = codeMapLine(store.project);
-    if (maps) {
-      lines.push('', '## Code map available — prefer it over grep', maps);
-    }
-
-    const finished = recentlyFinished(store, 4).filter((t) => t.meta.id !== active?.meta.id);
-    if (finished.length) {
-      lines.push('', '## Recently finished here');
-      for (const t of finished) {
-        lines.push(`- ${t.meta.id} ${t.meta.title} (${t.meta.status}) — ${latestOutcome(t, 160)}`);
-      }
-    }
-
-    if (active) {
-      lines.push('');
-      lines.push(`Active task ${active.meta.id} "${active.meta.title}" (${active.meta.status}), ${active.meta.steps} steps, updated ${humanAge(active.meta.updated)}.`);
-      lines.push('');
-      lines.push('## Spec (short)');
-      lines.push(shortSpec(active) || '_empty_');
-      lines.push('');
-      lines.push('## Success Criteria');
-      lines.push(criteria(active) || '_empty_');
-      const recent = tailLines(logSection(active), 6);
-      if (recent) {
-        lines.push('');
-        lines.push('## Most recent events');
-        lines.push(recent);
-      }
-      lines.push('');
-      lines.push('## How to read the rest');
-      lines.push(
-        `What you see above is the index, not the record. Before touching code on this task run \`dolly context ${active.meta.id}\` — it adds the full spec plus the last few steps' full context (decisions, options rejected, gotchas). \`--brief\` for spec + log only; \`-n 0\` for the entire history, which you rarely need.`,
-      );
-      lines.push(
-        `Log progress with \`dolly step ${active.meta.id} -m "<what you understood and did>" --auto-files --detail-file <notes>\`. Summaries state outcomes, not the request.`,
-      );
-      if (active.meta.sessions.length) {
-        lines.push(
-          `Earlier conversations on this task: ${active.meta.sessions.map((x) => x.slice(0, 8)).join(', ')} — \`dolly continue ${active.meta.id}\` reopens the latest.`,
-        );
-      }
-    } else {
-      lines.push('');
-      lines.push(
-        'No active task. `dolly board` for the board. New feature → `dolly plan start "<title>"`; small fix → `dolly new "<title>"`.',
-      );
-      lines.push(
-        'Before opening one: `dolly board --all` to check nothing already covers it, and `dolly related --files <the files you expect to touch>` to find who has been in that code and what they decided.',
-      );
-    }
-
-    if (store.config.memo?.auto && !hasMemo(store.root, today())) {
-      lines.push('');
-      lines.push(
-        `No memo for today yet (memo.auto is on). At a natural stopping point: run \`dolly memo\` for the digest, write a few sentences of prose, save with \`dolly memo --save --file <notes.md>\`.`,
-      );
-    }
-    emitSessionStart(lines.join('\n'), args.flags.raw === true);
+    if (session) markSessionBoundary(store.root, session);
+    emitSessionStart(sessionStartContext(store, tasks, session), args.flags.raw === true);
     return;
   }
 
   if (which === 'stop') {
-    if (!active) return;
+    // Only a task this conversation already wrote to. Picking "the current
+    // task" by recency logged every unrelated session in the repo onto
+    // whichever task was touched last — and each auto-step kept it the newest.
+    const live = tasks.filter((t) => t.meta.status !== store.config.doneStatus);
+    const active = session ? sessionTask(live, session) : null;
+    if (!active || !session) return;
+    const boundary = sessionBoundary(store.root, session);
+    try {
+      autoLog(args, store, active, session, payload, boundary);
+    } finally {
+      // the boundary is taken AFTER this turn's own auto-step, with the step
+      // count it left: a later step means the agent logged during the next turn
+      const now = readTaskDir(active.dir, active.rel);
+      markSessionBoundary(store.root, session, { task: active.meta.id, steps: now?.meta.steps });
+    }
+    return;
+  }
+  fail(`unknown hook "${which}" — use session-start|stop`);
+}
+
+/** one turn just ended: log it onto `active` unless the agent already did */
+function autoLog(
+  args: Args,
+  store: Store,
+  active: Task,
+  session: string,
+  payload: Record<string, any>,
+  boundary: Boundary | null,
+): void {
+  {
     const hk = store.config.reindex;
     const working = active.meta.status === 'working';
 
@@ -1302,7 +1396,7 @@ function cmdHook(args: Args): void {
     // only understands Claude Code's on-disk JSONL schema.
     if (args.flags['from-stdin'] === true) {
       if (!hk.autoLog || (!working && hk.autoLogOnlyWhenWorking)) return;
-      let turn: {
+      const turn = payload as {
         session?: string;
         turn?: number | string;
         turnStartMs?: number;
@@ -1311,26 +1405,31 @@ function cmdHook(args: Args): void {
         files?: string[];
         agent?: string;
       };
-      try {
-        turn = JSON.parse(readStdin());
-      } catch {
-        return; // garbage or empty input — log nothing, never throw
-      }
-      if (!turn || typeof turn !== 'object') return;
       // harnesses disagree on field names (pi: session; opencode plugin: what
       // it writes; zcode/Claude-style Stop payloads: session_id and possibly
       // no usable text at all). Normalize what we can; what is missing
       // degrades to a thinner mechanical entry or a silent no-op.
-      turn.session = String(turn.session ?? (turn as any).session_id ?? (turn as any).sessionId ?? '') || undefined;
+      turn.session = session ?? undefined;
       turn.text = String(turn.text ?? (turn as any).response ?? (turn as any).last_response ?? (turn as any).preview ?? '');
-      if (turn.text) turn.text = turn.text.trim();
-      const text = (turn.text ?? '').trim();
-      const tools = Array.isArray(turn.tools) ? turn.tools.filter(Boolean) : [];
-      const files = Array.isArray(turn.files) ? turn.files.filter(Boolean) : [];
+      const text = turn.text.trim();
+      const strings = (v: unknown) => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string' && !!x) : []);
+      const tools = strings(turn.tools);
+      const files = strings(turn.files);
       if (!text && !tools.length && !files.length) return; // nothing substantive
 
-      // the agent logged its own step during this turn → don't double-log
-      if (turn.turnStartMs && Date.parse(active.meta.updated) >= turn.turnStartMs) return;
+      // the agent logged its own step during this turn → don't double-log. A
+      // payload without a start time (zcode) falls back to the boundary this
+      // machine recorded at the end of the previous turn: more steps than it
+      // counted means someone logged since.
+      const start = Number(turn.turnStartMs);
+      const logged = start
+        ? Date.parse(active.meta.updated) >= start
+        : boundary?.task === active.meta.id && boundary.steps !== undefined
+          ? active.meta.steps > boundary.steps
+          : boundary
+            ? Date.parse(active.meta.updated) >= boundary.at
+            : false;
+      if (logged) return;
 
       // harnesses without a turn counter (zcode's Stop has none) would dedup
       // on a constant and silently drop every turn after the first — key by
@@ -1365,8 +1464,12 @@ function cmdHook(args: Args): void {
         // Pin to the running conversation. Resolving by newest-mtime meant a
         // second Claude session in the same repo could get its turns logged
         // onto this task.
+        // the harness says which transcript this is; searching for it by
+        // project directory was the fallback that could find another's
+        const file = typeof payload.transcript_path === 'string' && exists(payload.transcript_path) ? payload.transcript_path : undefined;
         const transcript = loadTranscript(store.project, {
-          session: currentSessionId() ?? undefined,
+          file,
+          session: file ? undefined : (session ?? undefined),
           includeThinking: hk.includeThinking,
         });
         const res = applyReindex(store, transcript, {
@@ -1397,9 +1500,7 @@ function cmdHook(args: Args): void {
         systemMessage: `dolly: task ${active.meta.id} "${active.meta.title}" is still \`working\` — last step ${humanAge(active.meta.updated)}. Log a step (\`dolly step ${active.meta.id} -m "..." --auto-files --detail-file <notes>\`) or move it to \`validating\`.`,
       })}\n`,
     );
-    return;
   }
-  fail(`unknown hook "${which}" — use session-start|stop`);
 }
 
 /** one-line outcome for an auto-logged pi turn — first real line, else the tools */
@@ -1444,6 +1545,23 @@ function emitSessionStart(context: string, raw = false): void {
   );
 }
 
+/**
+ * The full usage guide — the dolly skill's text. The instruction block every
+ * session loads is kept to the essentials and points here, so an agent with no
+ * skill support (Cursor, Codex, Gemini, Copilot) still has the whole guide one
+ * command away instead of in every prompt.
+ */
+function cmdGuide(args: Args): void {
+  const which = args.positional[1] ?? 'dolly';
+  const names: Record<string, string> = { dolly: 'dolly', planning: 'dolly-planning', 'dolly-planning': 'dolly-planning' };
+  const name = names[which];
+  if (!name) fail(`unknown guide "${which}" — \`dolly guide\` or \`dolly guide planning\``);
+  const file = path.join(PKG_ROOT, 'skills', name, 'SKILL.md');
+  const raw = readTextOr(file);
+  if (!raw) fail(`guide missing from this install: ${file}`);
+  process.stdout.write(`${raw.replace(/^---\n[\s\S]*?\n---\n+/, '').trim()}\n`);
+}
+
 function cmdStatusline(): void {
   const store = Store.open();
   if (!store.exists) return;
@@ -1466,10 +1584,6 @@ function cmdMemo(args: Args): void {
   const date = str(args, 'date') ?? today();
 
   if (bool(args, 'save')) {
-    // --save writes, the digest only reads — so the write is version-gated here,
-    // not via WRITE_COMMANDS, which would block `dolly memo` on a newer store too
-    const state = versionState(store);
-    if (state.newer) fail(newerStoreMsg(state));
     const src = str(args, 'file');
     if (!src) fail('usage: dolly memo --save --file <prose.md> (or - for stdin) [--date YYYY-MM-DD]');
     const body =
@@ -1563,10 +1677,96 @@ async function cmdUpdate(args: Args): Promise<void> {
 
 /* --------------------------------- dispatch ------------------------------ */
 
+const SETUP_FLAGS = ['store', 'agents'];
+const SETUP_BOOLS = ['global', 'local', 'mcp', 'no-mcp', 'no-hooks', 'dry-run'];
+const INSTALL_BOOLS = ['global', 'local', 'mcp', 'no-mcp', 'no-hooks', 'dry-run'];
+
+/** every flag each command reads — anything else is a typo, and says so */
+const FLAGS: Record<string, FlagSpec> = {
+  init: { bool: [...SETUP_BOOLS, 'yes', 'no-agents'], value: SETUP_FLAGS },
+  setup: { bool: SETUP_BOOLS, value: SETUP_FLAGS },
+  board: { bool: ['all', 'mine'], value: ['status', 'tag'] },
+  show: { bool: ['full'] },
+  context: { bool: ['brief'], value: ['limit', 'steps'] },
+  new: { value: ['short', 'full', 'file', 'status', 'tag', 'criteria'] },
+  step: { bool: ['auto-files'], value: ['summary', 'files', 'detail', 'detail-file', 'status'] },
+  spec: { value: ['short', 'short-file', 'full', 'file', 'criteria', 'reason'] },
+  status: { value: ['note'] },
+  retitle: { value: ['title'] },
+  project: { value: ['text', 'file'] },
+  related: { value: ['files'] },
+  plan: {
+    bool: ['force'],
+    value: ['brief', 'brief-file', 'text', 'file', 'question', 'answer', 'short', 'full', 'status'],
+  },
+  reindex: {
+    bool: ['list', 'all-turns', 'apply', 'rebuild', 'include-thinking'],
+    value: ['session', 'file', 'limit', 'into', 'title', 'status'],
+  },
+  continue: { bool: ['fork', 'print'], value: ['session'] },
+  update: { bool: ['check', 'dry-run', 'force'] },
+  migrate: { bool: ['dry-run'] },
+  memo: { bool: ['save'], value: ['date', 'file'] },
+  config: {},
+  whoami: {},
+  projects: { bool: ['prune'] },
+  install: { bool: [...INSTALL_BOOLS, 'list'], value: ['agents'] },
+  mcp: {},
+  hook: { bool: ['raw', 'from-stdin'] },
+  statusline: {},
+  guide: {},
+  defaults: {},
+  help: {},
+  version: {},
+};
+const ALIAS_OF: Record<string, string> = {
+  list: 'board', ls: 'board', current: 'context', add: 'new', move: 'status',
+  rename: 'retitle', adopt: 'reindex', resume: 'continue',
+};
+
+/**
+ * The command word: the first token that is not one of the switches allowed
+ * before it (`dolly --json board`). Found before parsing because which flags
+ * are switches depends on the command — `--full` is one for `show` and takes
+ * text for `spec`.
+ */
+function commandOf(argv: string[]): string | undefined {
+  for (const a of argv) {
+    if (['--json', '--help', '-h', '--version', '-v'].includes(a)) continue;
+    return a.startsWith('-') ? undefined : a;
+  }
+  return undefined;
+}
+
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
-  const args = parseArgs(argv);
+  const word = commandOf(argv);
+  const spec = word ? FLAGS[ALIAS_OF[word] ?? word] : undefined;
+  let args: Args;
+  try {
+    // an unknown command word parses loosely, so it fails as an unknown
+    // command rather than as an unknown flag of `help`
+    args = parseArgs(argv, word && !spec ? undefined : (spec ?? FLAGS.help), word ?? 'dolly');
+  } catch (err) {
+    if (err instanceof ArgError) fail(err.message);
+    throw err;
+  }
   const cmd = args.positional[0];
+
+  // hooks run inside someone else's agent: whatever goes wrong, it must never
+  // surface as an error there, and a newer store only silences the writer
+  if (cmd === 'hook') {
+    try {
+      const store = Store.open();
+      if (store.exists && versionState(store).newer && writesStore(cmd, args)) return;
+      if (store.exists && !versionState(store).newer) maybeAutoMigrate(store);
+      if (store.exists && writesStore(cmd, args)) withStoreLock(store.root, 'hook stop', () => cmdHook(args));
+      else cmdHook(args);
+    } catch {
+      /* a hook never fails the host */
+    }
+    return;
+  }
 
   if (bool(args, 'version') || cmd === 'version') {
     process.stdout.write(`${VERSION}\n`);
@@ -1583,10 +1783,19 @@ async function main(): Promise<void> {
     return;
   }
 
-  guardStoreVersion(cmd);
+  guardStoreVersion(cmd, args);
   warnStoreConflict(cmd);
   notifyUpdate(cmd);
 
+  // every write holds the store lock for the whole command, taken before the
+  // command loads anything — so what it reads is what is on disk. Not setup
+  // or init: those are interactive and would hold it while a human thinks.
+  const store = writesStore(cmd, args) && cmd !== 'setup' && cmd !== 'init' ? Store.open() : null;
+  if (store?.exists) return withStoreLockAsync(store.root, cmd, () => dispatch(cmd, args));
+  return dispatch(cmd, args);
+}
+
+async function dispatch(cmd: string, args: Args): Promise<void> {
   switch (cmd) {
     case 'init':
       return cmdInit(args);
@@ -1647,10 +1856,10 @@ async function main(): Promise<void> {
       return cmdInstall(args);
     case 'mcp':
       return runMcpServer();
-    case 'hook':
-      return cmdHook(args);
     case 'statusline':
       return cmdStatusline();
+    case 'guide':
+      return cmdGuide(args);
     case 'defaults':
       return jsonOut(DEFAULT_CONFIG);
     default:

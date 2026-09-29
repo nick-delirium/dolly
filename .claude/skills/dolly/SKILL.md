@@ -1,224 +1,112 @@
 ---
 name: dolly
 description: >
-  Long-term task memory. Read and write .dolly/ — task board, step log, spec history.
-  Use when: starting work on existing task, picking work back up after context reset,
-  finishing a slice of work, spec changed mid-flight, user asks "what was I doing",
-  "where did we leave off", "log this", "what's the status", or any dolly command.
-  Also use before touching code on a task that already has history.
+  Task memory for this repo (.dolly/): board, step log, versioned specs. Use before
+  touching code on a task with history, when picking work back up, after a slice of
+  work lands, when a spec changes, or for "where did we leave off" / "log this" / any
+  dolly command.
 ---
 
-Task memory live in `.dolly/`. Git-tracked. Shared with teammates. You write it — nobody else will.
+Task memory live in the dolly store (`dolly whoami` print where; usually `.dolly/`, committed, shared with teammates). State live in files, not in your memory of the conversation. Read before write. Never hand-edit it — CLI keeps frontmatter, versions, step counters consistent.
 
-## Rule zero
+## One repo, many tasks
 
-Never trust memory of conversation. State live in files. Read before write.
-
-## Rule one: one repo, many tasks
-
-Your task is a SLICE of an ongoing codebase. Not a project. Not greenfield. Other tasks came before, made decisions, set conventions — some still in flight.
-
-Before you decide anything on a new or unfamiliar task:
+Your task is a SLICE of an ongoing codebase. Other tasks came before, made decisions, set conventions. Before deciding anything on an unfamiliar task:
 
 ```
-dolly project                        # what is true about this repo (architecture, conventions, invariants)
-dolly board --all                    # what exists, what is in flight, what shipped
-dolly related --files a.ts,b.ts      # who else has been in this code, and what they concluded
-dolly context <ref>                  # ← includes project brief + related tasks automatically
+dolly project                      # what is true about this repo: architecture, conventions, invariants
+dolly board                        # what exists, what is in flight, what shipped
+dolly related --files a.ts,b.ts    # which tasks touched this code, and what they concluded
 ```
 
-`dolly related` is the one nobody else can give you: dolly records the files every step touched, so it can tell you **another task also edited `src/auth/token.ts`, and here is what it decided**. Read that before changing shared code — you may be about to undo a deliberate choice.
+`dolly related` is the link nothing else gives you: dolly records the files every step touched. Read it before changing shared code — you may be about to undo a deliberate choice. Skipped it if you: reinvent an existing convention, edit a file against another task's direction, ask what the repo already answers.
 
-Symptoms you skipped this: reinventing a convention that already exists, two tasks editing the same file in opposite directions, asking the user something the repo already answers, "adding" something task 0005 already built.
+Code map in repo (`.codegraph/`, `graft/`, `.serena/`)? Use it before grep. Do not build an index inside `.dolly/`.
 
-## Rehydrate first — read in tiers, not all at once
+## Rehydrate — read in tiers
 
-| Need | Command | Cost |
-|---|---|---|
-| what work exists | `dolly board` | tiny |
-| picking up a task, about to write code | **`dolly context <ref>`** ← default | moderate |
-| just orienting, don't need step detail | `dolly context <ref> --brief` | small |
-| archaeology: why is this code like this | `dolly context <ref> -n 0` | large |
+| Need | Command |
+|---|---|
+| what work exists | `dolly board` |
+| picking up a task, about to write code | **`dolly context <ref>`** ← default |
+| orienting only | `dolly context <ref> --brief` |
+| archaeology: why is the code like this | `dolly context <ref> -n 0` |
 
-`dolly context <ref>` is the right answer almost always: spec (short + full), criteria, the whole one-line log, plus the last 3 steps' FULL context. The short log alone tell you *what* happened; full step context tell you *why* — you need why before you change code.
+`dolly context` = project brief, related tasks, spec, criteria, log, last 3 steps' full context. Log say *what* happened; step context say *why* — you need why before changing code. Session-start text is only the index.
 
-Session start already inject spec + criteria + last events. That is the index, NOT the record. Still run `dolly context` before editing.
+`<ref>` = 8-char id (`3pkndyj2`) · slug · unique substring · fuzzy title · `current` (default when omitted). Ambiguous → picker in a terminal, list otherwise.
 
-`<ref>` = 8-char hash id (`3pkndyj2`) · legacy number · slug · unique substring · fuzzy title · `current` · `@`. Ambiguous → interactive picker.
-
-Output written for you, not humans. Read it whole. It carry decisions and dead ends from previous sessions — including other people's sessions.
+Pick up work → `dolly status <ref> working` first. That also attaches this conversation: auto-log only ever writes to a task the conversation already wrote to.
 
 ## Log every major step
 
 ```
-dolly step current -m "<1-3 lines: what changed, why>" \
-  --auto-files \
-  --detail-file /tmp/step-notes.md
+dolly step current -m "<1-3 lines: what you understood and did>" --auto-files --detail-file <notes.md>
 ```
 
-Major step = feature slice landed · bug root-caused · migration written · approach abandoned · dependency added. NOT every file edit.
-
-Two tiers, both required:
+Major step = slice landed · bug root-caused · migration written · approach abandoned · dependency added. Not every edit. Log BEFORE a risky refactor and AFTER it lands.
 
 | Flag | Lands in | Content |
 |---|---|---|
-| `-m` | `task.md` (short, shared, skimmed by humans) | 1-3 lines. What you understood and did. |
-| `--detail-file` / `--detail` | `context/steps.md` (full, append-only) | Note to next agent with zero context: decisions + reasons, rejected options + why, gotchas, exact snippets, what to do next. |
+| `-m` | `task.md` log, skimmed by humans | OUTCOME. Never the request. |
+| `--detail-file` / `--detail` | `context/steps.md`, append-only | Note to an agent with zero context: decisions + why, rejected options + why, gotchas, snippets, next. |
 
-**Summary is an OUTCOME, never a restatement of the request.** Log is for continuity — next agent need to know what is true now, not what was asked.
-
-- bad: `add country and browser filters` ← that is the request, worthless
+- bad: `add country and browser filters` ← the request, worthless
 - good: `Filters land in search endpoint as AND-ed where clauses. Needed composite index on (country, browser) or p95 blew past 300ms.`
 
-Say what you concluded, what you built, what surprised you. Request already in the spec.
+Step without detail is half a step. `--auto-files` read changed files from git; `--files a.ts,b.ts` when git is noisy. Text/file flags take `-` for stdin.
 
-`--auto-files` pull changed files from git. Use `--files a.ts,b.ts` when git dirty with unrelated stuff.
-
-Log a step BEFORE risky refactor (so rollback context exist) and AFTER it land.
-
-Step without `--detail` is half a step. Write the detail.
+With hooks installed, dolly auto-logs a mechanical step per finished turn (lifted from your last message). Floor, not substitute — a turn you log yourself is skipped by the auto-logger, and your summary is better.
 
 ## Statuses
 
 `todo → planning → working → validating → done`
 
 ```
-dolly status current working
-dolly status current validating --note "<exactly what human must check>"
+dolly status current validating --note "<exactly what the human must check>"
 ```
 
-`validating` = you done, human must verify. Move there when work complete. **Never set `done` yourself** — that human's call.
-
-Pick up work → `dolly status <ref> working` first, then log steps.
+`validating` = you are done, human must verify. **Never set `done`** — human's call.
 
 ## Spec changed mid-flight
 
 Never silently rewrite. Version it:
 
 ```
-dolly spec current \
-  --short "<new 2-5 line summary>" \
-  --file /tmp/new-full-spec.md \
-  --reason "<why it changed>"
+dolly spec current --short "<2-5 line summary>" --file <new-full-spec.md> --reason "<why it changed>"
 ```
 
-Bumps version. Old spec move down into "Superseded versions" at bottom of same `context/spec.md`, with your reason. Replaces only short summary in `task.md`. Nothing lost, one file to read.
+Old spec moves to "Superseded versions" at the bottom of the same `context/spec.md`, with the reason. `--short` / `--criteria` alone = no version bump, still logged.
 
-`--short` alone = summary-only tweak, no version bump.
+## New task
 
-## New task, no planning needed
+Needs questions answered → **dolly-planning** skill. Small and understood:
 
 ```
 dolly new "<title>" --short "<2-5 line spec>" --criteria "x works" --criteria "y works" --tag auth
 ```
 
-Feature that need questions answered → use the **dolly-planning** skill instead.
-
-## Layout
-
-```
-.dolly/
-  config.json
-  tasks/b4tk7s2m-oauth-login/
-    task.md          # meta + short spec + criteria + one-line-per-event log  ← the shared file
-    context/
-      spec.md        # current full spec on top, superseded versions below it
-      steps.md       # full context of every step, append-only
-      plan.md        # planning interview record (only if planned)
-  archive/2026-08/…  # aged-out tasks
-```
-
-`task.md` Log is flat and chronological — one line per event:
-
-```
-- `2026-08-07 10:22Z` @nick-delirium: Wired GitHub OAuth callback route.
-  files: `src/auth/callback.ts` · full: `steps.md#0003`
-- `2026-08-07 11:04Z` @nick-delirium: spec → v2. security review demanded PKCE
-```
-
-## Hard rules
-
-- Never hand-edit `.dolly/**`. CLI keep frontmatter, versions, step counters consistent. Hand-edit break them.
-- Steps append-only. Wrong step → new step correcting it. No rewriting history.
-- One task = one feature. Scope grow → new task, link it in the step detail.
-- Commit `.dolly/` with the code. Teammates read your steps, you read theirs. Exception: store kept outside the repo (`dolly whoami` say `linked`/`global`) — private to that user, nothing to commit, no `.dolly/` in the repo at all.
-- Every step stamped with GitHub handle (`gh api user` → git email → `$USER`). `DOLLY_USER` override.
-
-## Conversation already started without dolly?
-
-Adopt it — don't start a blank task and lose what happened.
-
-```
-dolly reindex                  # digest of THIS session: every request verbatim, files touched, commands run
-dolly reindex --apply          # import it: creates task, one step per turn
-dolly reindex --apply --into 3 # or attach to existing task
-```
-
-Idempotent — re-run any time, turns already imported get skipped.
-
-After import, TWO things are your job:
-1. **Replace the spec.** Import stitches raw requests together. You have the conversation — write the real spec: `dolly spec <ref> --short "..." --file <spec.md> --reason "reindexed from session <id>"`.
-2. **Fix misleading step summaries** with a corrective step. Never rewrite imported history.
-
-Storage format changed between dolly versions?
-
-Store carry a schema version. Lossless upgrades (new scaffolding, config moves) apply THEMSELVES on any command — nothing to do. Anything that moves or rewrites data warns and waits:
-```
-dolly migrate --dry-run             # what it would change
-dolly migrate                       # apply it
-dolly reindex --apply --rebuild     # re-derive imported steps from the transcript
-```
-
-Store NEWER than your dolly → dolly refuse writes. Do NOT work around it. Teammate wrote that store with a newer dolly; upgrade dolly first, else you corrupt their data.
-
-## Automatic logging
-
-With hooks installed, dolly auto-logs one mechanical step per finished turn, derived from the transcript: what you reported, your work chain, files touched. So the log never has holes.
-
-That does NOT excuse you. Auto-entries are a floor, not a substitute — they lift your last message verbatim, which is usually worse than a written summary. Any turn you log yourself is SKIPPED by the auto-logger. So log real steps at real boundaries; auto-log covers what you forget.
-
-Turn it off: `dolly config set reindex.autoLog false`.
-
-## Jump back into an old conversation
-
-Every step record the Claude Code session it happened in.
-
-```
-dolly continue oauth login   # fuzzy title match; hash ids work too
-dolly continue b4tk7s2m --fork  # resume as a new branch, leaving the original intact
-```
-
-Useful when the step log is not enough and you want the actual dialogue back.
+One task = one feature. Scope grows → new task, link it in the step detail.
 
 ## Repo-level knowledge → `dolly project`
 
-`.dolly/project.md` hold what is true about the CODEBASE, task-independent: Overview, Architecture, Conventions, Invariants, Glossary.
+`.dolly/project.md`: Overview, Architecture, Conventions, Invariants, Glossary — what is TRUE about the code (CLAUDE.md says how to BEHAVE). You maintain it: learn a boundary, a banned pattern, an invariant, why something is shaped weird → `dolly project set "<Section>" --text "..."`. Find it wrong → fix it; a stale brief is worse than none. Fact useful to a task that does not exist yet → brief. Fact about what THIS task did → step.
+
+## Conversation already started without dolly?
 
 ```
-dolly project                                          # read it
-dolly project set "Conventions" --text "<what you learned>"
+dolly reindex                     # digest of THIS session: requests verbatim, files touched, commands run
+dolly reindex --apply             # import it: new task, one step per turn (idempotent)
+dolly reindex --apply --into <ref>
 ```
 
-Not the same as CLAUDE.md. CLAUDE.md tell you how to BEHAVE. project.md record what is TRUE about the code. Instructions vs findings.
+Then replace the imported spec (it only stitches raw requests together): `dolly spec <ref> --short "..." --file <spec.md> --reason "reindexed from session <id>"`. Fix misleading imported summaries with a corrective step, never by rewriting.
 
-**You maintain it.** Learn something durable — a boundary, a banned pattern, an invariant, why a thing is shaped weird — write it there. Not in a step: steps are one task's history, the brief is for every future task. Find it WRONG → fix it. Stale brief worse than none.
+## Hard rules
 
-Rule of thumb: fact useful to a task that does not exist yet → project brief. Fact about what THIS task did → step.
-
-## Code map — do not reinvent it
-
-dolly does NOT index code, and neither should you by hand. If repo has one, session start and `dolly project` name it:
-
-- **CodeGraph** (`.codegraph/`) → `codegraph explore "<question>"` — symbols' source + call paths in one shot
-- **graft** (`graft/`) → `graft ask "<task>"` — ranked nodes + file:line
-- **Serena** (`.serena/`) → symbolic lookup without reading whole files
-
-Use it BEFORE grep. Grep find strings; a code map find callers, impact, dynamic dispatch. Big repo, no map → say so to user, suggest one. Do not build your own index inside `.dolly/`.
-
-## Not initialized?
-
-```
-dolly init            # detects agents present, wires them, creates .dolly/
-```
-
-Store resolution: `DOLLY_DIR` → nearest `.dolly/` walking up → `<repo-root>/.dolly` → `~/.dolly/projects/<name>-<hash>`.
+- Steps are append-only. Wrong step → a new step correcting it.
+- Commit `.dolly/` with the code — unless `dolly whoami` says the store is `linked`/`global` (outside the repo, private, nothing to commit).
+- Every step is stamped with your handle (`DOLLY_USER` → `.dolly/local.json` → `gh` → git email → `$USER`).
+- Store newer than your dolly → writes refused. Do NOT work around it; upgrade dolly. Older store → lossless upgrades apply themselves; risky ones wait for `dolly migrate` (`--dry-run` first).
+- Want the old dialogue back: `dolly continue <ref>` prints `claude --resume <session>`.
+- Not initialized: `dolly init`.

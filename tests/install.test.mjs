@@ -20,7 +20,8 @@ function dolly(cwd, args, env = {}) {
 
 test('install scope defaults to local', () => {
   assert.equal(DEFAULT_CONFIG.install.scope, 'local');
-  assert.equal(DEFAULT_CONFIG.install.mcp, true);
+  // opt-in: the CLI is the same surface, without tool schemas in every prompt
+  assert.equal(DEFAULT_CONFIG.install.mcp, false);
 });
 
 test('init writes agent instructions into the project by default', (t) => {
@@ -29,7 +30,7 @@ test('init writes agent instructions into the project by default', (t) => {
   delete process.env.DOLLY_DIR; // let the CLI discover the store from cwd
   fs.mkdirSync(path.join(sb.dir, '.claude'), { recursive: true });
 
-  const out = dolly(sb.dir, ['init', '--agents', 'claude'], { DOLLY_DIR: '' });
+  const out = dolly(sb.dir, ['init', '--agents', 'claude', '--mcp'], { DOLLY_DIR: '' });
   assert.match(out, /agent instructions: local/);
 
   assert.ok(fs.existsSync(path.join(sb.dir, 'CLAUDE.md')));
@@ -42,7 +43,7 @@ test('init writes agent instructions into the project by default', (t) => {
 
   const claudeMd = fs.readFileSync(path.join(sb.dir, 'CLAUDE.md'), 'utf8');
   assert.match(claudeMd, /<!-- dolly:instructions -->/);
-  assert.match(claudeMd, /dolly context current/);
+  assert.match(claudeMd, /dolly context <ref>/);
 });
 
 test('install.scope=global in config flips the default; --local overrides it', (t) => {
@@ -73,7 +74,7 @@ test('config set/get walks dotted keys', (t) => {
   Store.open().init();
   dolly(sb.dir, ['config', 'set', 'install.scope', 'global'], { DOLLY_DIR: sb.store });
   const got = dolly(sb.dir, ['config', 'get', 'install'], { DOLLY_DIR: sb.store });
-  assert.deepEqual(JSON.parse(got), { scope: 'global', mcp: true });
+  assert.deepEqual(JSON.parse(got), { scope: 'global', mcp: false, hooks: true });
 
   dolly(sb.dir, ['config', 'set', 'reindex.includeThinking', 'true'], {
     DOLLY_DIR: sb.store,
@@ -120,7 +121,7 @@ test('install pi wires skills, instructions, and mcp (local)', (t) => {
   Store.open().init();
   fs.mkdirSync(path.join(sb.dir, '.pi', 'agent'), { recursive: true });
 
-  const out = dolly(sb.dir, ['install', 'pi', '--local'], { DOLLY_DIR: sb.store });
+  const out = dolly(sb.dir, ['install', 'pi', '--local', '--mcp'], { DOLLY_DIR: sb.store });
   assert.match(out, /scope: local/);
 
   // pi scans PROJECT skills at .pi/skills (NOT .pi/agent/skills)
@@ -144,7 +145,7 @@ test('install pi wires skills, instructions, and mcp (local)', (t) => {
 
   const agents = fs.readFileSync(path.join(sb.dir, 'AGENTS.md'), 'utf8');
   assert.match(agents, /<!-- dolly:instructions -->/);
-  assert.match(agents, /dolly context current/);
+  assert.match(agents, /dolly context <ref>/);
 });
 
 test('install pi --global resolves skills under ~/.pi/agent/skills', (t) => {
@@ -157,14 +158,14 @@ test('install pi --global resolves skills under ~/.pi/agent/skills', (t) => {
   assert.match(out, /[/\\]\.pi[/\\]agent[/\\]skills[/\\]dolly\b/);
 });
 
-test('install pi --global writes the auto-inject extension', (t) => {
+test('install pi --global writes the auto-inject extension', async (t) => {
   const sb = sandbox();
   t.after(sb.cleanup);
   Store.open().init();
   const fakeHome = path.join(sb.dir, 'home');
   fs.mkdirSync(path.join(fakeHome, '.pi', 'agent'), { recursive: true });
 
-  dolly(sb.dir, ['install', 'pi', '--global'], { DOLLY_DIR: sb.store, HOME: fakeHome });
+  dolly(sb.dir, ['install', 'pi', '--global', '--mcp'], { DOLLY_DIR: sb.store, HOME: fakeHome });
 
   const ext = path.join(fakeHome, '.pi', 'agent', 'extensions', 'dolly.ts');
   assert.ok(fs.existsSync(ext), 'extension written to ~/.pi/agent/extensions/dolly.ts');
@@ -175,14 +176,23 @@ test('install pi --global writes the auto-inject extension', (t) => {
   // shells the raw variant so pi gets plain text, not Claude's JSON envelope
   assert.match(body, /hook.*session-start.*--raw/s);
   assert.doesNotMatch(body, /hookSpecificOutput/);
-  // auto-log: registers turn_end and feeds the in-memory turn to the stdin path
-  assert.match(body, /turn_end/);
+  // auto-log: once per prompt (agent_end), never per LLM round (turn_end,
+  // whose turnIndex restarts at 0 each prompt), fed to the stdin path
+  assert.match(body, /pi\.on\("agent_end"/);
+  assert.doesNotMatch(body, /pi\.on\("turn_end"/);
   assert.match(body, /hook.*stop.*--from-stdin/s);
   // returns the prompt augmented, never blocks: wrapped in try/catch
   assert.match(body, /try\s*\{/);
   assert.match(body, /systemPrompt/);
   // no hard dependency on a specific pi package name
   assert.doesNotMatch(body, /pi-coding-agent/);
+
+  // and it loads: every handler registers against a stand-in pi
+  const mod = path.join(sb.dir, 'ext.mjs');
+  fs.writeFileSync(mod, body);
+  const handlers = {};
+  (await import(mod)).default({ on: (name, fn) => (handlers[name] = fn) });
+  assert.deepEqual(Object.keys(handlers).sort(), ['agent_end', 'agent_start', 'before_agent_start']);
 });
 
 test('install pi --global writes the slash commands as prompts, transformed', (t) => {
@@ -192,14 +202,14 @@ test('install pi --global writes the slash commands as prompts, transformed', (t
   const fakeHome = path.join(sb.dir, 'home');
   fs.mkdirSync(path.join(fakeHome, '.pi', 'agent'), { recursive: true });
 
-  dolly(sb.dir, ['install', 'pi', '--global'], { DOLLY_DIR: sb.store, HOME: fakeHome });
+  dolly(sb.dir, ['install', 'pi', '--global', '--mcp'], { DOLLY_DIR: sb.store, HOME: fakeHome });
 
   const prompts = path.join(fakeHome, '.pi', 'agent', 'prompts');
   // flat files named dolly-<cmd>.md → invoked as /dolly-<cmd>
   assert.ok(fs.existsSync(path.join(prompts, 'dolly-board.md')), 'board prompt written');
   assert.ok(fs.existsSync(path.join(prompts, 'dolly-step.md')), 'step prompt written');
   const written = fs.readdirSync(prompts).filter((f) => f.startsWith('dolly-'));
-  assert.equal(written.length, 9, 'all nine commands installed as prompts');
+  assert.equal(written.length, 8, 'all eight commands installed as prompts');
 
   const board = fs.readFileSync(path.join(prompts, 'dolly-board.md'), 'utf8');
   // frontmatter + $ARGUMENTS survive (pi understands both)
@@ -212,7 +222,7 @@ test('install pi --global writes the slash commands as prompts, transformed', (t
   // a command with two inline-exec lines transforms both
   const step = fs.readFileSync(path.join(prompts, 'dolly-step.md'), 'utf8');
   assert.doesNotMatch(step, /!`/);
-  assert.match(step, /```bash\ndolly show \$\{ARGUMENTS:-current\} 2>&1 \| head -20\n```/);
+  assert.match(step, /```bash\ndolly show \$ARGUMENTS 2>&1 \| head -20\n```/);
   assert.match(step, /```bash\ngit status --porcelain 2>\/dev\/null \| head -30\n```/);
 
   // plan.md has no inline-exec — it must copy through untouched
@@ -226,7 +236,7 @@ test('install pi commands are local when scope is local', (t) => {
   Store.open().init();
   fs.mkdirSync(path.join(sb.dir, '.pi'), { recursive: true });
 
-  dolly(sb.dir, ['install', 'pi', '--local'], { DOLLY_DIR: sb.store });
+  dolly(sb.dir, ['install', 'pi', '--local', '--mcp'], { DOLLY_DIR: sb.store });
 
   // pi scans project prompts at .pi/prompts (sibling of .pi/skills)
   assert.ok(
@@ -242,8 +252,8 @@ test('install pi extension is idempotent on rerun', (t) => {
   const fakeHome = path.join(sb.dir, 'home');
   fs.mkdirSync(path.join(fakeHome, '.pi', 'agent'), { recursive: true });
 
-  dolly(sb.dir, ['install', 'pi', '--global'], { DOLLY_DIR: sb.store, HOME: fakeHome });
-  const second = dolly(sb.dir, ['install', 'pi', '--global'], { DOLLY_DIR: sb.store, HOME: fakeHome });
+  dolly(sb.dir, ['install', 'pi', '--global', '--mcp'], { DOLLY_DIR: sb.store, HOME: fakeHome });
+  const second = dolly(sb.dir, ['install', 'pi', '--global', '--mcp'], { DOLLY_DIR: sb.store, HOME: fakeHome });
   assert.match(second, /up-to-date .*extensions[/\\]dolly\.ts/);
 });
 
@@ -253,8 +263,8 @@ test('install pi is idempotent on rerun', (t) => {
   Store.open().init();
   fs.mkdirSync(path.join(sb.dir, '.pi', 'agent'), { recursive: true });
 
-  dolly(sb.dir, ['install', 'pi', '--local'], { DOLLY_DIR: sb.store });
-  const second = dolly(sb.dir, ['install', 'pi', '--local'], { DOLLY_DIR: sb.store });
+  dolly(sb.dir, ['install', 'pi', '--local', '--mcp'], { DOLLY_DIR: sb.store });
+  const second = dolly(sb.dir, ['install', 'pi', '--local', '--mcp'], { DOLLY_DIR: sb.store });
 
   // instructions + mcp report no change the second time round
   assert.match(second, /up-to-date .*AGENTS\.md/);
@@ -267,7 +277,7 @@ test('install opencode wires skills, commands, plugin, instructions and mcp', (t
   Store.open().init();
   fs.mkdirSync(path.join(sb.dir, '.config'), { recursive: true });
 
-  const out = dolly(sb.dir, ['install', 'opencode', '--local'], { DOLLY_DIR: sb.store });
+  const out = dolly(sb.dir, ['install', 'opencode', '--local', '--mcp'], { DOLLY_DIR: sb.store });
   assert.match(out, /scope: local/);
 
   assert.ok(
@@ -313,8 +323,8 @@ test('install opencode is idempotent on rerun', (t) => {
   t.after(sb.cleanup);
   Store.open().init();
 
-  dolly(sb.dir, ['install', 'opencode', '--local'], { DOLLY_DIR: sb.store });
-  const second = dolly(sb.dir, ['install', 'opencode', '--local'], { DOLLY_DIR: sb.store });
+  dolly(sb.dir, ['install', 'opencode', '--local', '--mcp'], { DOLLY_DIR: sb.store });
+  const second = dolly(sb.dir, ['install', 'opencode', '--local', '--mcp'], { DOLLY_DIR: sb.store });
 
   assert.match(second, /up-to-date .*plugins[/\\]dolly\.js/);
   assert.match(second, /up-to-date .*AGENTS\.md/);
@@ -327,7 +337,7 @@ test('install opencode --global resolves under ~/.config/opencode', (t) => {
   const fakeHome = path.join(sb.dir, 'home');
   fs.mkdirSync(path.join(fakeHome, '.config', 'opencode'), { recursive: true });
 
-  dolly(sb.dir, ['install', 'opencode', '--global'], { DOLLY_DIR: sb.store, HOME: fakeHome });
+  dolly(sb.dir, ['install', 'opencode', '--global', '--mcp'], { DOLLY_DIR: sb.store, HOME: fakeHome });
 
   assert.ok(fs.existsSync(path.join(fakeHome, '.config', 'opencode', 'skills', 'dolly', 'SKILL.md')));
   assert.ok(fs.existsSync(path.join(fakeHome, '.config', 'opencode', 'plugins', 'dolly.js')));
@@ -345,7 +355,7 @@ test('install zcode writes workspace files, converted commands, and the plugin s
   const fakeHome = path.join(sb.dir, 'home');
   fs.mkdirSync(path.join(fakeHome, '.zcode'), { recursive: true });
 
-  const out = dolly(sb.dir, ['install', 'zcode'], { DOLLY_DIR: sb.store, HOME: fakeHome });
+  const out = dolly(sb.dir, ['install', 'zcode', '--mcp'], { DOLLY_DIR: sb.store, HOME: fakeHome });
 
   // repo-shared workspace files
   assert.ok(fs.existsSync(path.join(sb.dir, '.zcode', 'skills', 'dolly', 'SKILL.md')));
@@ -398,8 +408,8 @@ test('install zcode is idempotent and preserves existing config keys', (t) => {
   fs.mkdirSync(path.join(sb.dir, '.zcode'), { recursive: true });
   fs.writeFileSync(cfgFile, JSON.stringify({ mcp: { servers: { other: { command: 'x' } } } }), 'utf8');
 
-  dolly(sb.dir, ['install', 'zcode'], { DOLLY_DIR: sb.store, HOME: fakeHome });
-  const second = dolly(sb.dir, ['install', 'zcode'], { DOLLY_DIR: sb.store, HOME: fakeHome });
+  dolly(sb.dir, ['install', 'zcode', '--mcp'], { DOLLY_DIR: sb.store, HOME: fakeHome });
+  const second = dolly(sb.dir, ['install', 'zcode', '--mcp'], { DOLLY_DIR: sb.store, HOME: fakeHome });
 
   const cfg = JSON.parse(fs.readFileSync(cfgFile, 'utf8'));
   assert.equal(cfg.mcp.servers.other.command, 'x', 'foreign server untouched');

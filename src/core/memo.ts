@@ -10,10 +10,11 @@
  */
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
-import { exists, readTextOr } from './fsx.js';
+import { exists } from './fsx.js';
 import { listSessions, parseTranscript } from './transcript.js';
 import type { Store } from './store.js';
-import { logSection, type Task } from './task.js';
+import { parseLog, type LogEntry } from './related.js';
+import type { Task } from './task.js';
 
 export const MEMO_DIR = 'memo';
 
@@ -33,7 +34,11 @@ export function today(): string {
 }
 
 function isValidDate(s: string): boolean {
-  return /^\d{4}-\d{2}-\d{2}$/.test(s) && !Number.isNaN(Date.parse(`${s}T00:00:00`));
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+  if (!m) return false;
+  // Date rolls 2026-02-31 over to March 3 instead of rejecting it
+  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  return d.getFullYear() === Number(m[1]) && d.getMonth() === Number(m[2]) - 1 && d.getDate() === Number(m[3]);
 }
 
 /** local-time date string of an ISO timestamp */
@@ -58,9 +63,8 @@ export interface MemoEvent {
   text: string;
 }
 
-/** the short-log line format `logLine()` writes: `- `YYYY-MM-DD HH:mmZ` @user: text` */
-// `m` so it also matches the head line of a multi-line log block
-const STAMP = /^- `(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2})(Z?)` @([^:]+): (.*)$/m;
+/** a log stamp as parseLog returns it: `YYYY-MM-DD HH:mmZ` */
+const STAMP = /^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2})(Z?)$/;
 
 /**
  * Local calendar date of a log stamp. Stamps are UTC (`nowIso()` truncated);
@@ -72,49 +76,22 @@ export function stampLocalDate(day: string, time: string): string {
   return localDate(iso) || day;
 }
 
-/**
- * One-line-per-event log entries stamped with the target date. The Log section
- * format is dolly's own (`- \`YYYY-MM-DD HH:mmZ\` @user: text`), so parsing it
- * here stays in sync with how every event is written.
- */
-export function eventsOn(task: Task, date: string): MemoEvent[] {
-  const out: MemoEvent[] = [];
-  for (const line of logSection(task).split('\n')) {
-    const m = STAMP.exec(line.trim());
-    if (!m || stampLocalDate(m[1], m[2] + m[3]) !== date) continue;
-    out.push({ time: `${m[1]} ${m[2]}${m[3]}`, user: m[4], text: m[5] });
-  }
-  return out;
+/** log entries (parsed once, by the same parser `related` uses) on the target date */
+function entriesOn(task: Task, date: string): LogEntry[] {
+  return parseLog(task).filter((e) => {
+    const m = STAMP.exec(e.at);
+    return Boolean(m) && stampLocalDate(m![1], m![2] + m![3]) === date;
+  });
 }
 
-/** repo-relative files a task recorded on the target day, from its short-log trailers */
+export function eventsOn(task: Task, date: string): MemoEvent[] {
+  return entriesOn(task, date).map((e) => ({ time: e.at, user: e.user, text: e.text }));
+}
+
+/** repo-relative files a task recorded on the target day, from its `files:` trailers */
 function filesTouchedToday(task: Task, date: string): string[] {
-  // the short log lives in task.md: `- `stamp` @user: summary` lines with
-  // indented trailers below. Only a `files:` trailer names source files —
-  // other backticked words (`spec.md`, `steps.md#0007`) are pointers into the
-  // store, not paths that were edited.
-  const raw = readTextOr(path.join(task.dir, 'task.md'));
-  if (!raw) return [];
   const out = new Set<string>();
-  // One entry = the `- ` head line plus every INDENTED line under it, which is
-  // exactly what logLine() writes: continuation lines of a multi-line summary
-  // first, trailers last. Anchoring on the indent (rather than "not a new
-  // entry") also keeps the un-indented `### plan finalized` blocks out, and
-  // matching more than one following line is the point — a two-line summary
-  // pushes `files:` down to the third line.
-  for (const m of raw.matchAll(/^- `[^`]*` @[^\n]*(?:\n[ \t]+[^\n]*)*/gm)) {
-    const block = m[0];
-    const head = STAMP.exec(block);
-    if (!head || stampLocalDate(head[1], head[2] + head[3]) !== date) continue;
-    for (const line of block.split('\n')) {
-      if (!/^\s+files:/.test(line)) continue;
-      for (const f of line.matchAll(/`([^`]+)`/g)) {
-        // `full: \`steps.md#0007\`` shares the trailer line — an anchor, not a path
-        if (f[1].includes('#') || f[1].startsWith('.dolly/')) continue;
-        out.add(f[1]);
-      }
-    }
-  }
+  for (const e of entriesOn(task, date)) for (const f of e.files) if (!f.startsWith('.dolly/')) out.add(f);
   return [...out];
 }
 

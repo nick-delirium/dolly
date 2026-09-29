@@ -8,13 +8,18 @@ import {
   globalStoreFor,
   indexFile,
   forgetProject,
-  linkedStore,
   locateStore,
   moveStore,
   projectEntry,
   readProjectIndex,
   recordProject,
 } from '../dist/core/store.js';
+
+/** the store a project resolves to through the registry, or null — production's path */
+function linkedStore(p) {
+  const loc = locateStore(p);
+  return loc.kind === 'linked' ? loc.root : null;
+}
 
 /** an isolated ~/.dolly plus a project directory, with no DOLLY_DIR in play */
 function ground(t, { git = false } = {}) {

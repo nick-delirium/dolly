@@ -62,20 +62,24 @@ function parseYamlish(text: string): Front {
   return out;
 }
 
+/**
+ * Split an inline array on top-level commas. Items keep their quotes so
+ * `scalar` can tell `"null"` (a string) from `null`, and escapes inside a
+ * double-quoted item never end it early.
+ */
 function splitList(s: string): string[] {
   const out: string[] = [];
   let buf = '';
   let quote = '';
-  for (const ch of s) {
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
     if (quote) {
-      if (ch === quote) quote = '';
-      else buf += ch;
+      buf += ch;
+      if (quote === '"' && ch === '\\' && i + 1 < s.length) buf += s[++i];
+      else if (ch === quote) quote = '';
       continue;
     }
-    if (ch === '"' || ch === "'") {
-      quote = ch;
-      continue;
-    }
+    if (ch === '"' || ch === "'") quote = ch;
     if (ch === ',') {
       out.push(buf.trim());
       buf = '';
@@ -87,13 +91,16 @@ function splitList(s: string): string[] {
   return out;
 }
 
+const UNESCAPE: Record<string, string> = { n: '\n', r: '\r', t: '\t', '"': '"', '\\': '\\' };
+
 function scalar(raw: string): Scalar {
-  let v = raw;
-  if (
-    (v.startsWith('"') && v.endsWith('"') && v.length >= 2) ||
-    (v.startsWith("'") && v.endsWith("'") && v.length >= 2)
-  ) {
-    return v.slice(1, -1);
+  const v = raw;
+  if (v.length >= 2 && v.startsWith('"') && v.endsWith('"')) {
+    // inverse of emitScalar — without it every save doubled the backslashes
+    return v.slice(1, -1).replace(/\\(.)/g, (m, c: string) => UNESCAPE[c] ?? m);
+  }
+  if (v.length >= 2 && v.startsWith("'") && v.endsWith("'")) {
+    return v.slice(1, -1).replace(/''/g, "'");
   }
   if (v === 'true') return true;
   if (v === 'false') return false;
@@ -103,13 +110,26 @@ function scalar(raw: string): Scalar {
   return v;
 }
 
-const NEEDS_QUOTE = /^[\s>|&*!%@`{[]|[:#]\s|["']|[\s]$|^$/;
+const NEEDS_QUOTE = /^[\s>|&*!%@`{[]|[:#]\s|["'\\\n\r\t]|[\s]$|^$/;
+/** inside `[a, b]` a comma or bracket would split or end the list */
+const NEEDS_QUOTE_IN_LIST = /[,[\]]/;
 
-function emitScalar(v: Scalar): string {
+function emitScalar(v: Scalar, inList = false): string {
   if (v === null || v === undefined) return 'null';
   if (typeof v === 'number' || typeof v === 'boolean') return String(v);
-  if (NEEDS_QUOTE.test(v) || /^(true|false|null|~)$/.test(v) || /^-?\d+(\.\d+)?$/.test(v)) {
-    return `"${v.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+  if (
+    NEEDS_QUOTE.test(v) ||
+    (inList && NEEDS_QUOTE_IN_LIST.test(v)) ||
+    /^(true|false|null|~)$/.test(v) ||
+    /^-?\d+(\.\d+)?$/.test(v)
+  ) {
+    const esc = v
+      .replace(/\\/g, '\\\\')
+      .replace(/"/g, '\\"')
+      .replace(/\n/g, '\\n')
+      .replace(/\r/g, '\\r')
+      .replace(/\t/g, '\\t');
+    return `"${esc}"`;
   }
   return v;
 }
@@ -118,16 +138,19 @@ export function stringifyFrontmatter(front: Front): string {
   const lines: string[] = ['---'];
   for (const [k, v] of Object.entries(front)) {
     if (v === undefined) continue;
-    if (Array.isArray(v)) lines.push(`${k}: [${v.map(emitScalar).join(', ')}]`);
+    if (Array.isArray(v)) lines.push(`${k}: [${v.map((x) => emitScalar(x, true)).join(', ')}]`);
     else lines.push(`${k}: ${emitScalar(v)}`);
   }
   lines.push('---', '');
   return lines.join('\n');
 }
 
-export function withFrontmatter(front: Front, body: string): string {
-  return stringifyFrontmatter(front) + (body.startsWith('\n') ? body : `\n${body}`);
-}
+/**
+ * A placeholder line: `_TBD_`, `todo`, `???`, `n/a?`. One definition for the
+ * plan gate and the project brief, so a line that blocks one never passes the
+ * other.
+ */
+export const TBD_LINE = /^_?\s*(tbd|todo|\?+|n\/a\s*\?)\s*_?$/i;
 
 /* ------------------------------- sections -------------------------------- */
 
@@ -158,10 +181,6 @@ function sectionRange(body: string, name: string): Range | null {
   };
 }
 
-export function hasSection(body: string, name: string): boolean {
-  return sectionRange(body, name) !== null;
-}
-
 /**
  * How many `## Name` headings the document has.
  *
@@ -180,9 +199,18 @@ export function getSection(body: string, name: string): string | null {
   return body.slice(r.bodyStart, r.end).trim();
 }
 
+/**
+ * Push `## ` lines in user content down a level. Sections end at the next `## `
+ * heading, so a spec whose prose had its own `## Notes` was silently cut at that
+ * line on read, and left an orphan section behind on the next write.
+ */
+export function demoteHeadings(text: string): string {
+  return text.replace(/^##([ \t]+)/gm, '###$1');
+}
+
 /** replace a section's body; creates the section at the end when absent */
 export function setSection(body: string, name: string, content: string): string {
-  const text = content.trim();
+  const text = demoteHeadings(content.trim());
   const r = sectionRange(body, name);
   if (!r) {
     const sep = body.endsWith('\n\n') ? '' : body.endsWith('\n') ? '\n' : '\n\n';
@@ -231,25 +259,38 @@ export function neutralizeMarkers(text: string): string {
   return text.replace(/<!--(\s*\/?\s*dolly:)/g, '&lt;!--$1');
 }
 
+/**
+ * Where a block sits: start marker, and the first end marker AFTER it. `end` is
+ * -1 when the start has no partner — a hand-deleted end marker, which must never
+ * be "repaired" by guessing where the block stopped.
+ */
+function blockRange(src: string, id: string): { start: number; end: number } | null {
+  const { start, end } = blockMarkers(id);
+  const i = src.indexOf(start);
+  if (i === -1) return null;
+  return { start: i, end: src.indexOf(end, i + start.length) };
+}
+
 /** replace (or insert) a `<!-- dolly:id -->…<!-- /dolly:id -->` block */
 export function setBlock(src: string, id: string, content: string): string {
   const { start, end } = blockMarkers(id);
   const wrapped = `${start}\n${neutralizeMarkers(content.trim())}\n${end}`;
-  const i = src.indexOf(start);
-  const j = src.indexOf(end);
-  if (i !== -1 && j > i) {
-    return src.slice(0, i) + wrapped + src.slice(j + end.length);
+  const r = blockRange(src, id);
+  if (r && r.end === -1) {
+    // appending a second block here made the NEXT write replace everything from
+    // the orphan start to the new end — user content in between included
+    throw new Error(`found "${start}" with no matching "${end}" after it — restore the end marker by hand, then retry`);
   }
+  if (r) return src.slice(0, r.start) + wrapped + src.slice(r.end + end.length);
   const sep = src === '' ? '' : src.endsWith('\n\n') ? '' : src.endsWith('\n') ? '\n' : '\n\n';
   return `${src}${sep}${wrapped}\n`;
 }
 
 export function getBlock(src: string, id: string): string | null {
-  const { start, end } = blockMarkers(id);
-  const i = src.indexOf(start);
-  const j = src.indexOf(end);
-  if (i === -1 || j <= i) return null;
-  return src.slice(i + start.length, j).trim();
+  const { start } = blockMarkers(id);
+  const r = blockRange(src, id);
+  if (!r || r.end === -1) return null;
+  return src.slice(r.start + start.length, r.end).trim();
 }
 
 /** append a fresh block at the end of the document */
@@ -260,12 +301,11 @@ export function appendBlock(src: string, id: string, content: string): string {
 }
 
 export function removeBlock(src: string, id: string): string {
-  const { start, end } = blockMarkers(id);
-  const i = src.indexOf(start);
-  const j = src.indexOf(end);
-  if (i === -1 || j <= i) return src;
+  const { end } = blockMarkers(id);
+  const r = blockRange(src, id);
+  if (!r || r.end === -1) return src;
   // swallow the blank line the block left behind
-  return `${src.slice(0, i).replace(/\n{2,}$/, '\n\n')}${src.slice(j + end.length).replace(/^\n+/, '')}`;
+  return `${src.slice(0, r.start).replace(/\n{2,}$/, '\n\n')}${src.slice(r.end + end.length).replace(/^\n+/, '')}`;
 }
 
 /**
@@ -273,8 +313,24 @@ export function removeBlock(src: string, id: string): string {
  * Used to walk the step entries inside a single steps.md.
  */
 export function listBlocks(src: string, prefix: string): string[] {
-  const re = new RegExp(`<!--\\s*dolly:${escapeRe(prefix)}[ \\t]+([^\\s>]+)[ \\t]*-->`, 'g');
   const out: string[] = [];
-  for (const m of src.matchAll(re)) if (!out.includes(m[1])) out.push(m[1]);
+  for (const b of allBlocks(src, prefix)) if (!out.includes(b.id)) out.push(b.id);
+  return out;
+}
+
+/**
+ * Every `<!-- dolly:<prefix> <id> -->` block with its content, in document
+ * order — duplicates included. Two blocks with one id (a merge of two branches
+ * that each logged step N) must both stay readable, not collapse to the first.
+ */
+export function allBlocks(src: string, prefix: string): { id: string; text: string }[] {
+  const re = new RegExp(`<!--\\s*dolly:${escapeRe(prefix)}[ \\t]+([^\\s>]+)[ \\t]*-->`, 'g');
+  const out: { id: string; text: string }[] = [];
+  for (const m of src.matchAll(re)) {
+    const from = m.index! + m[0].length;
+    const close = src.indexOf(`<!-- /dolly:${prefix} ${m[1]} -->`, from);
+    if (close === -1) continue;
+    out.push({ id: m[1], text: src.slice(from, close).trim() });
+  }
   return out;
 }

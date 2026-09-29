@@ -162,9 +162,9 @@ test('memo.auto surfaces a session-start hint only while today has no memo', (t)
   dolly(sb.dir, ['config', 'set', 'memo.auto', 'true'], { DOLLY_DIR: sb.store });
 
   const without = dolly(sb.dir, ['hook', 'session-start'], { DOLLY_DIR: sb.store });
-  assert.match(without, /No memo for today yet/);
+  assert.match(without, /No memo today/);
 
   dolly(sb.dir, ['memo', '--save', '--file', '-'], { DOLLY_DIR: sb.store }, 'the day in brief');
   const withMemo = dolly(sb.dir, ['hook', 'session-start'], { DOLLY_DIR: sb.store });
-  assert.doesNotMatch(withMemo, /No memo for today yet/, 'existing memo silences the hint');
+  assert.doesNotMatch(withMemo, /No memo today/, 'existing memo silences the hint');
 });
