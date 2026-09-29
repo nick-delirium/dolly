@@ -9,7 +9,7 @@
  *             context/steps.md holding every step entry
  */
 import path from 'node:path';
-import { exists, ensureDir, isDir, listDirs, listFiles, move, readJson, readTextOr, rmrf, writeJson, writeText } from './core/fsx.js';
+import { exists, ensureDir, isDir, listDirs, listFiles, move, readJsonForUpdate, readTextOr, rmrf, writeJson, writeText } from './core/fsx.js';
 import { appendBlock } from './core/md.js';
 import {
   LEGACY_STORE_DIRNAME,
@@ -30,6 +30,8 @@ export interface MigrateAction {
   kind: 'steps' | 'spec' | 'store-rename' | 'markers' | 'config-split' | 'chain';
   task: string;
   detail: string;
+  /** a migration's title line in the report, not a change of its own */
+  header?: boolean;
 }
 
 /**
@@ -94,19 +96,7 @@ function stripComments(text: string): string {
  * directory that no longer exists once this has run.
  */
 function renameStore(store: Store, dryRun: boolean, actions: MigrateAction[]): Store {
-  if (!store.legacy) {
-    // `.dolly/` won the lookup, but an old store may still be sitting beside it
-    // holding history nobody has noticed. Say so rather than ignoring it.
-    const orphan = path.join(path.dirname(store.root), LEGACY_STORE_DIRNAME);
-    if (exists(orphan)) {
-      actions.push({
-        kind: 'store-rename',
-        task: '(store)',
-        detail: `${orphan} also exists and was NOT touched — merge it into ${store.root} by hand, dolly will not guess which wins`,
-      });
-    }
-    return store;
-  }
+  if (!store.legacy) return store;
   const dest = path.join(path.dirname(store.root), STORE_DIRNAME);
   if (exists(dest)) {
     throw new Error(
@@ -157,10 +147,10 @@ function splitIdentity(store: Store, dryRun: boolean, actions: MigrateAction[]):
     detail: `user "${leaked}" moved out of the shared config.json into ${LOCAL_CONFIG} (gitignored) — it was attributing every teammate's steps to one handle`,
   });
   if (dryRun) return;
-  const shared = readJson<Record<string, unknown>>(store.configPath, {});
+  const shared = readJsonForUpdate<Record<string, unknown>>(store.configPath, {});
   delete shared.user;
   writeJson(store.configPath, shared);
-  const local = readJson<Record<string, unknown>>(store.localConfigPath, {});
+  const local = readJsonForUpdate<Record<string, unknown>>(store.localConfigPath, {});
   if (!local.user) store.saveLocal({ user: leaked });
 }
 
@@ -194,8 +184,6 @@ const MIGRATIONS: Migration[] = [
     safe: false, // moves the store directory and rewrites parsed markers
     detect(store) {
       if (store.legacy) return `${path.basename(store.root)}/ → ${STORE_DIRNAME}/ and rename its markers`;
-      const orphan = path.join(path.dirname(store.root), LEGACY_STORE_DIRNAME);
-      if (exists(orphan)) return `${orphan} still exists beside the current store`;
       const stale = store
         .loadTasks()
         .filter((t) => markerFiles(t).some((f) => hasLegacyMarkers(readTextOr(f))));
@@ -357,6 +345,20 @@ export interface VersionState {
   unsafePending: Pending[];
 }
 
+/**
+ * A pre-rename `.dollie/` left beside the live `.dolly/`. Not a migration: dolly
+ * cannot resolve it (it will not guess which store wins), so counting it as one
+ * kept a migration "pending" forever — `dolly migrate` reported changes it never
+ * made, and every MCP write was refused. It is a warning a human acts on.
+ */
+export function legacyOrphan(store: Store): string | null {
+  if (store.legacy) return null;
+  const orphan = path.join(path.dirname(store.root), LEGACY_STORE_DIRNAME);
+  return isDir(orphan)
+    ? `${orphan} still exists beside ${store.root} — merge it by hand or delete it; dolly will not guess which wins`
+    : null;
+}
+
 export function versionState(store: Store): VersionState {
   const at = storeVersion(store.root);
   const p = pending(store);
@@ -412,6 +414,7 @@ export function migrate(store: Store, opts: { dryRun?: boolean } = {}): MigrateR
       kind: 'chain',
       task: `v${migration.to}`,
       detail: `${migration.name} — ${detail}`,
+      header: true,
     });
     cur = migration.apply(cur, actions, dryRun);
   }

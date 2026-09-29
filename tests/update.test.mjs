@@ -12,7 +12,6 @@ import {
   isNewer,
   suppressed,
   updateNotice,
-  upgradeCommand,
 } from '../dist/core/update.js';
 import { dirtyClone, planUpdate } from '../dist/core/selfupdate.js';
 import { sandbox } from './helpers.mjs';
@@ -134,10 +133,8 @@ test('the notice appears only when the cache says a newer version exists', (t) =
   assert.equal(updateNotice('mcp', '0.1.0', opts), null, 'never on a protocol stream');
 });
 
-test('the upgrade command matches how this copy was installed', () => {
+test('install kind is detected from the checkout', () => {
   assert.equal(installKind(ROOT), 'clone', 'this checkout is a git clone');
-  assert.match(upgradeCommand('clone', ROOT), /^git -C .* pull && npm install$/);
-  assert.match(upgradeCommand('package'), /^npm install -g github:nick-delirium\/dolly$/);
 });
 
 test('update plan matches the install kind, and dirty clones are caught', (t) => {

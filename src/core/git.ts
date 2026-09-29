@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { isDir } from './fsx.js';
 
 function run(args: string[], cwd: string): string | null {
   try {
@@ -33,14 +34,6 @@ export function ensureRepo(dir: string): void {
   }
 }
 
-function isDir(p: string): boolean {
-  try {
-    return fs.statSync(p).isDirectory();
-  } catch {
-    return false;
-  }
-}
-
 /**
  * Absolute, symlink-resolved path of the shared git dir, identical across every
  * worktree of a repo (unlike show-toplevel, which is per worktree). git returns
@@ -49,7 +42,19 @@ function isDir(p: string): boolean {
  * repoIdentity/projectKey compute. null outside a repo.
  */
 export function commonDir(cwd: string): string | null {
-  return run(['rev-parse', '--path-format=absolute', '--git-common-dir'], cwd);
+  const abs = run(['rev-parse', '--path-format=absolute', '--git-common-dir'], cwd);
+  // git before 2.31 does not know --path-format and ECHOES it back with exit 0,
+  // so the output starts with the flag itself. Taken at face value every repo
+  // shared one global store key, with a newline in its folder name.
+  if (abs && !abs.startsWith('-') && path.isAbsolute(abs)) return abs;
+  const rel = run(['rev-parse', '--git-common-dir'], cwd);
+  if (!rel || rel.startsWith('-')) return null;
+  const resolved = path.resolve(cwd, rel.split('\n').pop()!.trim());
+  try {
+    return fs.realpathSync(resolved);
+  } catch {
+    return resolved;
+  }
 }
 
 export function gitConfig(key: string, cwd: string): string | null {
@@ -57,25 +62,31 @@ export function gitConfig(key: string, cwd: string): string | null {
   return v || null;
 }
 
-/** files touched in the working tree plus staged changes, repo-relative */
+/**
+ * Files touched in the working tree plus staged changes, repo-relative. `-z`
+ * keeps non-ASCII names literal (without it git prints them quoted and
+ * octal-escaped), and `--full-name` makes untracked files repo-relative like
+ * the diff output instead of relative to wherever the command ran.
+ */
 export function changedFiles(cwd: string): string[] {
   const out = new Set<string>();
   for (const args of [
-    ['diff', '--name-only', 'HEAD'],
-    ['diff', '--name-only', '--cached'],
-    ['ls-files', '--others', '--exclude-standard'],
+    ['diff', '--name-only', '-z', 'HEAD'],
+    ['diff', '--name-only', '-z', '--cached'],
+    ['ls-files', '--others', '--exclude-standard', '--full-name', '-z'],
   ]) {
-    const res = run(args, cwd);
+    const res = runRaw(args, cwd);
     if (!res) continue;
-    for (const line of res.split('\n')) if (line.trim()) out.add(line.trim());
+    for (const name of res.split('\0')) if (name) out.add(name);
   }
   return [...out].sort();
 }
 
-export function currentBranch(cwd: string): string | null {
-  return run(['rev-parse', '--abbrev-ref', 'HEAD'], cwd);
-}
-
-export function headSha(cwd: string): string | null {
-  return run(['rev-parse', '--short', 'HEAD'], cwd);
+/** like run(), but untrimmed — NUL-separated output must stay intact */
+function runRaw(args: string[], cwd: string): string | null {
+  try {
+    return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+  } catch {
+    return null;
+  }
 }

@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "dolly hook session-start",
+            "command": "command -v dolly >/dev/null 2>&1 && dolly hook session-start || true",
             "timeout": 15
           }
         ]
@@ -16,7 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "dolly hook stop",
+            "command": "command -v dolly >/dev/null 2>&1 && dolly hook stop || true",
             "timeout": 15
           }
         ]

@@ -4,7 +4,7 @@ argument-hint: "[ref] (default: current)"
 allowed-tools: Bash(dolly:*)
 ---
 
-!`dolly context ${ARGUMENTS:-current}`
+!`dolly context $ARGUMENTS`
 
 Read all of it, then follow the **dolly** skill. In short: say where the work stands in 3-5 lines, check the tree against the last step's files, move the task to `working` if it is not, and continue.
 

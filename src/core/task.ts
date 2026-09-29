@@ -1,13 +1,14 @@
 import path from 'node:path';
 import { ensureDir, exists, listFiles, move, readTextOr, writeText } from './fsx.js';
 import {
+  allBlocks,
   appendBlock,
   appendToSection,
   getBlock,
   countSections,
+  demoteHeadings,
   getSection,
-  listBlocks,
-  removeBlock,
+  neutralizeMarkers,
   setBlock,
   setSection,
   stringifyFrontmatter,
@@ -203,7 +204,7 @@ export function createTask(store: Store, opts: CreateOpts): Task {
   };
 
   const criteria = opts.criteria?.length
-    ? opts.criteria.map((c) => `- [ ] ${c}`).join('\n')
+    ? demoteHeadings(opts.criteria.map((c) => `- [ ] ${c}`).join('\n'))
     : '- [ ] _TBD_';
 
   const body = [
@@ -215,7 +216,7 @@ export function createTask(store: Store, opts: CreateOpts): Task {
     '',
     `## ${SEC_SPEC}`,
     '',
-    (opts.specShort ?? '_TBD — describe what this feature must do._').trim(),
+    demoteHeadings((opts.specShort ?? '_TBD — describe what this feature must do._').trim()),
     '',
     `## ${SEC_CRITERIA}`,
     '',
@@ -277,7 +278,9 @@ function renderSpecFile(
     '<!-- dolly:spec-current -->',
     specStamp(version, at, by),
     '',
-    body.trim(),
+    // a spec quoting dolly's own markers would otherwise end the block early and
+    // the next bump would save the truncated text as history
+    neutralizeMarkers(body.trim()),
     '<!-- /dolly:spec-current -->',
     '',
     '---',
@@ -285,7 +288,7 @@ function renderSpecFile(
     '## Superseded versions',
     '',
     '<!-- dolly:spec-history -->',
-    (history || NO_HISTORY).trim(),
+    neutralizeMarkers((history || NO_HISTORY).trim()),
     '<!-- /dolly:spec-history -->',
     '',
   ]
@@ -315,26 +318,6 @@ function stripComments(text: string): string {
   return text.replace(/^(<!--[\s\S]*?-->\s*)+/, '').trim();
 }
 
-/** history entries, newest first */
-export function specHistoryEntries(dir: string): string[] {
-  const hist = readSpecDoc(dir)?.history ?? '';
-  if (!hist || hist === NO_HISTORY) return [];
-  return hist
-    .split(/\n(?=## v\d+ —)/)
-    .map((s) => s.trim())
-    .filter(Boolean);
-}
-
-export function writeSpecHistory(dir: string, entries: string[]): void {
-  const doc = readSpecDoc(dir);
-  if (!doc) return;
-  const raw = readTextOr(specFile(dir));
-  writeText(
-    specFile(dir),
-    setBlock(raw, 'spec-history', entries.length ? entries.join('\n\n') : NO_HISTORY),
-  );
-}
-
 export interface SpecUpdate {
   /** replaces the short Spec section in task.md */
   short?: string;
@@ -346,49 +329,53 @@ export interface SpecUpdate {
 
 export function updateSpec(store: Store, task: Task, up: SpecUpdate): number {
   const user = store.user;
-  let bumped = false;
+  const full = up.full?.trim() ?? '';
+  const short = up.short?.trim() ?? '';
+  const crit = (up.criteria ?? []).map((c) => c.trim()).filter(Boolean);
+  if (!full && !short && !crit.length) throw new Error('nothing to change — pass a short spec, a full spec, or criteria');
+  // every check before any write: a guard that throws after spec.md was already
+  // rewritten left the two files disagreeing about the version
+  if (short) assertOneSection(task, SEC_SPEC);
+  if (crit.length) assertOneSection(task, SEC_CRITERIA);
+  assertOneSection(task, SEC_LOG);
+  const reason = up.reason?.trim() ?? '';
 
-  if (up.full && up.full.trim()) {
+  if (full) {
     const prev = readSpecDoc(task.dir);
     const version = task.meta.spec_version + 1;
     task.meta.spec_version = version;
-    bumped = true;
 
     let history = prev?.history === NO_HISTORY ? '' : (prev?.history ?? '');
     if (prev && prev.body) {
       const entry = [
         `## v${prev.version} — ${prev.at || 'unknown date'} · @${prev.by || 'unknown'}`,
         '',
-        up.reason
-          ? `> superseded by v${version}: ${up.reason.trim()}`
-          : `> superseded by v${version}`,
+        reason ? `> superseded by v${version}: ${reason}` : `> superseded by v${version}`,
         '',
         prev.body,
       ].join('\n');
       history = history ? `${entry}\n\n${history}` : entry;
     }
-    writeText(
-      specFile(task.dir),
-      renderSpecFile(task.meta, version, nowIso(), user, up.full.trim(), history),
-    );
+    writeText(specFile(task.dir), renderSpecFile(task.meta, version, nowIso(), user, full, history));
   }
 
-  if (up.short && up.short.trim()) {
-    assertOneSection(task, SEC_SPEC);
-    task.body = setSection(task.body, SEC_SPEC, up.short.trim());
-  }
-  if (up.criteria?.length) {
-    assertOneSection(task, SEC_CRITERIA);
+  if (short) task.body = setSection(task.body, SEC_SPEC, short);
+  if (crit.length) {
     task.body = setSection(
       task.body,
       SEC_CRITERIA,
-      up.criteria.map((c) => `- [ ] ${c.replace(/^\s*-\s*\[[ xX]\]\s*/, '')}`).join('\n'),
+      crit.map((c) => `- [ ] ${c.replace(/^\s*-\s*\[[ xX]\]\s*/, '')}`).join('\n'),
     );
   }
-  if (bumped) {
-    appendLog(task, user, `spec → v${task.meta.spec_version}. ${up.reason?.trim() ?? ''}`.trim(), [
+  if (full) {
+    appendLog(task, user, `spec → v${task.meta.spec_version}. ${reason}`.trim(), [
       `previous version kept in \`spec.md\``,
     ]);
+  } else {
+    // no version bump, but still history: "never silently rewrite" covers the
+    // summary and the criteria as much as the full spec
+    const what = [short && 'short spec', crit.length && 'criteria'].filter(Boolean).join(' + ');
+    appendLog(task, user, `${what} updated.${reason ? ` ${reason}` : ''}`);
   }
   touch(task, user);
   saveTask(task);
@@ -418,23 +405,33 @@ export interface StepInput {
   source?: string;
 }
 
+/** most files a log line names before it says "+N more" */
+const LOG_FILES = 6;
+
 export function addStep(store: Store, task: Task, input: StepInput): number {
   const user = store.user;
-  const n = task.meta.steps + 1;
+  if (input.status !== undefined && !store.config.statuses.includes(input.status)) {
+    throw new Error(`unknown status "${input.status}" — allowed: ${store.config.statuses.join(', ')}`);
+  }
+  assertOneSection(task, SEC_LOG);
+  const raw = readTextOr(stepsFile(task.dir));
+  // the counter alone is not enough: two branches that each logged step N merge
+  // into a frontmatter saying N while steps.md holds N twice
+  const n = Math.max(task.meta.steps, ...allBlocks(raw, 'step').map((b) => Number(b.id) || 0)) + 1;
   task.meta.steps = n;
 
-  const files = (input.files ?? []).filter(Boolean);
-  const hasDetail = Boolean(input.detail && input.detail.trim());
+  const files = normalizeFiles(store.project, input.files ?? []);
+  // the short log keeps LOG_FILES; past that, the step's entry in steps.md is
+  // the only place the whole list survives, so one gets written even with no
+  // detail note — `dolly related` reads it from there
+  const detail = input.detail?.trim() || (files.length > LOG_FILES ? '_No detail note — entry kept for the full file list._' : '');
 
   const trailers: string[] = [];
-  // the short log must stay skimmable — a 38-file dump defeats the whole point.
-  // the complete list always lives in the step's full context.
-  if (files.length) trailers.push(`files: ${fileList(files, 6)}`);
-  if (hasDetail) trailers.push(stepRef(n));
+  if (files.length) trailers.push(`files: ${fileList(files, LOG_FILES)}`);
+  if (detail) trailers.push(stepRef(n));
   appendLog(task, user, input.summary, trailers);
 
-  if (hasDetail) {
-    const raw = readTextOr(stepsFile(task.dir)) || stepsFileHeader(task.meta);
+  if (detail) {
     const entry = [
       `## ${pad(n)} · ${nowIso()} · @${user}`,
       '',
@@ -442,15 +439,37 @@ export function addStep(store: Store, task: Task, input: StepInput): number {
       files.length ? `- files: ${files.map((f) => `\`${f}\``).join(', ')}` : '- files: none',
       ...(input.source ? [`- source: ${input.source}`] : []),
       '',
-      input.detail!.trim(),
+      detail,
     ].join('\n');
-    writeText(stepsFile(task.dir), appendBlock(raw, `step ${pad(n)}`, entry));
+    writeText(stepsFile(task.dir), appendBlock(raw || stepsFileHeader(task.meta), `step ${pad(n)}`, entry));
   }
 
-  if (input.status) task.meta.status = input.status;
+  if (input.status && input.status !== task.meta.status) {
+    appendLog(task, user, `status ${task.meta.status} → ${input.status}.`);
+    task.meta.status = input.status;
+  }
   touch(task, user);
   saveTask(task);
   return n;
+}
+
+/**
+ * Repo-relative, `/`-separated, no `./` — the one spelling every recorded file
+ * uses, so `dolly related --files ./src/a.ts` finds a step that logged `src/a.ts`.
+ */
+export function normalizeFiles(project: string, files: string[]): string[] {
+  const out: string[] = [];
+  for (const raw of files) {
+    let f = raw.trim();
+    if (!f) continue;
+    if (path.isAbsolute(f)) {
+      const rel = path.relative(project, f);
+      if (rel && !rel.startsWith('..') && !path.isAbsolute(rel)) f = rel;
+    }
+    f = f.split(path.sep).join('/').replace(/^(\.\/)+/, '');
+    if (f && !out.includes(f)) out.push(f);
+  }
+  return out;
 }
 
 export interface StepEntry {
@@ -461,12 +480,7 @@ export interface StepEntry {
 /** every step's full context, oldest first. Falls back to the pre-0.2 layout. */
 export function stepEntries(dir: string): StepEntry[] {
   const raw = readTextOr(stepsFile(dir));
-  if (raw) {
-    return listBlocks(raw, 'step').map((id) => ({
-      id,
-      text: getBlock(raw, `step ${id}`) ?? '',
-    }));
-  }
+  if (raw) return allBlocks(raw, 'step');
   return listFiles(legacyStepsDir(dir))
     .filter((f) => /^\d+\.md$/.test(f))
     .map((f) => ({
@@ -483,13 +497,15 @@ export function stepEntries(dir: string): StepEntry[] {
  * to prevent. Returns the task at its new location.
  */
 export function retitle(store: Store, task: Task, title: string): Task {
-  const next = title.trim();
+  const next = cleanTitle(title);
   if (!next) throw new Error('a task needs a title');
   const from = task.meta.title;
   if (from === next) return task;
 
   task.meta.title = next;
-  task.body = task.body.replace(/^#\s+.*$/m, `# ${task.meta.id} · ${next}`);
+  // a replacer function: a string replacement would expand `$&`, `$'` and `$$`
+  // inside the title
+  task.body = task.body.replace(/^#\s+.*$/m, () => `# ${task.meta.id} · ${next}`);
   appendLog(task, store.user, `retitled: "${from}" → "${next}".`);
   touch(task, store.user);
   saveTask(task);
@@ -513,7 +529,16 @@ export function setStatus(store: Store, task: Task, status: Status, note?: strin
     throw new Error(`unknown status "${status}" — allowed: ${store.config.statuses.join(', ')}`);
   }
   const from = task.meta.status;
-  if (from === status && !note) return;
+  if (from === status && !note) {
+    // `dolly status X working` on a task already working is how a new
+    // conversation says "this one is mine now": attach it, so auto-log follows
+    const session = currentSessionId();
+    if (session && !task.meta.sessions.includes(session)) {
+      touch(task, store.user);
+      saveTask(task);
+    }
+    return;
+  }
   task.meta.status = status;
   appendLog(
     task,

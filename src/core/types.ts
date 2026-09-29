@@ -58,6 +58,8 @@ export interface InstallConfig {
   scope: 'local' | 'global';
   /** register the MCP server for agents that support it */
   mcp: boolean;
+  /** install session-start / turn-end hooks where the agent has them */
+  hooks: boolean;
 }
 
 export interface ReindexConfig {
@@ -117,7 +119,10 @@ export const DEFAULT_CONFIG: Config = {
   },
   install: {
     scope: 'local',
-    mcp: true,
+    // every supported agent has a shell and the instructions teach the CLI; the
+    // MCP server is the same surface again, paid in tool schemas every session
+    mcp: false,
+    hooks: true,
   },
   reindex: {
     autoLog: true,

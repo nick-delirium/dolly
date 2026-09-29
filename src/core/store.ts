@@ -9,6 +9,7 @@ import {
   isDir,
   listDirs,
   readJson,
+  readJsonForUpdate,
   readTextOr,
   writeJson,
   writeText,
@@ -16,7 +17,9 @@ import {
 import { fuzzyBest, FUZZY_MIN_SCORE } from './fuzzy.js';
 import { parseFrontmatter } from './md.js';
 import { commonDir, ensureRepo, repoRoot } from './git.js';
+import { dollyHome } from './home.js';
 import { resolveIdentity, type Identity } from './identity.js';
+import { currentSessionId } from './session.js';
 
 export const STORE_DIRNAME = '.dolly';
 /**
@@ -109,31 +112,7 @@ export interface StoreLocation {
   legacy?: boolean;
 }
 
-/**
- * Where dolly keeps its own state — identity cache, out-of-repo stores, the
- * project index. `DOLLY_HOME` exists so a test can isolate all of that instead
- * of writing into the developer's real home directory.
- */
-let homeCache: { raw: string; resolved: string } | null = null;
-
-export function dollyHome(): string {
-  const raw = process.env.DOLLY_HOME?.trim() || os.homedir();
-  // Canonicalised, because this string ends up *inside* paths dolly stores and
-  // compares — a home given as a symlink or an unnormalised path would produce a
-  // different store path for the same physical directory, and break the `~`
-  // shortening that keeps `dolly projects` readable. Memoised on the raw value:
-  // this is on the hot path (once per ancestor directory per lookup), and the
-  // environment can still change within a process.
-  if (homeCache?.raw === raw) return homeCache.resolved;
-  let resolved = raw;
-  try {
-    resolved = fs.realpathSync(raw);
-  } catch {
-    /* not created yet — the unresolved path is the best answer available */
-  }
-  homeCache = { raw, resolved };
-  return resolved;
-}
+export { dollyHome } from './home.js';
 
 /**
  * Collapse a path under the user's real home to a leading `~`, so values
@@ -265,8 +244,12 @@ export function projectKey(p: string): string {
  * read means no migration — the entry gains its fields the next time it is
  * written.
  */
-export function readProjectIndex(file = indexFile()): ProjectIndex {
-  const raw = readJson<Record<string, unknown>>(file, {});
+export function readProjectIndex(file = indexFile(), forUpdate = false): ProjectIndex {
+  // an index that fails to parse reads as empty, but is never written back as
+  // empty — that would forget every project at once
+  const raw = forUpdate
+    ? readJsonForUpdate<Record<string, unknown>>(file, {})
+    : readJson<Record<string, unknown>>(file, {});
   const out: ProjectIndex = {};
   for (const [k, v] of Object.entries(raw)) {
     // Stored values are tilde-encoded for portability; expand them to absolute
@@ -305,7 +288,9 @@ function writeProjectIndex(file: string, index: ProjectIndex): void {
 }
 
 export function projectEntry(project: string, file = indexFile()): ProjectEntry | null {
-  return readProjectIndex(file)[globalKey(project)] ?? readProjectIndex(file)[localKey(project)] ?? null;
+  const index = readProjectIndex(file);
+  const key = entryKeyIn(index, project);
+  return key ? index[key] : null;
 }
 
 /**
@@ -318,7 +303,15 @@ export function recordProject(
   opts: { store: string; local: boolean },
   file = indexFile(),
 ): void {
-  const index = readProjectIndex(file);
+  let index: ProjectIndex;
+  try {
+    index = readProjectIndex(file, true);
+  } catch (err) {
+    // the registry is descriptive, not authoritative: a broken one must not
+    // block the write that triggered this, and must not be overwritten either
+    process.stderr.write(`dolly: not recording this project — ${(err as Error).message}\n`);
+    return;
+  }
   // Global stores key on the repo's shared identity so every worktree agrees;
   // local stores stay per-path (a committed .dolly is a per-worktree fact).
   // Both keys are tilde-encoded for portability.
@@ -356,25 +349,11 @@ function entryKeyIn(index: ProjectIndex, project: string): string | null {
 }
 
 export function forgetProject(project: string, file = indexFile()): void {
-  const index = readProjectIndex(file);
+  const index = readProjectIndex(file, true);
   const key = entryKeyIn(index, project);
   if (!key) return;
   delete index[key];
   writeProjectIndex(file, index);
-}
-
-/**
- * The store this project was linked to, or null. An entry pointing at a
- * directory that is no longer a store is treated as absent rather than as an
- * error: a deleted or moved store must degrade to the normal lookup, never
- * strand every command behind a stale line of JSON.
- */
-export function linkedStore(project: string, file = indexFile()): string | null {
-  const index = readProjectIndex(file);
-  const key = entryKeyIn(index, project);
-  if (!key) return null;
-  const entry = index[key];
-  return isProjectStore(entry.store) ? entry.store : null;
 }
 
 /**
@@ -458,7 +437,10 @@ export function locateStore(cwd = process.cwd()): StoreLocation {
   if (gid) {
     const g = index[globalKey(cwd)];
     if (g && !g.local && isProjectStore(g.store)) {
-      return { root: g.store, kind: 'linked', project: gid };
+      // the project is THIS worktree, not the main checkout: git (--auto-files)
+      // and transcript lookup must see the files and sessions of where you are.
+      // The store key is the shared identity either way.
+      return { root: g.store, kind: 'linked', project: repoRoot(cwd) ?? gid };
     }
   }
   const root = repoRoot(cwd);
@@ -525,7 +507,7 @@ export class Store {
   }
 
   saveLocal(patch: Record<string, unknown>): void {
-    const cur = readJson<Record<string, unknown>>(this.localConfigPath, {});
+    const cur = readJsonForUpdate<Record<string, unknown>>(this.localConfigPath, {});
     writeJson(this.localConfigPath, { ...cur, ...patch });
   }
 
@@ -577,6 +559,10 @@ export class Store {
     // `user` is per-person and lives in the gitignored local config; writing it
     // here would reintroduce the misattribution this split exists to prevent
     const { user: _user, ...shared } = next;
+    // `next` was built from the in-memory config, which falls back to defaults
+    // when config.json does not parse; saving it would erase both sides of a
+    // merge conflict
+    readJsonForUpdate(this.configPath, {});
     writeJson(this.configPath, shared);
   }
 
@@ -610,7 +596,7 @@ export class Store {
     if (!tasks.length) throw new Error('no tasks yet — run `dolly new "<title>"`');
 
     if (ref === 'current' || ref === '@' || ref === '.') {
-      const active = currentTask(tasks, this.config);
+      const active = currentTask(tasks, this.config, { session: currentSessionId(), user: this.user });
       if (!active) throw new Error('no active task (none in working/validating/planning)');
       return active;
     }
@@ -622,10 +608,15 @@ export class Store {
     const bySlug = tasks.filter((t) => t.meta.slug === ref);
     if (bySlug.length === 1) return bySlug[0];
 
-    const candidates = this.search(ref, tasks);
-    if (candidates.length === 1) return candidates[0];
-    if (!candidates.length) throw new Error(`no task matching "${ref}"`);
-    throw new AmbiguousRef(ref, candidates);
+    const ranked = this.rank(ref, tasks);
+    if (!ranked.length) throw new Error(`no task matching "${ref}"`);
+    if (ranked.length === 1) return ranked[0].task;
+    // a clear winner is not ambiguous: an exact title beats "Memo command v2",
+    // and a literal match beats every fuzzy one. Only a tie inside the best
+    // tier — or fuzzy hits alone — needs a human to pick.
+    const [best, next] = ranked;
+    if (best.score >= LITERAL_TIER && tierOf(best.score) > tierOf(next.score)) return best.task;
+    throw new AmbiguousRef(ref, ranked.map((x) => x.task));
   }
 
   nextId(): string {
@@ -644,14 +635,20 @@ export class Store {
    * plausibly matches.
    */
   search(ref: string, tasks: Task[] = this.loadTasks()): Task[] {
+    return this.rank(ref, tasks).map((x) => x.task);
+  }
+
+  private rank(ref: string, tasks: Task[]): { task: Task; score: number }[] {
     if (!tasks.length || ref === 'current' || ref === '@' || ref === '.') return [];
-    const needle = ref.toLowerCase();
+    const needle = ref.toLowerCase().trim();
+    if (!needle) return [];
     const scored: { task: Task; score: number }[] = [];
     for (const t of tasks) {
       const title = t.meta.title.toLowerCase();
       const slug = t.meta.slug.toLowerCase();
       let score: number | null = null;
-      if (title.startsWith(needle)) score = 5000;
+      if (title === needle) score = 6000;
+      else if (title.startsWith(needle)) score = 5000;
       else if (slug.startsWith(needle)) score = 4500;
       else if (title.includes(needle)) score = 4000;
       // a hash prefix is a real way to name a task; `rel` is not — it carries
@@ -661,7 +658,7 @@ export class Store {
       else {
         const f = fuzzyBest(ref, [t.meta.title, t.meta.slug]);
         // threshold keeps one-letter typos from matching half the board
-        if (f !== null && f >= FUZZY_MIN_SCORE) score = f;
+        if (f !== null && f >= FUZZY_MIN_SCORE) score = Math.min(f, LITERAL_TIER - 1);
       }
       if (score !== null) scored.push({ task: t, score });
     }
@@ -671,12 +668,20 @@ export class Store {
         b.task.meta.updated.localeCompare(a.task.meta.updated) ||
         a.task.meta.id.localeCompare(b.task.meta.id),
     );
-    return scored.map((x) => x.task);
+    return scored;
   }
 }
 
+/** lowest score of a literal (non-fuzzy) match — fuzzy scores sit below it */
+const LITERAL_TIER = 3500;
+
+/** fuzzy scores all share one tier; literal matches are tiered by kind */
+function tierOf(score: number): number {
+  return score >= LITERAL_TIER ? score : 0;
+}
+
 /** entries the store's own .gitignore must contain */
-export const REQUIRED_IGNORES = [LOCAL_CONFIG, '*.tmp-*', '.claude/', '.cursor/', '.codex/'];
+export const REQUIRED_IGNORES = [LOCAL_CONFIG, '*.tmp-*', '.local/', '.claude/', '.cursor/', '.codex/'];
 
 /** ignore entries not yet present — a store written by an older dolly lacks them */
 export function missingIgnores(root: string): string[] {
@@ -693,13 +698,16 @@ export function missingIgnores(root: string): string[] {
  */
 export function storeVersion(root: string): number {
   if (!exists(path.join(root, 'config.json'))) return STORE_VERSION;
-  const raw = readJson<Partial<Config>>(path.join(root, 'config.json'), {});
+  // a config that exists but does not parse is NOT a v1 store: guessing 1 made
+  // the auto-migrator stamp `{"version":6}` over a merge conflict — erasing both
+  // sides, and walking past the newer-store guard
+  const raw = readJsonForUpdate<Partial<Config>>(path.join(root, 'config.json'), {});
   const v = Number(raw.version);
   return Number.isFinite(v) && v > 0 ? v : 1;
 }
 
 export function stampVersion(root: string, version: number): void {
-  const raw = readJson<Record<string, unknown>>(path.join(root, 'config.json'), {});
+  const raw = readJsonForUpdate<Record<string, unknown>>(path.join(root, 'config.json'), {});
   writeJson(path.join(root, 'config.json'), { ...raw, version });
 }
 
@@ -770,15 +778,42 @@ export function byRecency(a: Task, b: Task): number {
   return b.meta.updated.localeCompare(a.meta.updated) || b.meta.id.localeCompare(a.meta.id);
 }
 
-/** the task an agent is presumed to be working on right now */
-export function currentTask(tasks: Task[], config: Config): Task | null {
-  const priority = ['working', 'validating', 'planning'];
+export interface CurrentContext {
+  /** the running conversation: a task it already wrote to wins outright */
+  session?: string | null;
+  /** your own tasks before a teammate's in a shared store */
+  user?: string;
+}
+
+/**
+ * The task an agent is presumed to be working on right now.
+ *
+ * Global recency alone was wrong in two ways: in a shared store it picked a
+ * teammate's task, and with two conversations in one repo each one's turns
+ * landed on whichever task the other touched last.
+ */
+export function currentTask(tasks: Task[], config: Config, ctx: CurrentContext = {}): Task | null {
   const live = tasks.filter((t) => t.meta.status !== config.doneStatus);
-  for (const status of priority) {
-    const hits = live.filter((t) => t.meta.status === status).sort(byRecency);
-    if (hits.length) return hits[0];
+  if (ctx.session) {
+    const linked = sessionTask(live, ctx.session);
+    if (linked) return linked;
+  }
+  const priority = [...new Set(['working', config.reviewStatus, 'planning'])].filter((s) =>
+    config.statuses.includes(s),
+  );
+  const mine = (t: Task) => !ctx.user || t.meta.owner === ctx.user || t.meta.collaborators.includes(ctx.user);
+  for (const pool of ctx.user ? [live.filter(mine), live] : [live]) {
+    for (const status of priority) {
+      const hits = pool.filter((t) => t.meta.status === status).sort(byRecency);
+      if (hits.length) return hits[0];
+    }
   }
   return null;
+}
+
+/** the most recently touched unfinished task this conversation has written to */
+export function sessionTask(tasks: Task[], session: string): Task | null {
+  return tasks.filter((t) => t.meta.sessions.includes(session)).sort(byRecency)[0] ?? null;
 }
 
 export function slugify(s: string, max = 48): string {

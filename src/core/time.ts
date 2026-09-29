@@ -12,10 +12,6 @@ export function daysSince(iso: string, from = Date.now()): number {
   return (from - t) / 86_400_000;
 }
 
-export function monthBucket(iso = nowIso()): string {
-  return iso.slice(0, 7);
-}
-
 export function humanAge(iso: string): string {
   const d = daysSince(iso);
   if (!Number.isFinite(d)) return '?';

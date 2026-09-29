@@ -1,5 +1,5 @@
 import { codeMapLine, projectDigest } from './project.js';
-import { filesOfTask, relatedToTask, renderRelated } from './related.js';
+import { filesOfTask, relatedByFiles, renderRelated } from './related.js';
 import type { Store } from './store.js';
 import type { Task } from './types.js';
 import {
@@ -168,65 +168,65 @@ export function renderShow(task: Task, opts: { full?: boolean } = {}): string {
   return out.join('\n');
 }
 
+/** sections of the brief every context carries; the rest are one `dolly project` away */
+const CONTEXT_BRIEF = ['Overview', 'Invariants', 'Conventions'];
+/** short-log entries shown; older ones are in task.md */
+const CONTEXT_LOG = 20;
+
 /**
  * The rehydration payload an agent reads when picking a task back up.
  * Plain markdown, no ANSI — it goes into a model's context, not a terminal.
+ *
+ * It is read on every pickup, so nothing is in it twice: a finalized plan is
+ * already the spec, criteria already inside the full spec are not repeated,
+ * and an auto-logged step keeps what the agent said, not its tool trace.
  */
 export function renderContext(
   task: Task,
   opts: { steps?: number; plan?: boolean; brief?: boolean; store?: Store } = {},
 ): string {
   const steps = opts.brief ? 0 : (opts.steps ?? 3);
+  const m = task.meta;
+  const others = m.collaborators.filter((c) => c !== m.owner);
   const out: string[] = [];
-  out.push(`# dolly context · ${task.meta.id} ${task.meta.title}`);
+  out.push(`# ${m.id} · ${m.title}`);
   out.push('');
   out.push(
-    [
-      `- status: **${task.meta.status}**`,
-      `- spec version: v${task.meta.spec_version}`,
-      `- owner: @${task.meta.owner}`,
-      `- collaborators: ${task.meta.collaborators.map((c) => `@${c}`).join(', ') || '—'}`,
-      `- steps logged: ${task.meta.steps}`,
-      `- created: ${task.meta.created}`,
-      `- updated: ${task.meta.updated}`,
-      `- dir: ${task.dir}`,
-    ].join('\n'),
+    `\`${m.status}\` · spec v${m.spec_version} · @${m.owner}${others.length ? ` (+${others.map((c) => `@${c}`).join(', ')})` : ''}` +
+      ` · ${m.steps} step${m.steps === 1 ? '' : 's'} · updated ${humanAge(m.updated)} · \`${task.dir}\``,
   );
   // Repo before task: this is one slice of an ongoing codebase, and an agent
   // that does not know that will happily reinvent its conventions.
   if (opts.store) {
-    const brief = projectDigest(opts.store);
-    if (brief) out.push('', '## Project brief (repo-level, task-independent)', '', brief);
+    const brief = projectDigest(opts.store, { sections: CONTEXT_BRIEF, maxPerSection: 1500 });
+    if (brief) out.push('', '## Project brief', '', brief);
     const maps = codeMapLine(opts.store.project);
-    if (maps) {
-      out.push('', '## Code map available — use it before grepping', '', maps);
-    }
-    const related = relatedToTask(opts.store, task);
-    if (related.length) {
-      out.push(
-        '',
-        '## Other tasks in this code',
-        '',
-        'These touched the same files. Read their outcomes before changing shared code —',
-        'they may have decided something you are about to undo.',
-        '',
-        renderRelated(related),
-      );
-    }
+    if (maps) out.push('', '## Code map available — use it before grepping', '', maps);
     const files = filesOfTask(task);
+    const related = relatedByFiles(opts.store, files, m.id);
+    if (related.length) {
+      out.push('', '## Other tasks in this code — read their outcome before undoing it', '', renderRelated(related, 4));
+    }
     if (files.length) {
-      out.push('', `## Files this task has touched (${files.length})`, '', files.map((f) => `- \`${f}\``).join('\n'));
+      const shown = files.slice(0, 20).map((f) => `\`${f}\``).join(', ');
+      out.push('', `## Files touched (${files.length})`, '', files.length > 20 ? `${shown} +${files.length - 20} more` : shown);
     }
   }
   out.push('', '## Spec (short)', '', shortSpec(task) || '_empty_');
-  out.push('', '## Success Criteria', '', criteria(task) || '_empty_');
-  const full = fullSpec(task);
-  if (full) out.push('', '## Spec (full, current)', '', full);
-  if (opts.plan !== false) {
-    const p = plan(task);
-    if (p.trim()) out.push('', '## Plan', '', p.trim());
+  const crit = criteria(task);
+  out.push('', '## Success Criteria', '', crit || '_empty_');
+  // task.md's criteria are canonical (they carry the checkboxes, and they are
+  // what `dolly spec --criteria` edits); the copy a planned spec embeds is the
+  // same list again at best, a stale one at worst
+  const full = /[^\s_]/.test(crit) ? withoutSection(fullSpec(task), 'Success Criteria') : fullSpec(task);
+  if (full) out.push('', '## Spec (full, current)', '', demote(full));
+  const p = plan(task).trim();
+  if (p && opts.plan !== false) {
+    // the plan is the spec's source until finalize, a duplicate of it after
+    if (m.status === 'planning') out.push('', '## Plan', '', demote(p));
+    else out.push('', '_Planning interview: `context/plan.md` (finalized into the spec above)._');
   }
-  out.push('', '## Step log (short)', '', logSection(task) || '_empty_');
+  out.push('', '## Step log (short)', '', compactLog(logSection(task), CONTEXT_LOG) || '_empty_');
   if (opts.brief) {
     out.push(
       '',
@@ -236,18 +236,80 @@ export function renderContext(
   }
   const details = recentStepDetails(task, steps);
   if (details.length) {
-    const total = task.meta.steps;
-    out.push(
-      '',
-      `## Full context — last ${details.length} of ${total} step(s)`,
-      '',
-      steps > 0 && total > details.length
-        ? `_earlier step context is in \`context/steps.md\`; re-run with \`-n 0\` for all._`
-        : '',
-    );
-    for (const d of details) out.push('', d.text.trim());
+    out.push('', `## Full context — last ${details.length} of ${m.steps} step(s)`);
+    if (steps > 0 && m.steps > details.length) {
+      out.push('', '_earlier step context is in `context/steps.md`; re-run with `-n 0` for all._');
+    }
+    for (const d of details) out.push('', compactStep(d.text.trim()));
   }
   return out.join('\n');
+}
+
+function withoutSection(md: string, name: string): string {
+  return md.replace(new RegExp(`^##[ \\t]+${name}[ \\t]*\\n[\\s\\S]*?(?=^##[ \\t]|(?![\\s\\S]))`, 'm'), '').trim();
+}
+
+/** push a document's headings under the section that quotes it */
+function demote(md: string): string {
+  return md.replace(/^(#{1,5}) /gm, '#$1 ');
+}
+
+/**
+ * The short log for a context: newest `max` entries, without their `files:` /
+ * `full:` trailers — the files are listed once above, and the step bodies that
+ * matter follow below.
+ */
+function compactLog(log: string, max: number): string {
+  const entries: string[] = [];
+  for (const line of log.split('\n')) {
+    if (/^- `/.test(line)) entries.push(line);
+    else if (entries.length && /^\s+/.test(line) && !/^\s+(files:|full:|previous version kept)/.test(line)) {
+      entries[entries.length - 1] += `\n${line}`;
+    }
+  }
+  // a summary is meant to be 1-3 lines; the long ones are whole in task.md
+  const clipped = entries.map((e) => (e.length > 500 ? `${e.slice(0, 497).trimEnd()}…` : e));
+  if (clipped.length <= max) return clipped.join('\n');
+  return [`_${clipped.length - max} earlier entries in \`task.md\`._`, ...clipped.slice(-max)].join('\n');
+}
+
+/**
+ * One step body, fit for a context. A hand-written note is kept whole (headings
+ * demoted under the step's own). An auto-logged one — recognisable by its work
+ * chain — keeps what the agent said and what it touched, and drops the tool
+ * trace: that duplicated the files and commands, and was most of the bytes.
+ */
+export function compactStep(text: string): string {
+  const t = text.replace(/^## (?!\d{4} · )/gm, '### ');
+  if (!/^### (Work chain|Commands run)\b/m.test(t)) return t;
+  // split on the importer's own section names only: the agent's message can
+  // carry headings of its own, and those belong to "What the agent said"
+  const parts = t.split(new RegExp(`^(?=### (?:${AUTO_SECTIONS.join('|')})\\b)`, 'm'));
+  const kept: string[] = [];
+  for (const part of parts) {
+    const head = /^### (.+)$/m.exec(part)?.[1] ?? '';
+    if (/^(Work chain|Commands run|Tools)\b/.test(head)) continue;
+    if (/^What the agent said/.test(head)) kept.push(clipPart(part, 2000));
+    else if (/^Request that opened/.test(head)) kept.push(clipPart(part.split(/\n---\n/)[0], 500));
+    else kept.push(part);
+  }
+  return kept.join('').trim();
+}
+
+/** the sections `dolly reindex` writes into an auto-logged step */
+const AUTO_SECTIONS = [
+  'What the agent said it did',
+  'Work chain',
+  'Files touched',
+  'Commands run',
+  'Tools',
+  'Request that opened the turn',
+  'Reasoning',
+];
+
+function clipPart(part: string, max: number): string {
+  const body = part.trimEnd();
+  return body.length > max ? `${body.slice(0, max).trimEnd()} …\n\n` : `${body}\n\n`;
 }
 
 export const color = C;

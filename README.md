@@ -10,7 +10,7 @@ Three things it does:
 - **Plans.** A planning interview that refuses to finish while any section is `_TBD_` or any question unanswered, then derives the spec from the answers.
 - **Tracks.** `todo → planning → working → validating → done`, where `validating` means the agent is done and a human must verify. Agents never mark work done.
 
-Installs into Claude Code (plugin, skills, slash commands, MCP, hooks), pi (skills, MCP, and an extension giving the same auto-inject and auto-logging hooks), opencode (skills, slash commands, MCP, and a plugin giving the same context injection and auto-logging), ZCode (skills, slash commands, MCP, and a hook-carrying plugin), and four other agents. Zero runtime dependencies.
+Installs into Claude Code (plugin, skills, slash commands, hooks, optional MCP), pi (skills and an extension giving the same auto-inject and auto-logging hooks), opencode (skills, slash commands, and a plugin giving the same context injection and auto-logging), ZCode (skills, slash commands and a hook-carrying plugin), and five other agents. Zero runtime dependencies.
 
 ```
 .dolly/
@@ -87,14 +87,14 @@ The plugin drives the CLI, so install that too (see above) — `bin/dolly-hook.m
 You get:
 
 - **skills** `dolly` (memory, step logging) and `dolly-planning` (interview) — loaded automatically when relevant
-- **slash commands** `/dolly:board` `/dolly:resume` `/dolly:step` `/dolly:checkpoint` `/dolly:memo` `/dolly:plan` `/dolly:spec` `/dolly:validate` `/dolly:adopt`
-- **MCP server** — 15 tools, so the agent can drive dolly without shelling out
+- **slash commands** `/dolly:board` `/dolly:resume` `/dolly:step` `/dolly:memo` `/dolly:plan` `/dolly:spec` `/dolly:validate` `/dolly:adopt`
+- **MCP server** — 15 tools, for agents that cannot or should not shell out. Opt-in (`--mcp` or `dolly config set install.mcp true`): every agent dolly supports has a shell, and the CLI is the same surface without tool schemas in every prompt
 - **SessionStart hook** — spec, criteria and recent events injected into every new session automatically
 - **Stop hook** — auto-logs a step for each finished turn (see [Automatic logging](#automatic-logging)), and nudges when a task goes quiet
 
 `dolly install claude` registers the same hooks in `.claude/settings.json` if you'd rather not use the plugin (`--no-hooks` to skip).
 
-Prefer files over a plugin? `dolly install claude` writes `.claude/skills/`, `.claude/commands/dolly/`, a `CLAUDE.md` block and `.mcp.json`.
+Prefer files over a plugin? `dolly install claude` writes `.claude/skills/`, `.claude/commands/dolly/`, a `CLAUDE.md` block, the hooks in `.claude/settings.json`, and `.mcp.json` with `--mcp`. With the plugin enabled too, the plugin's hooks step aside for the settings ones; a `--global` install on top of the plugin writes only the `CLAUDE.md` block.
 
 ### Local or global
 
@@ -102,7 +102,7 @@ Instructions are written **into the project** by default, so they land in the re
 
 ```bash
 dolly config set install.scope global    # write to ~/.claude/, ~/.claude.json instead
-dolly config set install.mcp false       # stop registering the MCP server
+dolly config set install.mcp true        # also register the MCP server (off by default)
 dolly install claude --local             # or override the setting for one run
 ```
 
@@ -123,10 +123,10 @@ dolly install cursor codex gemini    # or name them
 | Gemini CLI | `GEMINI.md` block, `.gemini/settings.json` MCP entry |
 | opencode | `.opencode/skills/`, `.opencode/commands/dolly-*.md`, `.opencode/plugins/dolly.js`, `AGENTS.md` block, `opencode.json` MCP entry |
 | ZCode | `.zcode/skills/`, `.zcode/commands/dolly-*.md`, `.zcode/config.json` MCP entry, `AGENTS.md` block, plus a plugin scaffold at `~/.zcode/marketplaces/dolly/` carrying the session-start injection and per-turn auto-log hooks — zcode ignores workspace-level hooks, so they ride in a plugin (one manual enable: Settings → Plugin Management → Discover → "+" → add that folder as a local marketplace → Get "dolly") |
-| pi | `~/.pi/agent/skills/` (or `.pi/skills/` local), `SYSTEM.md`/`AGENTS.md` block, `mcp.json`, and `~/.pi/agent/extensions/dolly.ts` — a global-only extension that injects task context at session start and auto-logs a step per finished turn |
+| pi | `~/.pi/agent/skills/` (or `.pi/skills/` local), `AGENTS.md` block (`~/.pi/agent/AGENTS.md` global), `mcp.json`, and `~/.pi/agent/extensions/dolly.ts` — a global-only extension that injects task context at session start and auto-logs a step per finished turn |
 | anything else | `AGENTS.md` block |
 
-All writes are idempotent, delimited by `<!-- dolly:instructions -->` markers. Re-run anytime — `dolly setup` to pick from a list, or `dolly install` for the non-interactive form. `--dry-run` to preview, `--global` for user-level instead of project-level, `--no-mcp` to skip MCP wiring.
+All writes are idempotent, delimited by `<!-- dolly:instructions -->` markers. Re-run anytime — `dolly setup` to pick from a list, or `dolly install` for the non-interactive form. `--dry-run` to preview, `--global` for user-level instead of project-level (targets with no user-level form say so and are skipped), `--mcp` to register the MCP server. A JSON config that does not parse (comments, trailing comma) is left untouched with a note — never rewritten. Files dolly used to ship and no longer does are removed on the next install.
 
 ## Two ways in
 
@@ -386,7 +386,7 @@ Shown at session start and in `dolly project`. If a big repo has none, the agent
 
 ### What a new session is handed
 
-The SessionStart hook injects, before anything task-specific: *"work here is a slice of an ongoing codebase, not a new project"*, the project brief, any code map, and the last four finished tasks with their outcome lines. With no active task — exactly when a new one is about to be opened — it adds the two commands to run first: `dolly board --all` and `dolly related --files …`.
+The SessionStart hook injects an index of about 2KB — paid on every session, so only what changes the first move: the store and its task counts, the project brief's Overview (the other sections are named, one `dolly project` away), any code map, the last three finished tasks by title, and ONE task — this conversation's if it has written to one, else the most recent open task with the command that attaches it (`dolly status <ref> working`). Its spec and last log line come along only when it is this conversation's task or was touched in the last week. With no open task, it names the commands to run before opening one: `dolly board` and `dolly related --files …`.
 
 ## Rehydrating — read in tiers
 
@@ -395,34 +395,37 @@ Neither "the short chain" nor "the full context" is right on its own. They answe
 | Need | Command | Contains |
 |---|---|---|
 | what work exists | `dolly board` | one line per task |
-| orienting, no code yet | `dolly context <ref> --brief` | spec, criteria, full one-line log |
+| orienting, no code yet | `dolly context <ref> --brief` | spec, criteria, the newest 20 log entries |
 | **picking up a task, about to write code** | **`dolly context <ref>`** | the above + full spec + last 3 steps' full context |
 | why is this code like this | `dolly context <ref> -n 0` | every step in full |
 
 The default is the middle one, and it is the answer to "which is better": the short log tells you *what* happened, full step context tells you *why* — and you need why before you change anything. Reading every step in full is almost always waste, since older steps were superseded by newer ones.
 
-At session start the Claude Code hook injects spec + criteria + the last six events. That is an **index**, deliberately not the record — the injected text says so and points at `dolly context`.
+Nothing in it is there twice: a finalized plan is already the spec (it is shown only while the task is `planning`), task.md's criteria replace the copy a planned spec embeds, the log drops the `files:` trailers listed once above, and an auto-logged step keeps what the agent said and touched — not its tool trace. The session-start text is an **index**, deliberately not the record, and points at `dolly context`.
+
+Agents without skill support get the whole usage guide from `dolly guide` (`dolly guide planning` for the planning interview) — the instruction block every session loads is kept to the essentials and points there.
 
 ## Automatic logging
 
 Yes, it wires itself up on install. With the plugin (or `dolly install claude`), the Stop hook fires after every finished turn and appends a mechanical step for it, derived from the transcript: what the agent reported, its work chain, the files it touched. The log has no holes even when the agent forgets.
 
-pi gets the same behavior through its extension, by a different route: pi's `turn_end` event already carries the finished turn, so the extension reads it in memory and pipes it to `dolly hook stop --from-stdin` — no transcript file involved. Auto-inject works the same way via `before_agent_start`. The gating and dedup rules below apply identically.
+pi gets the same behavior through its extension, by a different route: pi's `agent_end` event (once per prompt — `turn_end` fires per LLM round) already carries the finished work, so the extension reads it in memory and pipes it to `dolly hook stop --from-stdin` — no transcript file involved. Auto-inject works the same way via `before_agent_start`. The gating and dedup rules below apply identically.
 
 opencode gets it through its generated plugin (`.opencode/plugins/dolly.js`): on `session.idle` — opencode's turn-end event — the plugin pulls the finished turn from the SDK, mirrors it to `~/.local/share/opencode/dolly/<escaped-cwd>/<session>.jsonl`, and pipes the same stdin payload dolly's Stop hook consumes. Context injection rides `experimental.chat.system.transform` (fires every LLM call, so context is never staler than the last turn) and `experimental.session.compacting` re-injects it across compaction. The same gating and dedup rules apply.
 
 It stays out of the way of real work:
 
-- a turn the agent logged itself is **skipped** — dolly compares the turn's start time against the task's last-updated time
+- it only ever writes to a task **this conversation already wrote to** — any dolly write attaches the conversation (`dolly status <ref> working`, a step, a new task). A session that never touched dolly logs nothing, instead of landing on whichever task was touched last
+- a turn the agent logged itself is **skipped** — dolly compares the turn's start time (or, for harnesses that send none, the step count at the previous turn's end) against the task
 - only fires while a task is `working` (`reindex.autoLogOnlyWhenWorking`)
-- deduped by turn id, so nothing is logged twice
+- deduped by turn id, and every write holds the store lock, so nothing is logged twice — not even with the plugin and `settings.json` hooks both installed (the plugin's hooks step aside for the settings ones)
 
 ```bash
 dolly config set reindex.autoLog false                 # off
 dolly config set reindex.autoLogOnlyWhenWorking false  # log in any status
 ```
 
-Agent-written steps are still much better, because auto-entries lift the agent's last message verbatim. The instructions tell the agent to keep logging real steps and treat auto-entries as a floor. `/dolly:checkpoint` (same as `/dolly:step`) is the manual checkpoint.
+Agent-written steps are still much better, because auto-entries lift the agent's last message verbatim. The instructions tell the agent to keep logging real steps and treat auto-entries as a floor. `/dolly:step` is the manual checkpoint.
 
 ## Logs record what the agent did, not what you asked
 
@@ -431,12 +434,14 @@ A log of user requests is useless for continuity — the request is already in t
 So a step summary is derived, in order, from: the last thing the agent told the user (that *is* its own summary), then its first message, then a description synthesised from the work chain, and only as a last resort the request. Full step context is ordered the same way:
 
 ```markdown
-## What the agent said it did      ← every visible message, in order
-## Work chain                      ← Read src/a.ts ×3 · Edit src/b.ts · Bash: npm test
+## What the agent said it did      ← its last message whole, earlier ones a line each
+## Work chain                      ← Read src/a.ts ×3 · Edit src/b.ts · Bash: npm test (first 25)
 ## Files touched
-## Commands run
+## Tools: Bash 12, Edit 3
 ## Request that opened the turn     ← verbatim, but demoted
 ```
+
+`dolly context` shows an auto-logged step without its work chain and tool counts — the full record stays in `context/steps.md`.
 
 The **work chain** is the ordered trace of what actually ran, repeats collapsed (`Read src/a.ts ×3`). Scratch files outside the project appear as `Write (outside the project)`; writes to `.dolly/` itself are dropped as circular bookkeeping.
 
@@ -468,7 +473,7 @@ todo → planning → working → validating → done
 
 ```bash
 dolly board
-dolly board --all --status working
+dolly board --status working
 dolly board --json           # for scripts
 ```
 
@@ -497,7 +502,7 @@ dolly memo --save --file notes.md   # save agent-written prose as the day's memo
 
 ## No housekeeping
 
-There is none. Tasks are never archived, flagged stale, pruned or touched based on time — the only thing that moves a task or changes its status is an explicit `dolly status` / `dolly archive`-style command typed by a human or run by an agent on request. A quiet task stays exactly where it is, visible on the board forever. (`dolly migrate` flattens any `archive/YYYY-MM/` left behind by older versions back into `tasks/`.)
+There is none. Tasks are never archived, flagged stale, pruned or touched based on time — the only thing that moves a task or changes its status is an explicit `dolly status` typed by a human or run by an agent on request. A quiet task stays exactly where it is, visible on the board forever. (`dolly migrate` flattens any `archive/YYYY-MM/` left behind by older versions back into `tasks/`.)
 
 ## Sharing and attribution
 
@@ -538,57 +543,61 @@ It is **descriptive, not authoritative**: resolution consults it only when no `.
 
 ```
 init [--yes] [--store local|global] [--agents a,b] [--local|--global]
-     [--no-mcp] [--no-hooks] [--no-agents] [--dry-run]
+     [--mcp|--no-mcp] [--no-hooks] [--no-agents] [--dry-run]
 setup                                      reopen the setup screen
 projects [--json] [--prune]                every project dolly knows
-board | list [--all] [--status s] [--mine] [--tag t] [--json]
-show <ref> [--full] [--json]
-context <ref|current> [-n N] [--brief] [--json]
-project [show | init | set "<Section>" --text t]
-related [<ref>] [--files a,b] [--json]
-continue <ref> [--fork] [--print] [--session id]
+board | list | ls [--status s] [--mine] [--tag t] [--json]
+show [ref] [--full] [--json]
+context [ref] [-n N] [--brief] [--json]
 current                                    alias for: context current
+project [show | init | set "<Section>" --text t]
+related [ref] [--files a,b] [--json]
+continue | resume [ref] [--fork] [--print] [--session id] [--json]
 update [--check] [--dry-run] [--force]     self-update in place (clone: pull+rebuild; npm: reinstall)
 memo [--date d] [--json] [--save --file f|-]  today's digest → .dolly/memo/YYYY-MM-DD.md
 
-new "<title>" [--short t] [--file f|-] [--status s] [--tag x] [--criteria c]
+new | add "<title>" [--short t] [--full t | --file f] [--status s] [--tag x] [--criteria c]
 step <ref> -m "<summary>" [--files a,b | --auto-files]
            [--detail t | --detail-file f] [--status s]
-spec <ref> [--short t] [--file f|-] [--criteria c] [--reason why]
-status <ref> <status> [--note t]
+spec <ref> [--short t | --short-file f] [--full t | --file f] [--criteria c] [--reason why]
+status | move <ref> <status> [--note t]
+retitle | rename <ref> "<new title>"       renames the task and its directory
 
-plan start "<title>" [--brief t]
+plan start "<title>" [--brief t | --brief-file f]
 plan show <ref>
-plan set <ref> "<Section>" (--text t | --file f|-)
+plan set <ref> "<Section>" (--text t | --file f)
 plan qa <ref> -q "<question>" -a "<answer>"
 plan check <ref> [--json]
-plan finalize <ref> [--file f] [--short t] [--force] [--status s]
+plan finalize <ref> [--short t] [--full t | --file f] [--force] [--status s]
 
-reindex [--list] [--session id] [--file f.jsonl] [--apply] [--into ref]
+reindex | adopt [--list] [--session id] [--file f.jsonl] [--apply] [--into ref]
         [--all-turns] [-n N] [--rebuild] [--title t] [--status s]
         [--include-thinking] [--json]
 migrate [--dry-run]
 config [get <key> | set <key> <value>]
+defaults                                   the default config
 whoami
-install [agent…] [--list] [--local|--global] [--no-mcp] [--no-hooks] [--dry-run]
+version
+install [agent…] [--agents a,b] [--list] [--local|--global] [--mcp|--no-mcp] [--no-hooks] [--dry-run]
 mcp                                        MCP stdio server
-hook <session-start|stop>                  harness hook payloads (Claude/pi/opencode feed these)
+hook session-start [--raw]                 context injection (--raw: plain text, not the Claude envelope)
+hook stop [--from-stdin]                   auto-log (--from-stdin: the turn as JSON, for pi/opencode/zcode)
 statusline                                 one line for a statusline
 ```
 
-`<ref>` is an id (a random 8-character hash like `b4tk7s2m`, or a legacy sequential number), a slug, a unique substring, or a fuzzy title match — `dolly continue oauth login` finds the OAuth task. One clear match selects directly; several open a type-to-filter picker in a TTY (a numbered list when scripted). `current` / `@` is the active task: most recently touched in `working`, else `validating`, else `planning`.
+`<ref>` is an id (a random 8-character hash like `b4tk7s2m`, or a legacy sequential number), a slug, a unique substring, or a fuzzy title match — `dolly continue oauth login` finds the OAuth task (commands that take only a ref accept several words; an omitted ref means `current`). An exact title, or a single literal match against fuzzy ones, wins outright. One clear match selects directly; several open a type-to-filter picker in a TTY (a numbered list when scripted). `current` / `@` is the active task: most recently touched in `working`, else `validating`, else `planning`.
 
-Every command that produces data takes `--json`. Text input flags accept `-` for stdin, or a piped heredoc.
+Every command that produces data takes `--json`. Every text or file flag accepts `-` to read stdin — stdin is never read unless you ask. Unknown flags are an error, not silently ignored.
 
 ## MCP tools
 
-`dolly mcp` speaks MCP over stdio, no dependencies. Registered automatically by `dolly init` for agents that support it.
+`dolly mcp` speaks MCP over stdio, no dependencies. Registered by `dolly init` / `dolly install` when asked (`--mcp`, or `install.mcp` in config) for agents that support it.
 
 `dolly_board` · `dolly_context` · `dolly_task_show` · `dolly_task_new` · `dolly_step_add` · `dolly_spec_update` · `dolly_status_set` · `dolly_plan_start` · `dolly_plan_set` · `dolly_plan_qa` · `dolly_plan_check` · `dolly_plan_finalize` · `dolly_project` · `dolly_related` · `dolly_reindex`
 
 ## Agent instructions
 
-Skills, slash commands and the instruction blocks written into `CLAUDE.md` / `AGENTS.md` / Cursor rules are all written in caveman register — articles and filler dropped, every command, path, flag and gate kept exact. Fewer input tokens per session, same precision.
+Skills, slash commands and the instruction blocks written into `CLAUDE.md` / `AGENTS.md` / Cursor rules are all written in a compressed register — articles and filler dropped, every command, path, flag and gate kept exact. The block every session loads is held to ~1.5KB of essentials; the full guide is the **dolly** skill (loaded when relevant) or `dolly guide`. Sizes are asserted in `tests/footprint.test.mjs`, so they cannot creep back.
 
 ## Contributing
 

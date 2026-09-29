@@ -132,7 +132,7 @@ test('the defaults the wizard opens on are the shipped defaults', async (t) => {
   });
   const cfg = JSON.parse(fs.readFileSync(path.join(g.project, '.dolly', 'config.json'), 'utf8'));
   assert.equal(cfg.install.scope, 'local');
-  assert.equal(cfg.install.mcp, true);
+  assert.equal(cfg.install.mcp, false);
   assert.equal(cfg.reindex.autoLog, true);
   assert.equal(fs.existsSync(path.join(g.project, '.dolly', 'local.json')), false, 'no pinned handle');
 });
@@ -211,8 +211,8 @@ test('an out-of-repo store announces itself to the user and to the agent', async
   // committed, so the exception has to be stated where the agent reads
   const hook = JSON.parse(dolly(g.project, ['hook', 'session-start']));
   const ctx = hook.hookSpecificOutput.additionalContext;
-  assert.match(ctx, /store is NOT in this repo/);
-  assert.match(ctx, /Nothing to commit/);
+  assert.match(ctx, /Store is outside this repo/);
+  assert.match(ctx, /nothing to commit/);
   assert.match(ctx, new RegExp(globalStoreFor(g.project, g.home).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
 
   // and the store itself, for whoever opens the directory

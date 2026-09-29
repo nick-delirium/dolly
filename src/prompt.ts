@@ -65,7 +65,7 @@ export function stdioTerm(input: In = process.stdin, output: Out = process.stdou
     process.env.TERM !== 'dumb';
 
   const pending: Key[] = [];
-  let waiting: ((k: Key) => void) | null = null;
+  let waiting: { resolve: (k: Key) => void; reject: (e: Error) => void } | null = null;
   let keysOn = false;
   /** bytes read past the newline a previous line() returned, kept for the next one */
   let carry = '';
@@ -81,15 +81,26 @@ export function stdioTerm(input: In = process.stdin, output: Out = process.stdou
     if (waiting) {
       const w = waiting;
       waiting = null;
-      w(key);
+      w.resolve(key);
     } else {
       pending.push(key);
     }
   };
 
+  // EOF while waiting on a key (Ctrl-D at an earlier line prompt, a closed pty)
+  // means no key will ever come: cancel, exactly like Ctrl-C, instead of hanging
+  const onKeysEnd = () => {
+    ended = true;
+    if (!waiting) return;
+    const w = waiting;
+    waiting = null;
+    w.reject(new PromptCancelled());
+  };
+
   const keysOff = () => {
     if (!keysOn) return;
     input.off('keypress', onKeypress);
+    input.off('end', onKeysEnd);
     if (input.isTTY) input.setRawMode(false);
     input.pause();
     keysOn = false;
@@ -101,6 +112,7 @@ export function stdioTerm(input: In = process.stdin, output: Out = process.stdou
     if (input.isTTY) input.setRawMode(true);
     input.resume();
     input.on('keypress', onKeypress);
+    input.on('end', onKeysEnd);
     keysOn = true;
   };
 
@@ -116,11 +128,12 @@ export function stdioTerm(input: In = process.stdin, output: Out = process.stdou
     },
     write: (s) => void output.write(s),
     key() {
-      keysStart();
       const buffered = pending.shift();
       if (buffered) return Promise.resolve(buffered);
-      return new Promise<Key>((resolve) => {
-        waiting = resolve;
+      if (ended || input.readableEnded) return Promise.reject(new PromptCancelled());
+      keysStart();
+      return new Promise<Key>((resolve, reject) => {
+        waiting = { resolve, reject };
       });
     },
     line() {

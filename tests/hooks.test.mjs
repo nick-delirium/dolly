@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 import { Store } from '../dist/core/store.js';
-import { createTask, logSection, setStatus, stepEntries } from '../dist/core/task.js';
+import { createTask, linkSession, logSection, saveTask, setStatus, stepEntries } from '../dist/core/task.js';
 import { sandbox } from './helpers.mjs';
 
 const CLI = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'dist', 'cli.js');
@@ -41,6 +41,15 @@ function plantTranscript(root, cwd, sessionId, entries) {
 
 const line = (o) => `${JSON.stringify(o)}\n`;
 
+/** auto-log only writes to a task the conversation already wrote to */
+function attach(task, session) {
+  linkSession(task, session);
+  saveTask(task);
+}
+
+/** what Claude Code hands its Stop hook */
+const stopPayload = (session) => JSON.stringify({ session_id: session, hook_event_name: 'Stop' });
+
 function turn(uuid, at, prompt, endAt, text, files = []) {
   return [
     line({
@@ -72,6 +81,7 @@ test('the Stop hook auto-logs a turn the agent never logged', (t) => {
   const store = Store.open();
   const task = createTask(store, { title: 'Auto logged' });
   setStatus(store, task, 'working');
+  attach(task, 'sess-1');
 
   const tRoot = path.join(sb.dir, 'transcripts');
   plantTranscript(tRoot, sb.dir, 'sess-1', [
@@ -85,7 +95,7 @@ test('the Stop hook auto-logs a turn the agent never logged', (t) => {
     ),
   ]);
 
-  const out = dolly(sb.dir, ['hook', 'stop'], {
+  const out = dollyStdin(sb.dir, ['hook', 'stop'], stopPayload('sess-1'), {
     DOLLY_DIR: sb.store,
     DOLLY_TRANSCRIPT_DIR: tRoot,
   });
@@ -101,7 +111,7 @@ test('the Stop hook auto-logs a turn the agent never logged', (t) => {
   assert.deepEqual(after.meta.sessions, ['sess-1']);
 
   // running again must not duplicate it
-  const again = dolly(sb.dir, ['hook', 'stop'], {
+  const again = dollyStdin(sb.dir, ['hook', 'stop'], stopPayload('sess-1'), {
     DOLLY_DIR: sb.store,
     DOLLY_TRANSCRIPT_DIR: tRoot,
   });
@@ -115,6 +125,7 @@ test('a turn the agent logged itself is left alone', (t) => {
   const store = Store.open();
   const task = createTask(store, { title: 'Self logged' });
   setStatus(store, task, 'working');
+  attach(task, 'sess-2');
 
   const tRoot = path.join(sb.dir, 'transcripts');
   // the turn started in 2020 — long before the task was just touched
@@ -122,7 +133,7 @@ test('a turn the agent logged itself is left alone', (t) => {
     turn('old-turn', '2020-01-01T10:00:00.000Z', 'do it', '2020-01-01T10:01:00.000Z', 'Did it.'),
   ]);
 
-  const out = dolly(sb.dir, ['hook', 'stop'], {
+  const out = dollyStdin(sb.dir, ['hook', 'stop'], stopPayload('sess-2'), {
     DOLLY_DIR: sb.store,
     DOLLY_TRANSCRIPT_DIR: tRoot,
   });
@@ -136,6 +147,7 @@ test('auto-log respects the config switches', (t) => {
   const store = Store.open();
   const task = createTask(store, { title: 'Configured' });
   setStatus(store, task, 'validating'); // not `working`
+  attach(task, 'sess-3');
 
   const tRoot = path.join(sb.dir, 'transcripts');
   plantTranscript(tRoot, sb.dir, 'sess-3', [
@@ -144,11 +156,11 @@ test('auto-log respects the config switches', (t) => {
   const env = { DOLLY_DIR: sb.store, DOLLY_TRANSCRIPT_DIR: tRoot };
 
   // onlyWhenWorking is on by default, so `validating` is skipped
-  assert.doesNotMatch(dolly(sb.dir, ['hook', 'stop'], env), /auto-logged/);
+  assert.doesNotMatch(dollyStdin(sb.dir, ['hook', 'stop'], stopPayload('sess-3'), env), /auto-logged/);
   assert.equal(Store.open().loadTasks()[0].meta.steps, 0);
 
   dolly(sb.dir, ['config', 'set', 'reindex.autoLogOnlyWhenWorking', 'false'], env);
-  assert.match(dolly(sb.dir, ['hook', 'stop'], env), /auto-logged 1 step/);
+  assert.match(dollyStdin(sb.dir, ['hook', 'stop'], stopPayload('sess-3'), env), /auto-logged 1 step/);
 
   // and autoLog=false disables it entirely
   dolly(sb.dir, ['config', 'set', 'reindex.autoLog', 'false'], env);
@@ -156,7 +168,7 @@ test('auto-log respects the config switches', (t) => {
     turn('t3', '2030-01-01T10:00:00.000Z', 'x', '2030-01-01T10:01:00.000Z', 'Finished the audit and wrote up the findings.'),
     turn('t4', '2031-01-01T10:00:00.000Z', 'y', '2031-01-01T10:01:00.000Z', 'Also rewrote the migration to be idempotent.'),
   ]);
-  assert.doesNotMatch(dolly(sb.dir, ['hook', 'stop'], env), /auto-logged/);
+  assert.doesNotMatch(dollyStdin(sb.dir, ['hook', 'stop'], stopPayload('sess-3'), env), /auto-logged/);
   assert.equal(Store.open().loadTasks()[0].meta.steps, 1);
 });
 
@@ -171,12 +183,17 @@ test('session-start injects an index that points at the full read', (t) => {
   const payload = JSON.parse(out);
   assert.equal(payload.hookSpecificOutput.hookEventName, 'SessionStart');
   const ctx = payload.hookSpecificOutput.additionalContext;
-  assert.match(ctx, /Active task [a-z0-9]{8} "Injected" \(working\)/);
-  assert.match(ctx, /do the thing well/);
-  assert.match(ctx, /## Most recent events/);
-  assert.match(ctx, /index, not the record/);
+  // not this conversation's task: named, with how to attach, never claimed
+  assert.match(ctx, /Most recent open task: [a-z0-9]{8} "Injected" \(working/);
+  assert.match(ctx, /do the thing well/, 'fresh, so its spec is shown');
+  assert.match(ctx, new RegExp(`dolly status ${task.meta.id} working\` attaches this conversation`));
   assert.match(ctx, /dolly context [a-z0-9]{8}/);
-  assert.match(ctx, /what you understood and did/);
+  // and once the conversation has written to it, it is its task
+  attach(task, 'conv-1');
+  const mine = JSON.parse(dollyStdin(sb.dir, ['hook', 'session-start'], stopPayload('conv-1'), { DOLLY_DIR: sb.store }))
+    .hookSpecificOutput.additionalContext;
+  assert.match(mine, /This conversation’s task: [a-z0-9]{8} "Injected"/);
+  assert.ok(mine.length < 2500, `session-start stays small: ${mine.length}`);
 });
 
 test('session-start --raw emits plain context, no Claude JSON envelope', (t) => {
@@ -190,9 +207,8 @@ test('session-start --raw emits plain context, no Claude JSON envelope', (t) => 
   // no envelope — harnesses that are not Claude consume the text directly
   assert.doesNotMatch(out, /hookSpecificOutput/);
   // the same context that would have been wrapped, as-is
-  assert.match(out, /Active task [a-z0-9]{8} "Injected" \(working\)/);
+  assert.match(out, /open task: [a-z0-9]{8} "Injected" \(working/);
   assert.match(out, /do the thing well/);
-  assert.match(out, /index, not the record/);
 });
 
 // ── auto-log via stdin (pi's event-driven path, bypasses transcript.ts) ──
@@ -213,6 +229,7 @@ test('hook stop --from-stdin appends a step from an in-memory turn', (t) => {
   const store = Store.open();
   const task = createTask(store, { title: 'Search', specShort: 's' });
   setStatus(store, task, 'working');
+  attach(task, 'pisess-abc');
 
   dollyStdin(sb.dir, ['hook', 'stop', '--from-stdin'], piTurn({}), { DOLLY_DIR: sb.store });
 
@@ -231,6 +248,7 @@ test('hook stop --from-stdin is idempotent on the same turn (dedup)', (t) => {
   const store = Store.open();
   const task = createTask(store, { title: 'Search', specShort: 's' });
   setStatus(store, task, 'working');
+  attach(task, 'pisess-abc');
 
   dollyStdin(sb.dir, ['hook', 'stop', '--from-stdin'], piTurn({}), { DOLLY_DIR: sb.store });
   dollyStdin(sb.dir, ['hook', 'stop', '--from-stdin'], piTurn({}), { DOLLY_DIR: sb.store });
@@ -243,6 +261,7 @@ test('hook stop --from-stdin respects autoLogOnlyWhenWorking (default)', (t) => 
   t.after(sb.cleanup);
   const store = Store.open();
   const task = createTask(store, { title: 'Search', specShort: 's' });
+  attach(task, 'pisess-abc');
   // status stays `todo` — not working
 
   dollyStdin(sb.dir, ['hook', 'stop', '--from-stdin'], piTurn({}), { DOLLY_DIR: sb.store });
@@ -256,6 +275,7 @@ test('hook stop --from-stdin skips when the agent already logged this turn', (t)
   const store = Store.open();
   const task = createTask(store, { title: 'Search', specShort: 's' });
   setStatus(store, task, 'working');
+  attach(task, 'pisess-abc');
 
   // turn started well in the past; the task was just updated (agent logged) → skip
   const stdin = piTurn({ turnStartMs: Date.now() - 60 * 60_000 });
@@ -270,6 +290,7 @@ test('hook stop --from-stdin swallows empty/garbage input', (t) => {
   const store = Store.open();
   const task = createTask(store, { title: 'Search', specShort: 's' });
   setStatus(store, task, 'working');
+  attach(task, 'pisess-abc');
 
   // must not throw (execFileSync throws on non-zero exit)
   dollyStdin(sb.dir, ['hook', 'stop', '--from-stdin'], 'not json at all', { DOLLY_DIR: sb.store });
@@ -284,6 +305,7 @@ test('hook stop --from-stdin accepts zcode-shaped Stop payloads', (t) => {
   const store = Store.open();
   const task = createTask(store, { title: 'Zcode', specShort: 's' });
   setStatus(store, task, 'working');
+  attach(task, 'zc-123');
 
   // zcode sends Claude-style field names; the shape beyond the response
   // preview is undocumented, so every field here is optional to dolly

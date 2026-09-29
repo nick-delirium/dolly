@@ -3,6 +3,7 @@
  * Hand-rolled so dolly stays dependency-free; the surface mirrors the CLI.
  */
 import { changedFiles } from './core/git.js';
+import { withStoreLock } from './core/lock.js';
 import { VERSION } from './core/pkg.js';
 import {
   addPlanQA,
@@ -19,7 +20,7 @@ import { addStep, createTask, fullSpec, setStatus, updateSpec } from './core/tas
 import type { Task } from './core/types.js';
 import { codeMapLine, ensureProject, projectDigest, projectStatus, setProjectSection } from './core/project.js';
 import { relatedByFiles, relatedToTask, renderRelated } from './core/related.js';
-import { maybeAutoMigrate, versionState } from './migrate.js';
+import { legacyOrphan, maybeAutoMigrate, versionState } from './migrate.js';
 import {
   applyReindex,
   importedTurns,
@@ -30,6 +31,8 @@ import {
 } from './reindex.js';
 
 const PROTOCOL = '2025-06-18';
+/** versions this server speaks; anything else is answered with PROTOCOL */
+const SUPPORTED = new Set(['2024-11-05', '2025-03-26', '2025-06-18']);
 const SERVER = { name: 'dolly', version: VERSION };
 
 type Json = Record<string, any>;
@@ -47,7 +50,7 @@ const SArr = (description: string) => ({
   items: { type: 'string' },
   description,
 });
-const REF = S('Task ref: id (3 or 0003), slug, unique substring, or "current".');
+const REF = S('Task ref: 8-char id, slug, unique substring, fuzzy title, or "current" (the default).');
 
 function store(): Store {
   return Store.open();
@@ -66,21 +69,22 @@ function writable(): Store {
 }
 
 /**
- * These mirror the CLI one-for-one, with one deliberate gap: `dolly setup` has
- * no tool here. It is an interactive screen, stdout here is a JSON-RPC stream,
- * and a prompt written to it would hang the client rather than ask anybody
- * anything. Setup is a human's job; an agent that needs the same effect changes
- * `dolly config` or runs `dolly install` with flags.
+ * The task-memory core of the CLI. Deliberately absent: `setup`/`init` (an
+ * interactive screen — a prompt on a JSON-RPC stream hangs the client),
+ * `continue` (spawns a TUI), and the maintenance commands (`retitle`, `memo`,
+ * `config`, `whoami`, `migrate`, `install`, `update`) — an agent with a shell
+ * runs those through the CLI.
  */
 const TOOLS: Tool[] = [
   {
     name: 'dolly_board',
-    description:
-      'Task board grouped by status (todo/planning/working/validating/done). Read this first to see what work exists and which task is active.',
+    description: 'Task board by status, and which task is active.',
     inputSchema: {
       type: 'object',
       properties: {
         status: S('Only this status.'),
+        mine: { type: 'boolean', description: 'Only tasks you own.' },
+        tag: S('Only tasks with this tag.'),
       },
     },
     run(a) {
@@ -88,6 +92,8 @@ const TOOLS: Tool[] = [
       if (!s.exists) return `dolly not initialized. Run \`dolly init\` (store would be ${s.root}).`;
       let tasks = s.loadTasks();
       if (a.status) tasks = tasks.filter((t) => t.meta.status === a.status);
+      if (a.mine) tasks = tasks.filter((t) => t.meta.owner === s.user);
+      if (a.tag) tasks = tasks.filter((t) => t.meta.tags.includes(a.tag));
       const active = currentTask(tasks, s.config);
       const board = renderBoard(s, tasks);
       return `${board}\n\nactive task: ${active ? `${active.meta.id} ${active.meta.slug}` : 'none'}`;
@@ -95,25 +101,25 @@ const TOOLS: Tool[] = [
   },
   {
     name: 'dolly_context',
-    description:
-      "Full rehydrate payload for a task: spec (short + full), success criteria, whole step log, and the last N steps' full context. Call before editing code on an existing task.",
+    description: "Rehydrate a task before editing its code: spec, criteria, log, recent steps' full context, project brief, related tasks.",
     inputSchema: {
       type: 'object',
       properties: {
         ref: REF,
-        steps: { type: 'number', description: 'How many recent steps to include in full. Default 3, 0 = all.' },
+        steps: { type: 'number', description: 'Recent steps in full. Default 3, 0 = all.' },
+        brief: { type: 'boolean', description: 'No step bodies.' },
       },
     },
     run(a) {
       const { s, t } = open(a.ref ?? 'current');
       // the store is what adds the project brief, related tasks and file list —
       // omitting it made the recommended integration the impoverished one
-      return renderContext(t, { steps: a.steps ?? 3, store: s });
+      return renderContext(t, { steps: a.steps ?? 3, brief: Boolean(a.brief), store: s });
     },
   },
   {
     name: 'dolly_task_show',
-    description: 'One task: metadata, short spec, criteria, step log. Add full=true for the full spec and plan.',
+    description: 'One task: metadata, short spec, criteria, log. full=true adds full spec and plan.',
     inputSchema: {
       type: 'object',
       properties: { ref: REF, full: { type: 'boolean' } },
@@ -128,17 +134,16 @@ const TOOLS: Tool[] = [
   },
   {
     name: 'dolly_task_new',
-    description:
-      'Create a task without planning. Use for small, well-understood work. For a feature that needs an interview, use dolly_plan_start.',
+    description: 'Create a task for small, understood work. A feature that needs an interview: dolly_plan_start.',
     inputSchema: {
       type: 'object',
       properties: {
-        title: S('Short imperative title.'),
-        specShort: S('2-5 line spec for the shared updates file.'),
-        specFull: S('Full spec markdown, stored as context/spec.md.'),
-        status: S('Initial status. Default todo.'),
+        title: S('Imperative title.'),
+        specShort: S('2-5 line spec.'),
+        specFull: S('Full spec markdown.'),
+        status: S('Default todo.'),
         tags: SArr('Tags.'),
-        criteria: SArr('Success criteria, one per item.'),
+        criteria: SArr('One criterion per item.'),
       },
       required: ['title'],
     },
@@ -157,17 +162,16 @@ const TOOLS: Tool[] = [
   },
   {
     name: 'dolly_step_add',
-    description:
-      'Append a major step to the task log. summary becomes one line in task.md; detail is appended to context/steps.md and should read like a handoff note to an agent with zero context (decisions, dead ends, snippets, next hints). Call after every meaningful slice of work.',
+    description: 'Log a major step. summary = the outcome (one line in task.md); detail = handoff note for an agent with zero context (context/steps.md).',
     inputSchema: {
       type: 'object',
       properties: {
         ref: REF,
-        summary: S('1-3 lines: what changed and why.'),
-        detail: S('Long-form context appended to context/steps.md.'),
-        files: SArr('Changed file paths.'),
-        autoFiles: { type: 'boolean', description: 'Also read changed files from git.' },
-        status: S('Optionally move the task to this status.'),
+        summary: S('The outcome, 1-3 lines.'),
+        detail: S('Handoff note: decisions, dead ends, next.'),
+        files: SArr('Changed files.'),
+        autoFiles: { type: 'boolean', description: 'Add changed files from git.' },
+        status: S('Also move the task here.'),
       },
       required: ['summary'],
     },
@@ -190,16 +194,15 @@ const TOOLS: Tool[] = [
   },
   {
     name: 'dolly_spec_update',
-    description:
-      'Change a task spec. Passing full bumps the spec version and moves the old spec into the "Superseded versions" section at the bottom of the same context/spec.md; short replaces only the summary in task.md. Always pass reason.',
+    description: "Change a spec. full bumps the version and keeps the old one in context/spec.md; short/criteria replace task.md's. Pass reason.",
     inputSchema: {
       type: 'object',
       properties: {
         ref: REF,
-        short: S('New 2-5 line summary for the shared file.'),
-        full: S('New full spec markdown. Bumps version, old version kept in the same file.'),
-        criteria: SArr('Replacement success criteria.'),
-        reason: S('Why the spec changed.'),
+        short: S('New 2-5 line summary.'),
+        full: S('New full spec; bumps the version.'),
+        criteria: SArr('Replacement criteria.'),
+        reason: S('Why it changed.'),
       },
       required: ['ref'],
     },
@@ -216,8 +219,7 @@ const TOOLS: Tool[] = [
   },
   {
     name: 'dolly_status_set',
-    description:
-      'Move a task: todo -> planning -> working -> validating -> done. validating means the agent finished and a human must verify; never set done yourself.',
+    description: 'Move a task: todo → planning → working → validating → done. Finished = validating; never set done.',
     inputSchema: {
       type: 'object',
       properties: { ref: REF, status: S('Target status.'), note: S('Why / what to check.') },
@@ -234,8 +236,7 @@ const TOOLS: Tool[] = [
   },
   {
     name: 'dolly_plan_start',
-    description:
-      'Begin planning a feature. Creates a task in status planning with an interview scaffold. Next: dolly_plan_check to get the agenda, ask the user, then dolly_plan_set / dolly_plan_qa.',
+    description: 'Start planning a feature (status planning). Then dolly_plan_check, ask the user, dolly_plan_set / dolly_plan_qa.',
     inputSchema: {
       type: 'object',
       properties: { title: S('Feature title.'), brief: S("The user's own description, verbatim.") },
@@ -252,14 +253,13 @@ const TOOLS: Tool[] = [
   },
   {
     name: 'dolly_plan_set',
-    description:
-      'Fill one plan section. Sections: Problem, Goal, Scope, Success Criteria, Changes, Risks, Test Plan, Open Questions.',
+    description: 'Fill one plan section: Problem, Goal, Scope, Success Criteria, Changes, Risks, Test Plan, Open Questions.',
     inputSchema: {
       type: 'object',
       properties: {
         ref: REF,
-        section: S('Section name, e.g. "Success Criteria".'),
-        text: S('Markdown body for the section.'),
+        section: S('e.g. "Success Criteria".'),
+        text: S('Markdown body.'),
       },
       required: ['ref', 'section', 'text'],
     },
@@ -272,7 +272,7 @@ const TOOLS: Tool[] = [
   },
   {
     name: 'dolly_plan_qa',
-    description: 'Record one question you asked the user and their answer, into the plan Q&A log.',
+    description: 'Record a question you asked the user and their answer.',
     inputSchema: {
       type: 'object',
       properties: { ref: REF, question: S('Question asked.'), answer: S("User's answer.") },
@@ -286,8 +286,7 @@ const TOOLS: Tool[] = [
   },
   {
     name: 'dolly_plan_check',
-    description:
-      'Gate check: which plan sections are still empty and which open questions are unanswered. Use the output as your interview agenda.',
+    description: 'Which plan sections are empty and which questions are open — the interview agenda.',
     inputSchema: { type: 'object', properties: { ref: REF }, required: [] },
     run(a) {
       const { s, t } = open(a.ref ?? 'current');
@@ -296,16 +295,15 @@ const TOOLS: Tool[] = [
   },
   {
     name: 'dolly_plan_finalize',
-    description:
-      'Turn a complete plan into the task spec and move the task to todo. Blocked while dolly_plan_check reports gaps unless force=true.',
+    description: 'Turn a complete plan into the spec; status → todo. Blocked while gaps remain unless force=true.',
     inputSchema: {
       type: 'object',
       properties: {
         ref: REF,
-        force: { type: 'boolean', description: 'Finalize despite gaps.' },
+        force: { type: 'boolean' },
         short: S('Override the derived short spec.'),
         full: S('Override the derived full spec.'),
-        status: S('Status after finalize. Default todo.'),
+        status: S('Default todo.'),
       },
       required: ['ref'],
     },
@@ -323,13 +321,12 @@ const TOOLS: Tool[] = [
   },
   {
     name: 'dolly_project',
-    description:
-      "Repo-level knowledge: what is true about this codebase, independent of any task — Overview, Architecture, Conventions, Invariants, Glossary. READ THIS before planning or deciding anything on an unfamiliar task; a task here is a slice of an ongoing codebase, not a greenfield project. It is not a second CLAUDE.md: CLAUDE.md says how to behave, this records what is true about the code. Maintain it — pass section+text to write what you learn. Rule of thumb: a fact useful to a task that does not exist yet belongs here; a fact about what this task did belongs in a step.",
+    description: 'Repo-level brief: what is true about this codebase. Read before deciding anything; pass section+text to record a durable fact.',
     inputSchema: {
       type: 'object',
       properties: {
-        section: S('Section to write: Overview, Architecture, Conventions, Invariants, Glossary.'),
-        text: S('Markdown body for that section. Omit both to read the brief.'),
+        section: S('Overview, Architecture, Conventions, Invariants or Glossary.'),
+        text: S('Markdown body. Omit both to read.'),
       },
     },
     run(a) {
@@ -355,13 +352,12 @@ const TOOLS: Tool[] = [
   },
   {
     name: 'dolly_related',
-    description:
-      'Which other tasks have touched this code, and what they concluded. dolly records the files every step touched, so this is a link nothing else in the toolchain can give you. Call it before changing shared code or opening a task adjacent to existing work — the outcome lines will tell you if you are about to undo a deliberate decision. Pass files to check code you are about to edit, or ref for an existing task.',
+    description: "Tasks that touched these files (or this task's files), and what they concluded. Call before changing shared code.",
     inputSchema: {
       type: 'object',
       properties: {
         ref: REF,
-        files: SArr('Repo-relative paths you are about to touch. Takes precedence over ref.'),
+        files: SArr('Paths you are about to touch; wins over ref.'),
       },
     },
     run(a) {
@@ -378,23 +374,19 @@ const TOOLS: Tool[] = [
   },
   {
     name: 'dolly_reindex',
-    description:
-      "Attach dolly to a conversation that is already in flight. Reads this project's Claude Code transcript and returns a digest: every human request verbatim, the files touched and commands run per turn, with timestamps. Call with apply=false first and read the digest; then apply=true to import it as a task with one step per turn. Safe to re-run — turns already imported are skipped. Use rebuild=true to re-import a session after dolly's storage format changes. After importing, replace the mechanical spec with a real one via dolly_spec_update: you have the conversation in context, the transcript does not know what matters.",
+    description: 'Adopt a conversation already in flight: apply=false returns a digest of its transcript, apply=true imports it one step per turn (idempotent). Then replace the imported spec.',
     inputSchema: {
       type: 'object',
       properties: {
-        apply: { type: 'boolean', description: 'Import it. Omit or false to only read the digest.' },
-        into: S('Import into this existing task ref instead of creating one.'),
-        session: S('Session id or prefix. Default: the most recently written session for this project, i.e. the live one.'),
-        file: S('Explicit path to a .jsonl transcript.'),
-        allTurns: {
-          type: 'boolean',
-          description: 'Keep every turn as its own step. By default a turn that ran no tools folds into the work that followed it.',
-        },
-        limit: { type: 'number', description: 'Only the last N segments.' },
-        rebuild: { type: 'boolean', description: 'Drop steps already imported from this session, then import again.' },
-        title: S('Override the task title (default: the session title from Claude Code).'),
-        status: S('Task status after import. Default working.'),
+        apply: { type: 'boolean', description: 'Import; false = digest only.' },
+        into: S('Existing task to import into.'),
+        session: S('Session id/prefix. Default: the live one.'),
+        file: S('Path to a .jsonl transcript.'),
+        allTurns: { type: 'boolean', description: 'One step per turn; by default tool-less turns fold forward.' },
+        limit: { type: 'number', description: 'Last N turns only.' },
+        rebuild: { type: 'boolean', description: 'Re-import this session.' },
+        title: S('Task title.'),
+        status: S('Default working.'),
       },
     },
     run(a) {
@@ -408,6 +400,7 @@ const TOOLS: Tool[] = [
         title: a.title,
         status: a.status,
         rebuild: Boolean(a.rebuild),
+        includeThinking: s.config.reindex.includeThinking,
       };
       const transcript = loadTranscript(s.project, opts);
       const segments = selectSegments(transcript, opts);
@@ -451,27 +444,62 @@ function describeCheck(c: ReturnType<typeof checkPlan>): string {
   return out.join('\n');
 }
 
-const WRITE_TOOLS = new Set([
-  'dolly_task_new', 'dolly_step_add', 'dolly_spec_update', 'dolly_status_set',
-  'dolly_plan_start', 'dolly_plan_set', 'dolly_plan_qa', 'dolly_plan_finalize',
-  'dolly_project', 'dolly_reindex',
-]);
+/** does this call write? Per call, like the CLI: reading the brief is not writing it */
+function writesStore(tool: string, a: Json): boolean {
+  switch (tool) {
+    case 'dolly_project':
+      return Boolean(a.section && a.text);
+    case 'dolly_reindex':
+      return Boolean(a.apply);
+    case 'dolly_task_new': case 'dolly_step_add': case 'dolly_spec_update': case 'dolly_status_set':
+    case 'dolly_plan_start': case 'dolly_plan_set': case 'dolly_plan_qa': case 'dolly_plan_finalize':
+      return true;
+    default:
+      return false;
+  }
+}
 
 /**
- * Same rule as the CLI: a store written by a newer dolly refuses writes, and
- * lossless migrations are applied without being asked.
+ * Same rule as the CLI: a store written by a newer dolly refuses writes,
+ * lossless migrations apply without being asked, and risky ones only warn.
+ * Returns an error to send instead of running, or a note to append.
  */
-function guardVersion(tool: string): string | null {
+function guardVersion(tool: string, a: Json): { error?: string; note?: string } {
   const s = store();
-  if (!s.exists) return null;
+  if (!s.exists) return {};
   const state = versionState(s);
-  if (state.newer && WRITE_TOOLS.has(tool)) {
-    return `error: this store is at schema version ${state.store} but this dolly understands ${state.code}. It was written by a newer dolly — upgrade dolly before writing to it.`;
+  if (state.newer) {
+    return writesStore(tool, a)
+      ? { error: `error: this store is at schema version ${state.store} but this dolly understands ${state.code}. It was written by a newer dolly — upgrade dolly before writing to it.` }
+      : {};
   }
-  if (!state.newer) maybeAutoMigrate(s);
+  maybeAutoMigrate(s);
   const risky = versionState(store()).unsafePending;
-  if (risky.length && WRITE_TOOLS.has(tool)) {
-    return `error: ${risky.length} migration(s) must be applied first — run \`dolly migrate\` in a terminal: ${risky.map((r) => r.migration.name).join('; ')}`;
+  const orphan = legacyOrphan(s);
+  const notes = [
+    ...(risky.length ? [`${risky.length} migration(s) wait for \`dolly migrate\` in a terminal: ${risky.map((r) => r.migration.name).join('; ')}`] : []),
+    ...(orphan ? [orphan] : []),
+  ];
+  return notes.length ? { note: `note: ${notes.join(' · ')}` } : {};
+}
+
+/**
+ * Check arguments against the tool's own schema before running it: a missing
+ * required field otherwise surfaced as "Cannot read properties of undefined".
+ */
+function badArgs(tool: Tool, a: Json): string | null {
+  const props: Json = tool.inputSchema.properties ?? {};
+  for (const key of tool.inputSchema.required ?? []) {
+    if (a[key] === undefined || a[key] === null || a[key] === '') return `missing required argument "${key}"`;
+  }
+  for (const [key, value] of Object.entries(a)) {
+    const want = props[key]?.type;
+    if (!want || value === undefined || value === null) continue;
+    const ok =
+      want === 'array'
+        ? Array.isArray(value) && value.every((x) => typeof x === (props[key].items?.type ?? 'string'))
+        : typeof value === want;
+    if (!ok) return `argument "${key}" must be ${want === 'array' ? `an array of ${props[key].items?.type ?? 'string'}s` : `a ${want}`}`;
   }
   return null;
 }
@@ -492,22 +520,20 @@ function error(id: unknown, code: number, message: string): void {
 
 function handle(msg: Json): void {
   const { id, method, params } = msg;
-  const isNotification = id === undefined || id === null;
+  // a notification gets no reply of any kind — not a result, not an error
+  if (id === undefined || id === null) return;
 
   switch (method) {
     case 'initialize': {
-      const requested = typeof params?.protocolVersion === 'string' ? params.protocolVersion : PROTOCOL;
+      const requested = params?.protocolVersion;
       return result(id, {
-        protocolVersion: requested,
+        protocolVersion: typeof requested === 'string' && SUPPORTED.has(requested) ? requested : PROTOCOL,
         capabilities: { tools: { listChanged: false } },
         serverInfo: SERVER,
         instructions:
           'dolly keeps task memory in .dolly/. Call dolly_board then dolly_context before coding. Log every major step with dolly_step_add. Plan features via dolly_plan_start -> dolly_plan_check -> ask user -> dolly_plan_set -> dolly_plan_finalize.',
       });
     }
-    case 'notifications/initialized':
-    case 'notifications/cancelled':
-      return;
     case 'ping':
       return result(id, {});
     case 'tools/list':
@@ -522,11 +548,16 @@ function handle(msg: Json): void {
       const name = params?.name;
       const tool = TOOLS.find((t) => t.name === name);
       if (!tool) return error(id, -32602, `unknown tool: ${name}`);
-      const guard = guardVersion(name);
-      if (guard) return result(id, { content: [{ type: 'text', text: guard }], isError: true });
+      const a: Json = params?.arguments && typeof params.arguments === 'object' ? params.arguments : {};
+      const bad = badArgs(tool, a);
+      if (bad) return result(id, { content: [{ type: 'text', text: `error: ${bad}` }], isError: true });
+      const guard = guardVersion(name, a);
+      if (guard.error) return result(id, { content: [{ type: 'text', text: guard.error }], isError: true });
       try {
-        const text = tool.run(params?.arguments ?? {});
-        return result(id, { content: [{ type: 'text', text }] });
+        // same rule as the CLI: a write holds the store lock for the whole call
+        const s = writesStore(name, a) ? store() : null;
+        const text = s?.exists ? withStoreLock(s.root, name, () => tool.run(a)) : tool.run(a);
+        return result(id, { content: [{ type: 'text', text: guard.note ? `${text}\n\n${guard.note}` : text }] });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         return result(id, { content: [{ type: 'text', text: `error: ${message}` }], isError: true });
@@ -537,7 +568,6 @@ function handle(msg: Json): void {
     case 'prompts/list':
       return result(id, { prompts: [] });
     default:
-      if (isNotification) return;
       return error(id, -32601, `method not found: ${method}`);
   }
 }
@@ -553,18 +583,25 @@ export function runMcpServer(): Promise<void> {
         const line = buf.slice(0, nl).trim();
         buf = buf.slice(nl + 1);
         if (!line) continue;
-        let msg: Json;
+        let msg: unknown;
         try {
           msg = JSON.parse(line);
         } catch {
           send({ jsonrpc: '2.0', id: null, error: { code: -32700, message: 'parse error' } });
           continue;
         }
+        // valid JSON is not yet a request: `null`, a number or an array crashed
+        // the server when the catch below read `.id` off it
+        if (!msg || typeof msg !== 'object' || Array.isArray(msg)) {
+          send({ jsonrpc: '2.0', id: null, error: { code: -32600, message: 'invalid request' } });
+          continue;
+        }
+        const req = msg as Json;
         try {
-          handle(msg);
+          handle(req);
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
-          if (msg.id !== undefined) error(msg.id, -32603, message);
+          if (req.id !== undefined && req.id !== null) error(req.id, -32603, message);
         }
       }
     });

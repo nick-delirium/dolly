@@ -10,7 +10,7 @@
 import { byRecency } from './store.js';
 import type { Store } from './store.js';
 import type { Task } from './types.js';
-import { logSection, stepEntries } from './task.js';
+import { logSection, normalizeFiles, stepEntries } from './task.js';
 
 /**
  * One parsed entry of the `task.md` log.
@@ -53,7 +53,7 @@ export function parseLog(task: Task): LogEntry[] {
 function classify(text: string): LogEntry['kind'] {
   if (/^status \S+ → \S+/.test(text)) return 'status';
   if (/^spec → v\d+/.test(text)) return 'spec';
-  if (/^(archived|restored|housekeeping|retitled)\b/.test(text)) return 'note';
+  if (/^(retitled|short spec|criteria)\b/.test(text)) return 'note';
   return 'step';
 }
 
@@ -98,8 +98,8 @@ export interface RelatedTask {
  * task from being reported as related to itself.
  */
 export function relatedByFiles(store: Store, files: string[], excludeId?: string): RelatedTask[] {
-  if (!files.length) return [];
-  const wanted = new Set(files);
+  const wanted = new Set(normalizeFiles(store.project, files));
+  if (!wanted.size) return [];
   const out: RelatedTask[] = [];
   for (const task of store.loadTasks()) {
     if (task.meta.id === excludeId) continue;

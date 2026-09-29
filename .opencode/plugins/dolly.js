@@ -67,13 +67,24 @@ export const DollyPlugin = async ({ client, directory, worktree }) => {
       return; // SDK unavailable — skip mirroring, never break the session
     }
     if (!Array.isArray(msgs)) return;
-    const startIdx = seen.get(sid) ?? 0;
+    const infoOf = (m) => m?.info ?? m ?? {};
+    const partsOf = (m) => (Array.isArray(m?.parts) ? m.parts : []);
+    // `seen` lives in memory: after an opencode restart it is empty, and
+    // starting from 0 mirrored the whole history as one turn. Start from the
+    // newest user message instead — the turn that just ended.
+    let startIdx = seen.get(sid);
+    if (startIdx === undefined) {
+      startIdx = 0;
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        if (infoOf(msgs[i]).role === "user") {
+          startIdx = i;
+          break;
+        }
+      }
+    }
     seen.set(sid, msgs.length);
     const slice = msgs.slice(startIdx);
     if (!slice.length) return;
-
-    const infoOf = (m) => m?.info ?? m ?? {};
-    const partsOf = (m) => (Array.isArray(m?.parts) ? m.parts : []);
     const userMsg = slice.find((m) => infoOf(m).role === "user");
     if (!userMsg) return;
 
@@ -138,7 +149,8 @@ export const DollyPlugin = async ({ client, directory, worktree }) => {
         input: JSON.stringify({
           agent: "opencode",
           session: sid,
-          turn: seg.index,
+          // the user message id: stable across restarts, unlike a position
+          turn: seg.uuid,
           turnStartMs,
           text: seg.assistantTexts.join("\n"),
           tools: Object.keys(seg.tools),

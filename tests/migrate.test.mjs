@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import { listBlocks } from '../dist/core/md.js';
 import { Store } from '../dist/core/store.js';
 import { createTask, fullSpec, logSection, setStatus, specHistory, stepEntries } from '../dist/core/task.js';
-import { hasLegacyMarkers, migrate, rewriteMarkers } from '../dist/migrate.js';
+import { hasLegacyMarkers, legacyOrphan, migrate, rewriteMarkers, versionState } from '../dist/migrate.js';
 import { addStep } from '../dist/core/task.js';
 import { sandbox } from './helpers.mjs';
 import fs2 from 'node:fs';
@@ -275,11 +275,12 @@ test('migrate reports an orphaned old store instead of ignoring or guessing', (t
   assert.equal(store.legacy, false);
   assert.equal(path.basename(store.root), '.dolly');
 
+  // a warning, not a migration: dolly cannot resolve it, so counting it as one
+  // kept a migration pending forever and blocked every MCP write
   const report = migrate(store);
-  const note = report.actions.find((a) => a.kind === 'store-rename');
-  assert.ok(note, 'the orphan is reported');
-  assert.match(note.detail, /also exists and was NOT touched/);
-  assert.match(note.detail, /merge it/);
+  assert.equal(report.actions.find((a) => a.kind === 'store-rename'), undefined);
+  assert.equal(versionState(store).unsafePending.length, 0);
+  assert.match(legacyOrphan(store), /still exists beside .* merge it by hand/);
   assert.ok(fs.existsSync(path.join(sb.dir, '.dollie')), 'nothing destroyed');
   process.env.DOLLY_DIR = sb.store;
 });

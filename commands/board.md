@@ -1,6 +1,6 @@
 ---
 description: Show the dolly task board
-argument-hint: "[--all] [--status working]"
+argument-hint: "[--status working] [--mine]"
 allowed-tools: Bash(dolly:*)
 direct: true
 ---

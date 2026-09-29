@@ -19,10 +19,10 @@
  * silently when offline and can be switched off, so that still holds.
  */
 import { execFileSync, spawn } from 'node:child_process';
-import os from 'node:os';
 import path from 'node:path';
 import { exists, readJson, writeJson } from './fsx.js';
-import { PKG_ROOT, repoSlug } from './pkg.js';
+import { dollyHome } from './home.js';
+import { PKG_ROOT } from './pkg.js';
 import { notAHuman, type Env } from './tty.js';
 
 export interface UpdateCache {
@@ -32,7 +32,8 @@ export interface UpdateCache {
   source: 'git' | 'npm' | 'none';
 }
 
-const CACHE_FILE = path.join(os.homedir(), '.dolly', 'update.json');
+/** resolved per call, so DOLLY_HOME isolates it */
+const cacheFile = () => path.join(dollyHome(), '.dolly', 'update.json');
 const DEFAULT_TTL_HOURS = 24;
 
 /* ------------------------------- semver ---------------------------------- */
@@ -92,7 +93,7 @@ export function suppressed(
 
 /** `updateCheck: false` in a store's local.json, or in ~/.dolly/local.json */
 export function checkEnabled(storeRoot?: string): boolean {
-  for (const root of [storeRoot, path.join(os.homedir(), '.dolly')]) {
+  for (const root of [storeRoot, path.join(dollyHome(), '.dolly')]) {
     if (!root) continue;
     const local = readJson<{ updateCheck?: boolean }>(path.join(root, 'local.json'), {});
     if (typeof local.updateCheck === 'boolean') return local.updateCheck;
@@ -102,7 +103,7 @@ export function checkEnabled(storeRoot?: string): boolean {
 
 /* -------------------------------- cache ----------------------------------- */
 
-export function readCache(file = CACHE_FILE): UpdateCache | null {
+export function readCache(file = cacheFile()): UpdateCache | null {
   const c = readJson<UpdateCache | null>(file, null);
   return c && typeof c.checkedAt === 'string' ? c : null;
 }
@@ -124,17 +125,6 @@ export type InstallKind = 'clone' | 'package';
 
 export function installKind(root = PKG_ROOT): InstallKind {
   return exists(path.join(root, '.git')) ? 'clone' : 'package';
-}
-
-/**
- * The exact command for how this copy was installed. A `npm install -g` line is
- * wrong for a linked checkout — that needs a pull and a rebuild.
- */
-export function upgradeCommand(kind: InstallKind = installKind(), root = PKG_ROOT): string {
-  const slug = repoSlug() ?? 'nick-delirium/dolly';
-  return kind === 'clone'
-    ? `git -C ${root} pull && npm install`
-    : `npm install -g github:${slug}`;
 }
 
 /* ------------------------------ the lookup -------------------------------- */
@@ -196,7 +186,7 @@ async function latestFromNpm(name: string): Promise<string | null> {
  * Do the actual lookup and write the cache. Runs in a detached child, so it may
  * take as long as it likes and must never throw into the parent.
  */
-export async function runUpdateCheck(file = CACHE_FILE): Promise<void> {
+export async function runUpdateCheck(file = cacheFile()): Promise<void> {
   // not published yet? latestForCheck falls back to the tags of the repo it
   // came from, so a package install still learns about a new release
   const { latest, source } = await latestForCheck();
@@ -234,7 +224,7 @@ export function updateNotice(
   });
   if (why) return null;
 
-  const file = opts.file ?? CACHE_FILE;
+  const file = opts.file ?? cacheFile();
   const cache = readCache(file);
   if (cacheStale(cache, opts.ttlHours ?? DEFAULT_TTL_HOURS)) refreshDetached();
   if (!cache || !isNewer(cache.latest, current)) return null;
