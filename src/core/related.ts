@@ -25,6 +25,8 @@ export interface LogEntry {
   user: string;
   text: string;
   files: string[];
+  /** the steps.md block holding this entry's full context, e.g. `0003` */
+  ref?: string;
 }
 
 const LINE = /^- `([^`]*)`\s*@(\S+?):\s*(.*)$/;
@@ -41,6 +43,8 @@ export function parseLog(task: Task): LogEntry[] {
     // indented trailer belonging to the entry above: `files: …` / `full: …`
     const last = out[out.length - 1];
     if (!last) continue;
+    const ref = /full:\s*`?steps\.md#(\d+)/.exec(raw)?.[1];
+    if (ref) last.ref = ref;
     const files = /(?:^|·\s*)files:\s*(.+?)(?:\s*·\s*full:|$)/.exec(raw.trim())?.[1];
     if (!files) continue;
     for (const f of files.matchAll(/`([^`]+)`/g)) {
@@ -62,7 +66,7 @@ export function filesOfTask(task: Task): string[] {
   const out = new Set<string>();
   for (const e of parseLog(task)) for (const f of e.files) out.add(f);
   // pre-0.3 stores kept files only inside step entries; keep reading those too
-  for (const entry of stepEntries(task.dir)) {
+  for (const entry of stepEntries(task.dir, { compacted: true })) {
     const line = /^- files:\s*(.+)$/m.exec(entry.text)?.[1];
     if (!line || /^none$/i.test(line.trim())) continue;
     for (const m of line.matchAll(/`([^`]+)`/g)) out.add(m[1]);
@@ -170,7 +174,7 @@ export function renderRelated(related: RelatedTask[], limit = 6): string {
     const files = r.shared.slice(0, 4).map((f) => `\`${f}\``).join(', ');
     const more = r.shared.length > 4 ? ` +${r.shared.length - 4} more` : '';
     out.push(
-      `- **${r.task.meta.id} ${r.task.meta.title}** (${r.task.meta.status}) — shares ${files}${more}`,
+      `- **${r.task.meta.id} ${r.task.meta.title}** (${r.task.meta.status}${r.task.meta.digest ? ` · digest ${r.task.meta.digest}` : ''}) — shares ${files}${more}`,
       `  last: ${r.outcome}`,
     );
   }

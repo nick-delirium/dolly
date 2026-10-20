@@ -410,3 +410,51 @@ test('migrate rewrites sequential ids to hash ids, references included', (t) => 
   const again = migrate(Store.open());
   assert.equal(again.actions.length, 0, 'idempotent');
 });
+
+test('v7 drops the dead housekeep config and an archive/ holding no files, unattended', async (t) => {
+  const sb = sandbox();
+  t.after(sb.cleanup);
+  const store = Store.open();
+  store.init();
+  createTask(store, { title: 'Work' });
+  const cfgPath = path.join(sb.store, 'config.json');
+  const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+  cfg.version = 6;
+  cfg.housekeep = { archiveDoneAfterDays: 14, auto: true };
+  fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2), 'utf8');
+  fs.mkdirSync(path.join(sb.store, 'archive', '2026-06'), { recursive: true });
+  fs.writeFileSync(path.join(sb.store, 'archive', '.DS_Store'), '');
+
+  const state = versionState(Store.open());
+  assert.equal(state.pending.length, 1);
+  assert.equal(state.unsafePending.length, 0, 'lossless, so it runs without being asked');
+
+  const { maybeAutoMigrate } = await import('../dist/migrate.js');
+  maybeAutoMigrate(Store.open());
+  const after = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+  assert.equal('housekeep' in after, false);
+  assert.equal(after.version, 7);
+  assert.deepEqual(after.statuses, cfg.statuses, 'the rest of the config untouched');
+  assert.equal(fs.existsSync(path.join(sb.store, 'archive')), false);
+});
+
+test('v7 keeps an archive/ that holds only a .gitkeep — someone put it there', (t) => {
+  const sb = sandbox();
+  t.after(sb.cleanup);
+  Store.open().init();
+  fs.mkdirSync(path.join(sb.store, 'archive'), { recursive: true });
+  fs.writeFileSync(path.join(sb.store, 'archive', '.gitkeep'), '');
+  migrate(Store.open());
+  assert.equal(fs.existsSync(path.join(sb.store, 'archive', '.gitkeep')), true);
+});
+
+test('v7 keeps an archive/ that still holds a file', (t) => {
+  const sb = sandbox();
+  t.after(sb.cleanup);
+  Store.open().init();
+  fs.mkdirSync(path.join(sb.store, 'archive', 'notes'), { recursive: true });
+  fs.writeFileSync(path.join(sb.store, 'archive', 'notes', 'mine.md'), 'keep me');
+  assert.deepEqual(versionState(Store.open()).pending, []);
+  migrate(Store.open());
+  assert.equal(fs.readFileSync(path.join(sb.store, 'archive', 'notes', 'mine.md'), 'utf8'), 'keep me');
+});

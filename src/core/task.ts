@@ -9,9 +9,11 @@ import {
   demoteHeadings,
   getSection,
   neutralizeMarkers,
+  removeBlock,
   setBlock,
   setSection,
   stringifyFrontmatter,
+  TBD_LINE,
   type Front,
 } from './md.js';
 import { Store, readTaskDir, slugify } from './store.js';
@@ -42,6 +44,10 @@ export function stepsFile(dir: string): string {
 export function planFile(dir: string): string {
   return path.join(contextDir(dir), 'plan.md');
 }
+/** step bodies a rollup replaced, moved here verbatim (`dolly compact`) */
+export function compactedFile(dir: string): string {
+  return path.join(contextDir(dir), 'steps.compacted.md');
+}
 /** pre-0.2 layout: context/steps/NNNN.md — still readable, never written */
 function legacyStepsDir(dir: string): string {
   return path.join(contextDir(dir), 'steps');
@@ -66,6 +72,7 @@ function metaToFront(meta: TaskMeta): Front {
     updated: meta.updated,
   };
   if (meta.sessions.length) front.sessions = meta.sessions;
+  if (meta.digest) front.digest = meta.digest;
   return front;
 }
 
@@ -415,9 +422,7 @@ export function addStep(store: Store, task: Task, input: StepInput): number {
   }
   assertOneSection(task, SEC_LOG);
   const raw = readTextOr(stepsFile(task.dir));
-  // the counter alone is not enough: two branches that each logged step N merge
-  // into a frontmatter saying N while steps.md holds N twice
-  const n = Math.max(task.meta.steps, ...allBlocks(raw, 'step').map((b) => Number(b.id) || 0)) + 1;
+  const n = nextStepNumber(task);
   task.meta.steps = n;
 
   const files = normalizeFiles(store.project, input.files ?? []);
@@ -477,16 +482,149 @@ export interface StepEntry {
   text: string;
 }
 
-/** every step's full context, oldest first. Falls back to the pre-0.2 layout. */
-export function stepEntries(dir: string): StepEntry[] {
+/**
+ * The number the next step (or rollup) takes. The counter alone is not enough:
+ * two branches that each logged step N merge into a frontmatter saying N while
+ * steps.md holds N twice — and a compacted task keeps its old numbers in
+ * steps.compacted.md, so both files count.
+ */
+export function nextStepNumber(task: Task): number {
+  let n = task.meta.steps;
+  for (const raw of [readTextOr(stepsFile(task.dir)), readTextOr(compactedFile(task.dir))]) {
+    for (const kind of ['step', 'rollup']) {
+      for (const b of allBlocks(raw, kind)) n = Math.max(n, Number(b.id) || 0);
+    }
+  }
+  return n + 1;
+}
+
+/** live rollups in steps.md, oldest first — normally one */
+export function rollupEntries(dir: string): StepEntry[] {
+  return allBlocks(readTextOr(stepsFile(dir)), 'rollup');
+}
+
+/**
+ * Every step's full context, oldest first. Falls back to the pre-0.2 layout.
+ * `compacted` adds the bodies a rollup moved aside — anything that must see
+ * every step ever logged (imported turns, recorded files) asks for them.
+ */
+export function stepEntries(dir: string, opts: { compacted?: boolean } = {}): StepEntry[] {
   const raw = readTextOr(stepsFile(dir));
-  if (raw) return allBlocks(raw, 'step');
+  const moved = opts.compacted ? allBlocks(readTextOr(compactedFile(dir)), 'step') : [];
+  if (raw) return [...moved, ...allBlocks(raw, 'step')];
+  if (moved.length) return moved;
   return listFiles(legacyStepsDir(dir))
     .filter((f) => /^\d+\.md$/.test(f))
     .map((f) => ({
       id: f.replace(/\.md$/, ''),
       text: readTextOr(path.join(legacyStepsDir(dir), f)),
     }));
+}
+
+/* -------------------------------- rollups -------------------------------- */
+
+export interface RollupInput {
+  /** the agent-written rollup itself */
+  prose: string;
+  /** live blocks it replaces, rollups included: `step 0004`, `rollup 0009` */
+  covered: string[];
+  /** step range the new rollup speaks for, e.g. `0001`–`0026` */
+  from: string;
+  through: string;
+}
+
+function compactedHeader(meta: TaskMeta): string {
+  return [
+    `<!-- dolly steps (compacted) · task ${meta.id} · moved here verbatim by \`dolly compact\` -->`,
+    `# Compacted step context — ${meta.title}`,
+    '',
+    'These bodies were rolled up into a `rollup` entry in `steps.md`, which is what `dolly context` shows.',
+    'Nothing here was edited; `dolly recall` still searches it.',
+    '',
+  ].join('\n');
+}
+
+/** the exact text of one block, markers included — what gets moved, byte for byte */
+function blockText(src: string, id: string): string | null {
+  const start = `<!-- dolly:${id} -->`;
+  const end = `<!-- /dolly:${id} -->`;
+  const i = src.indexOf(start);
+  if (i === -1) return null;
+  const j = src.indexOf(end, i + start.length);
+  return j === -1 ? null : src.slice(i, j + end.length);
+}
+
+/**
+ * Replace live step bodies with one agent-written rollup. Steps stay
+ * append-only in spirit: the covered blocks are MOVED, verbatim, into
+ * steps.compacted.md — never edited, never deleted.
+ *
+ * Order matters for a crash: the compacted file is written first and skips
+ * blocks it already holds, so a retry after an interrupted save converges
+ * instead of duplicating or losing a body.
+ */
+export function addRollup(store: Store, task: Task, input: RollupInput): number {
+  const user = store.user;
+  const prose = input.prose.trim();
+  if (!prose) throw new Error('refusing to save an empty rollup');
+  if (!input.covered.length) throw new Error('nothing to roll up');
+  assertOneSection(task, SEC_LOG);
+  const raw = readTextOr(stepsFile(task.dir));
+  const n = nextStepNumber(task);
+
+  // document order, so the compacted file reads chronologically
+  const moving = input.covered
+    .map((id) => ({ id, text: blockText(raw, id), at: raw.indexOf(`<!-- dolly:${id} -->`) }))
+    .sort((a, b) => a.at - b.at);
+  const missing = moving.filter((m) => m.text === null).map((m) => m.id);
+  if (missing.length) throw new Error(`steps.md has no complete block for ${missing.join(', ')} — restore its markers by hand`);
+
+  let moved = readTextOr(compactedFile(task.dir)) || compactedHeader(task.meta);
+  // checked before anything is written: a block id already in the compacted
+  // file is a retry only when the text is identical. Different text there is
+  // a merge collision — skipping it would delete this body from both files.
+  const clash = moving.filter((m) => {
+    const there = blockText(moved, m.id);
+    return there !== null && there !== m.text;
+  });
+  if (clash.length) {
+    throw new Error(
+      `steps.compacted.md already holds a different ${clash.map((c) => c.id).join(', ')} (two branches merged?) — renumber one by hand; dolly will not drop either`,
+    );
+  }
+  for (const m of moving) {
+    if (blockText(moved, m.id) !== null) continue;
+    moved = `${moved}${moved.endsWith('\n\n') ? '' : moved.endsWith('\n') ? '\n' : '\n\n'}${m.text}\n`;
+  }
+  writeText(compactedFile(task.dir), moved);
+
+  let next = raw;
+  for (const m of moving) next = removeBlock(next, m.id);
+  const entry = [
+    `## ${pad(n)} · ${nowIso()} · @${user}`,
+    '',
+    `- covers: steps ${input.from}–${input.through}`,
+    '- moved: `steps.compacted.md`',
+    '',
+    prose,
+  ].join('\n');
+  writeText(stepsFile(task.dir), appendBlock(next || stepsFileHeader(task.meta), `rollup ${pad(n)}`, entry));
+
+  task.meta.steps = n;
+  appendLog(task, user, `rolled up steps ${input.from}–${input.through} into one note; their bodies moved verbatim to steps.compacted.md.`, [stepRef(n)]);
+  touch(task, user);
+  saveTask(task);
+  return n;
+}
+
+/** attach a task to the digest it was rolled into (`.dolly/digests/<slug>.md`) */
+export function setDigest(store: Store, task: Task, slug: string): void {
+  if (task.meta.digest === slug) return;
+  assertOneSection(task, SEC_LOG);
+  task.meta.digest = slug;
+  appendLog(task, store.user, `rolled into digest \`${slug}\` (\`digests/${slug}.md\`).`);
+  touch(task, store.user);
+  saveTask(task);
 }
 
 /* -------------------------------- retitle -------------------------------- */
@@ -547,6 +685,88 @@ export function setStatus(store: Store, task: Task, status: Status, note?: strin
   );
   touch(task, store.user);
   saveTask(task);
+}
+
+/* -------------------------------- criteria ------------------------------- */
+
+export interface Criterion {
+  /** 1-based, counting checkbox lines only */
+  index: number;
+  checked: boolean;
+  text: string;
+}
+
+const CHECKBOX = /^(\s*[-*]\s+\[)([ xX])(\]\s*)(.*)$/;
+
+/** a real criterion line — `- [ ] _TBD_` is a placeholder, not a promise to verify */
+function checkbox(line: string): RegExpExecArray | null {
+  const m = CHECKBOX.exec(line);
+  return m && !TBD_LINE.test(m[4].trim()) ? m : null;
+}
+
+/** where task.md's Success Criteria section sits, as body line numbers */
+function criteriaRange(lines: string[]): [number, number] | null {
+  // case-insensitive, like getSection: `## Success criteria` is the same section
+  const start = lines.findIndex((l) => new RegExp(`^##[ \\t]+${SEC_CRITERIA}[ \\t]*$`, 'i').test(l));
+  if (start === -1) return null;
+  let end = start + 1;
+  while (end < lines.length && !/^##[ \t]/.test(lines[end])) end++;
+  return [start + 1, end];
+}
+
+/** the checkbox lines of task.md's Success Criteria; other shapes are not toggleable */
+export function criteriaList(task: Task): Criterion[] {
+  const lines = task.body.split('\n');
+  const r = criteriaRange(lines);
+  if (!r) return [];
+  const out: Criterion[] = [];
+  for (let i = r[0]; i < r[1]; i++) {
+    const m = checkbox(lines[i]);
+    if (m) out.push({ index: out.length + 1, checked: m[2] !== ' ', text: m[4].trim() });
+  }
+  return out;
+}
+
+/**
+ * Tick or untick one criterion. Only the box character changes — the line is
+ * prose someone wrote, and the log records who ticked it. Returns false when
+ * it already had that state (nothing written).
+ */
+export function setCriterion(store: Store, task: Task, index: number, checked: boolean): boolean {
+  assertOneSection(task, SEC_CRITERIA);
+  const lines = task.body.split('\n');
+  const r = criteriaRange(lines);
+  let seen = 0;
+  for (let i = r ? r[0] : 0; r && i < r[1]; i++) {
+    const m = checkbox(lines[i]);
+    if (!m || ++seen !== index) continue;
+    if ((m[2] !== ' ') === checked) return false;
+    lines[i] = `${m[1]}${checked ? 'x' : ' '}${m[3]}${m[4]}`;
+    task.body = lines.join('\n');
+    const text = m[4].trim();
+    // "criteria …" so the log reads it as a note, not as a step's outcome
+    appendLog(task, store.user, `criteria: #${index} ${checked ? 'checked' : 'unchecked'} — ${text.length > 80 ? `${text.slice(0, 79)}…` : text}`);
+    touch(task, store.user);
+    saveTask(task);
+    return true;
+  }
+  throw new Error(`${task.meta.id} has no criterion #${index} (it has ${seen} checkbox${seen === 1 ? '' : 'es'})`);
+}
+
+/** what the agent said when it handed the task over: the latest move into `status` */
+export function handoffNote(task: Task, status: Status): string | null {
+  const re = new RegExp(`^- \`[^\`]*\`\\s*@\\S+?: status \\S+ → ${status.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\.(.*)$`);
+  let note: string | null = null;
+  const lines = logSection(task).split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const m = re.exec(lines[i]);
+    if (!m) continue;
+    const parts = [m[1].trim()];
+    // the note's continuation lines, up to the next entry
+    for (let k = i + 1; k < lines.length && /^\s+\S/.test(lines[k]); k++) parts.push(lines[k].trim());
+    note = parts.filter(Boolean).join('\n');
+  }
+  return note;
 }
 
 /* ---------------------------------- read --------------------------------- */

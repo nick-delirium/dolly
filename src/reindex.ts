@@ -65,7 +65,8 @@ export function loadTranscript(cwd: string, opts: ReindexOpts): Transcript {
  */
 export function importedTurns(task: Task): Set<string> {
   const out = new Set<string>();
-  for (const e of stepEntries(task.dir)) {
+  // a compacted turn is still imported: its body only moved
+  for (const e of stepEntries(task.dir, { compacted: true })) {
     for (const m of e.text.matchAll(/turn ([^\s·]+)/g)) out.add(m[1]);
   }
   return out;
@@ -265,8 +266,8 @@ export function applyReindex(store: Store, t: Transcript, opts: ReindexOpts): Ap
 /** a task that already carries steps from this session */
 function findImportedTask(store: Store, sessionId: string): Task | null {
   for (const task of store.loadTasks()) {
-    const raw = readTextOr(stepsFile(task.dir));
-    if (raw.includes(`session ${sessionId}`)) return task;
+    // compaction moves imported blocks aside; their session line moves with them
+    if (stepEntries(task.dir, { compacted: true }).some((e) => e.text.includes(`session ${sessionId}`))) return task;
   }
   return null;
 }

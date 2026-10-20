@@ -760,6 +760,7 @@ export function readTaskDir(dir: string, rel: string): Task | null {
     updated: String(front.updated ?? front.created ?? ''),
     sessions: toStrArray(front.sessions),
   };
+  if (typeof front.digest === 'string' && front.digest.trim()) meta.digest = front.digest.trim();
   return { meta, dir, rel, body };
 }
 

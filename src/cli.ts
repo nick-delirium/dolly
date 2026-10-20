@@ -26,9 +26,15 @@ import {
   renderBoard,
   renderContext,
   renderProjects,
+  renderRecall,
   renderShow,
+  renderWhy,
+  shownPath,
   type ProjectRow,
 } from './core/render.js';
+import { knownStores, mentionedBy, parseSince, recall, similarTasks, why, type RecallHit } from './core/recall.js';
+import { digestMaterial, planCompaction, rollupMaterial, saveDigest, saveRollup } from './core/compact.js';
+import { digestFile, listDigests, readDigest } from './core/digest.js';
 import {
   Store,
   currentTask,
@@ -86,6 +92,7 @@ import {
   setProjectSection,
 } from './core/project.js';
 import {
+  latestOutcome,
   overlappingTasks,
   recentlyFinished,
   relatedByFiles,
@@ -98,6 +105,7 @@ import { runUpdateCheck, updateNotice } from './core/update.js';
 import { notAHuman } from './core/tty.js';
 import { PromptCancelled, filterSelect, stdioTerm } from './prompt.js';
 import { nonTtyHint, runWizard, type WizardPre } from './wizard.js';
+import { runReview, storeOpener } from './review.js';
 
 const HELP = `dolly ${VERSION} — long-term memory + feature planning for coding agents
 
@@ -121,6 +129,11 @@ BOARD
   project [show | init | set "<Section>" --text t]
                                               repo-level brief: what is true here
   related [ref | --files a,b]                 tasks that touched the same files
+  recall <words...> [--kind k,..] [--status s] [--since 30d] [--task ref]
+         [-n N] [--all-projects]              search notes, specs, plans, memos,
+                                              the brief; ranked hits with path:line
+  why <file>                                  tasks, commits and prose behind a file
+  digest [slug]                               list digests, or show one
   continue | resume [ref] [--fork] [--print] [--session id]
                                               reopen the Claude Code conversation
                                               this task was worked in
@@ -133,7 +146,15 @@ TASKS
   spec <ref> [--short t | --short-file f] [--full t | --file f]
              [--criteria c]... [--reason why]
   status | move <ref> <status> [--note t]
+  review [ref] [--status s]                   walk the validating queue: tick
+                                              criteria, mark done, or send back.
+                                              Humans only — refuses under an agent
   retitle | rename <ref> "<new title>"        renames the task and its directory
+  compact [ref] [--keep N] [--through NNNN] [--save --file f]
+                                              roll a long task's old step bodies
+                                              into one agent-written note
+  compact --tasks a,b,c --title t [--save --file f]
+                                              one digest note for several tasks
 
 PLANNING
   plan start "<title>" [--brief t | --brief-file f]
@@ -199,7 +220,7 @@ function writesStore(cmd: string, args: Args): boolean {
   const sub = args.positional[1];
   switch (cmd) {
     case 'new': case 'add': case 'step': case 'spec': case 'status': case 'move':
-    case 'retitle': case 'rename': case 'setup': case 'init':
+    case 'retitle': case 'rename': case 'setup': case 'init': case 'review':
       return true;
     case 'plan':
       return ['start', 'set', 'qa', 'finalize'].includes(sub ?? '');
@@ -209,7 +230,7 @@ function writesStore(cmd: string, args: Args): boolean {
       return sub === 'set';
     case 'reindex': case 'adopt':
       return bool(args, 'apply');
-    case 'memo':
+    case 'memo': case 'compact':
       return bool(args, 'save');
     case 'migrate':
       return !bool(args, 'dry-run');
@@ -564,7 +585,7 @@ async function cmdShow(args: Args): Promise<void> {
     jsonOut({ ...taskJson(task), spec_full: fullSpec(task), plan: readPlan(task) || null });
     return;
   }
-  process.stdout.write(`${renderShow(task, { full: bool(args, 'full') })}\n`);
+  process.stdout.write(`${renderShow(task, { full: bool(args, 'full'), mentions: mentionedBy(store, task) })}\n`);
 }
 
 async function cmdContext(args: Args, refOverride?: string): Promise<void> {
@@ -974,6 +995,11 @@ async function cmdContinue(args: Args): Promise<void> {
 function warnOverlap(store: Store, title: string): void {
   if (!store.exists) return;
   const hits = overlappingTasks(store, title);
+  // a task can cover the same ground under a different title: its notes say so
+  for (const s of similarTasks(store, title)) {
+    if (hits.length >= 5 || hits.some((h) => h.task.meta.id === s.task.meta.id)) continue;
+    hits.push({ task: s.task, words: s.words, outcome: latestOutcome(s.task, 120) });
+  }
   if (!hits.length) return;
   process.stderr.write(
     color.yellow(`dolly: ${hits.length} existing task(s) may already cover this — check before duplicating\n`),
@@ -1071,6 +1097,197 @@ async function cmdRelated(args: Args): Promise<void> {
     return;
   }
   process.stdout.write(`tasks sharing code with ${color.bold(subject)}\n\n${renderRelated(related, 20)}\n`);
+}
+
+/** default hits for an agent; --json defaults wider since it is parsed, not read */
+const RECALL_TEXT_LIMIT = 8;
+const RECALL_JSON_LIMIT = 100;
+/** bytes of default text output — it lands in an agent context */
+const RECALL_CAP = 3000;
+
+function hitJson(h: RecallHit, cwd = process.cwd()) {
+  return {
+    project: h.store.project,
+    task: h.task ? { id: h.task.meta.id, title: h.task.meta.title, status: h.task.meta.status } : null,
+    kind: h.kind,
+    label: h.label,
+    heading: h.heading,
+    path: shownPath(h.file, cwd),
+    line: h.line,
+    snippet: h.snippet,
+    decision: h.decision,
+    at: h.at || null,
+    score: h.score,
+  };
+}
+
+async function cmdRecall(args: Args): Promise<void> {
+  // a quoted multi-word argument is a phrase: its exact wording ranks higher
+  const query = args.positional
+    .slice(1)
+    .map((p) => (/\s/.test(p.trim()) && !p.includes('"') ? `"${p.trim()}"` : p))
+    .join(' ')
+    .trim();
+  if (!query) fail('usage: dolly recall <words...> [--kind k,..] [--status s] [--since 30d] [--task ref] [-n N] [--all-projects] [--json]');
+  const all = bool(args, 'all-projects');
+  const store = openStore(!all);
+  const json = bool(args, 'json');
+  const limit = num(args, 'limit');
+  let since: string | undefined;
+  try {
+    since = str(args, 'since') ? parseSince(str(args, 'since')!) : undefined;
+  } catch (err) {
+    fail((err as Error).message);
+  }
+  const ref = str(args, 'task');
+  const taskId = ref ? (await resolveRef(store, ref)).meta.id : undefined;
+  const { stores, skipped } = all ? knownStores(store.exists ? store : null) : { stores: [store], skipped: [] };
+  let res: ReturnType<typeof recall>;
+  try {
+    res = recall(stores, query, {
+      kinds: list(args, 'kind'),
+      status: str(args, 'status'),
+      since,
+      taskId,
+      limit: limit ?? (json ? RECALL_JSON_LIMIT : RECALL_TEXT_LIMIT),
+    });
+  } catch (err) {
+    fail((err as Error).message);
+  }
+  res.skipped.push(...skipped);
+  if (json) {
+    return jsonOut({ query, total: res.total, fuzzy: res.fuzzy, skipped: res.skipped, hits: res.hits.map((h) => hitJson(h)) });
+  }
+  process.stdout.write(`${renderRecall(query, res, { cap: limit ? undefined : RECALL_CAP, multi: all })}\n`);
+  // dead index entries are the norm (deleted checkouts), so a count, not a list
+  if (all && res.skipped.length) {
+    process.stderr.write(color.dim(`dolly: skipped ${res.skipped.length} store(s) that are gone or unreadable — dolly projects --prune\n`));
+  }
+}
+
+function cmdWhy(args: Args): void {
+  const file = args.positional.slice(1).join(' ').trim();
+  if (!file) fail('usage: dolly why <file> [--json]');
+  const store = openStore();
+  const w = why(store, file);
+  if (bool(args, 'json')) {
+    return jsonOut({
+      file: w.file,
+      touched: w.touched.map(({ task, entries }) => ({
+        id: task.meta.id,
+        title: task.meta.title,
+        status: task.meta.status,
+        steps: entries.map((e) => ({ at: e.at, text: e.text, ref: e.ref ?? null })),
+      })),
+      commits: w.commits,
+      prose: w.prose.map((h) => hitJson(h)),
+    });
+  }
+  process.stdout.write(`${renderWhy(w)}\n`);
+}
+
+/**
+ * Without --save: the material and the rules, for the agent to write from.
+ * With --save: store what it wrote. dolly never writes the prose itself.
+ */
+async function cmdCompact(args: Args): Promise<void> {
+  const store = openStore();
+  const save = bool(args, 'save');
+  const prose = save ? textFrom(args, { file: 'file' }) : undefined;
+  if (save && prose === undefined) fail('usage: dolly compact … --save --file <prose.md> (or - for stdin)');
+  const refs = list(args, 'tasks');
+  try {
+    if (refs.length) {
+      const title = str(args, 'title')?.trim();
+      if (!title) fail('usage: dolly compact --tasks a,b,c --title "<digest title>" [--save --file f]');
+      const tasks: Task[] = [];
+      for (const r of refs) tasks.push(await resolveRef(store, r));
+      if (!save) {
+        process.stdout.write(`${digestMaterial(store, tasks, title)}\n`);
+        return;
+      }
+      const d = saveDigest(store, tasks, title, prose!);
+      if (bool(args, 'json')) return jsonOut({ slug: d.slug, file: d.file, covers: d.covers });
+      process.stdout.write(`${color.green('✓')} digest ${d.slug} saved → ${shownPath(d.file)} · covers ${d.covers.join(', ')}\n`);
+      return;
+    }
+    const task = await resolveRef(store, refArg(args));
+    const keep = num(args, 'keep');
+    const through = str(args, 'through');
+    if (!save) {
+      process.stdout.write(`${rollupMaterial(planCompaction(task, { keep, through }))}\n`);
+      return;
+    }
+    if (!through) fail('dolly compact --save needs --through NNNN — copy the save command the material printed');
+    const { n, plan } = saveRollup(store, task, prose!, { keep, through });
+    if (bool(args, 'json')) return jsonOut({ id: task.meta.id, rollup: n, from: plan.from, through: plan.through, moved: plan.steps.length + plan.rollups.length });
+    process.stdout.write(
+      `${color.green('✓')} rollup ${String(n).padStart(4, '0')} on ${task.meta.id} covers steps ${plan.from}–${plan.through} · ` +
+        `${plan.steps.length + plan.rollups.length} bod${plan.steps.length + plan.rollups.length === 1 ? 'y' : 'ies'} moved to context/steps.compacted.md\n`,
+    );
+  } catch (err) {
+    fail((err as Error).message);
+  }
+}
+
+function cmdDigest(args: Args): void {
+  const store = openStore();
+  const slug = args.positional.slice(1).join(' ').trim();
+  if (slug) {
+    const d = readDigest(digestFile(store, slug));
+    if (!d) fail(`no digest "${slug}" — \`dolly digest\` lists them`);
+    if (bool(args, 'json')) return jsonOut(d);
+    process.stdout.write(`${color.bold(`${d.slug} · ${d.title}`)}\n${color.dim(`covers ${d.covers.join(', ')} · updated ${d.updated} · ${shownPath(d.file)}`)}\n\n${d.body}\n`);
+    return;
+  }
+  const all = listDigests(store);
+  if (bool(args, 'json')) return jsonOut(all.map(({ body: _b, ...d }) => d));
+  if (!all.length) {
+    process.stdout.write('no digests yet — `dolly compact --tasks a,b,c --title "<area>"` writes one\n');
+    return;
+  }
+  for (const d of all) {
+    process.stdout.write(`${color.bold(d.slug)}  ${d.title}  ${color.dim(`${d.covers.length} tasks · ${d.updated.slice(0, 10)}`)}\n`);
+  }
+}
+
+/** writers that prompt a human: they take the lock per write, never for the whole run */
+const INTERACTIVE_WRITERS = new Set(['setup', 'init', 'review']);
+
+async function cmdReview(args: Args): Promise<void> {
+  // closing a task is the one thing an agent may never do; this is how a
+  // human does it, so an agent gets a refusal, not a prompt it cannot answer
+  const why = notAHuman();
+  if (why) {
+    fail(
+      `dolly review is for a human at a terminal (${why}). Agents hand work over with ` +
+        '`dolly status <ref> validating --note "<what to check>"` and stop there.',
+    );
+  }
+  const store = openStore();
+  const status = str(args, 'status');
+  if (status && !store.config.statuses.includes(status)) fail(`unknown status "${status}" — allowed: ${store.config.statuses.join(', ')}`);
+  const ref = args.positional.slice(1).join(' ').trim();
+  const only = ref ? (await resolveRef(store, ref)).meta.id : undefined;
+  const term = stdioTerm();
+  try {
+    const r = await runReview({ term, open: storeOpener(), only, status });
+    const parts = [
+      `${r.done.length} done`,
+      `${r.back.length} sent back`,
+      `${r.skipped.length} skipped`,
+      `${r.ticked} criteria changed`,
+    ];
+    process.stdout.write(`\n${color.green('✓')} review: ${parts.join(' · ')}\n`);
+  } catch (err) {
+    if (err instanceof PromptCancelled) {
+      process.stdout.write('\nreview cancelled — every action already taken is saved\n');
+      return;
+    }
+    throw err;
+  } finally {
+    term.close();
+  }
 }
 
 function cmdMigrate(args: Args): void {
@@ -1695,6 +1912,11 @@ const FLAGS: Record<string, FlagSpec> = {
   retitle: { value: ['title'] },
   project: { value: ['text', 'file'] },
   related: { value: ['files'] },
+  recall: { bool: ['all-projects'], value: ['kind', 'status', 'since', 'task', 'limit'] },
+  why: {},
+  compact: { bool: ['save'], value: ['keep', 'through', 'file', 'tasks', 'title'] },
+  digest: {},
+  review: { value: ['status'] },
   plan: {
     bool: ['force'],
     value: ['brief', 'brief-file', 'text', 'file', 'question', 'answer', 'short', 'full', 'status'],
@@ -1788,9 +2010,10 @@ async function main(): Promise<void> {
   notifyUpdate(cmd);
 
   // every write holds the store lock for the whole command, taken before the
-  // command loads anything — so what it reads is what is on disk. Not setup
-  // or init: those are interactive and would hold it while a human thinks.
-  const store = writesStore(cmd, args) && cmd !== 'setup' && cmd !== 'init' ? Store.open() : null;
+  // command loads anything — so what it reads is what is on disk. Not the
+  // interactive ones: they would hold it while a human thinks, so they lock
+  // each write themselves.
+  const store = writesStore(cmd, args) && !INTERACTIVE_WRITERS.has(cmd) ? Store.open() : null;
   if (store?.exists) return withStoreLockAsync(store.root, cmd, () => dispatch(cmd, args));
   return dispatch(cmd, args);
 }
@@ -1828,6 +2051,16 @@ async function dispatch(cmd: string, args: Args): Promise<void> {
       return cmdProject(args);
     case 'related':
       return await cmdRelated(args);
+    case 'recall':
+      return await cmdRecall(args);
+    case 'why':
+      return cmdWhy(args);
+    case 'compact':
+      return await cmdCompact(args);
+    case 'review':
+      return await cmdReview(args);
+    case 'digest':
+      return cmdDigest(args);
     case 'archive':
     case 'restore':
       fail(`"${cmd}" was removed — finished tasks stay in tasks/ (git history keeps the rest)`);

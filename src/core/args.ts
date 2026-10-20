@@ -231,7 +231,10 @@ export function num(args: Args, key: string): number | undefined {
   const v = str(args, key);
   if (v === undefined) return undefined;
   const n = Number(v);
-  return Number.isFinite(n) ? n : undefined;
+  // a typo must not quietly become the default: `--keep abc` once saved a
+  // rollup planned with keep=3
+  if (!v.trim() || !Number.isFinite(n)) throw new ArgError(`--${key} takes a number, not "${v}"`);
+  return n;
 }
 
 /**

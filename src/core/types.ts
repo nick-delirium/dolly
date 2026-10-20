@@ -11,7 +11,7 @@
  * Bump this and add a Migration whenever the layout changes. A store stamped
  * higher than this is from a newer dolly and must not be written to.
  */
-export const STORE_VERSION = 6;
+export const STORE_VERSION = 7;
 
 export const DEFAULT_STATUSES = [
   'todo',
@@ -37,6 +37,8 @@ export interface TaskMeta {
   updated: string;
   /** Claude Code session ids this task was worked in, oldest first */
   sessions: string[];
+  /** slug of the digest (`.dolly/digests/<slug>.md`) this task was rolled into */
+  digest?: string;
 }
 
 export interface Task {

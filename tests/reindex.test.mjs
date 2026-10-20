@@ -195,6 +195,21 @@ test('apply imports segments once and stays idempotent', (t) => {
   assert.equal(again.task.meta.steps, 3, 'no duplicate steps');
 });
 
+test('a compacted import is still found by its session: no second task, no re-import', async (t) => {
+  const sb = sandbox();
+  t.after(sb.cleanup);
+  const tr = parseTranscript(writeFixture(sb.dir));
+  const first = applyReindex(Store.open(), tr, {});
+  const { saveRollup } = await import('../dist/core/compact.js');
+  saveRollup(Store.open(), first.task, 'rolled', { keep: 0, through: '0003' });
+  assert.equal(stepEntries(first.task.dir).length, 0, 'every imported body moved aside');
+  const again = applyReindex(Store.open(), tr, {});
+  assert.equal(again.created, false);
+  assert.equal(again.task.meta.id, first.task.meta.id);
+  assert.equal(again.imported, 0);
+  assert.equal(Store.open().loadTasks().length, 1);
+});
+
 test('rebuild re-imports the same session after a format change', (t) => {
   const sb = sandbox();
   t.after(sb.cleanup);

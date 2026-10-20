@@ -365,12 +365,36 @@ tasks sharing code with 2 file(s)
 
 The index is derived from `steps.md` on every call and never stored, so it cannot go stale. `dolly context <ref>` includes it automatically, alongside the brief and the full list of files the task has touched.
 
-Opening a task also checks for one that may already cover it — word overlap against existing titles, printed as a warning, never a block:
+Opening a task also checks for one that may already cover it — word overlap against existing titles, plus tasks whose notes and specs already cover most of the new title's words, printed as a warning, never a block:
 
 ```
 dolly: 1 existing task(s) may already cover this — check before duplicating
   0004 Add replay country filter (working) · shares: replay, filter
 ```
+
+### Recall: search what was written
+
+Decisions live in prose — step notes, superseded specs, planning answers, memos. `dolly recall` searches all of it, ranked, and every hit is a `path:line` an agent can open directly:
+
+```bash
+dolly recall token refresh                   # words, ranked (BM25, hand-rolled)
+dolly recall "per-store lock"                # a phrase ranks its exact wording higher
+dolly recall --kind decision mysql           # only Decisions / Dead ends / Why sections and planning answers
+dolly recall lock --status done --since 30d  # filters: --kind --status --since --task -n
+dolly recall oauth --all-projects            # every store in ~/.dolly/projects/index.json
+```
+
+```
+recall "lock" — 25 matches, top 8
+
+rqdpztdy Auto-log targets this session's task; lock store writes (validating)
+  step 0001 › Auto-log targeting + store lock · .dolly/tasks/rqdpztdy-…/context/steps.md:21
+    - core/lock.ts: `.local/write.lock` O_EXCL with pid; dead pid or >120s → cleared; …
+```
+
+Nothing is indexed or cached: each query reads the markdown as it is, so a line number cannot be stale and the store stays the only source of truth. A query word that nothing contains is corrected by edit distance against the store's own vocabulary, and the output says so. Text output is capped at ~3KB unless you pass `-n`; `--json` returns up to 100 hits.
+
+`dolly why <file>` answers "why is this code like this" for one file: the steps that recorded it, the commits that touched it (mapped to tasks through a `Dolly-Task: <id>` trailer or a task id in the message), and prose that names it. `dolly show` and `dolly context` list the tasks that mention this one's id — backlinks nobody had to write.
 
 ### Code maps: detected, not rebuilt
 
@@ -488,6 +512,17 @@ dolly · /repo/.dolly
   6mq9hmg4  Rate-limit the search API @alice           1d ago   7✎
 ```
 
+### Closing the loop: `dolly review`
+
+Agents stop at `validating`, so the queue only drains when a human looks. `dolly review` walks it in a terminal, oldest hand-over first. Each task shows its short spec, the note the agent left when it handed over, the files it touched and its criteria; you tick criteria (only the checkbox character changes, and the log records who ticked what), mark it done, send it back to `working` with a note the agent will read, or skip it.
+
+```bash
+dolly review                 # the whole validating queue
+dolly review "$ID"           # one task
+```
+
+It refuses to run without a terminal or inside an agent — that refusal is the point. The store lock is taken per action and the task is re-read under it, so a session logging steps elsewhere never waits on someone thinking. `- [ ] _TBD_` placeholders are not criteria. The board ends with a reminder whenever tasks are waiting.
+
 ## The daily memo
 
 ```bash
@@ -499,6 +534,24 @@ dolly memo --save --file notes.md   # save agent-written prose as the day's memo
 `dolly memo` gathers everything that happened on a day — every task's log lines, the conversations (Claude Code transcripts and the opencode mirror), and the repo's commits — and prints a mechanical digest. You or your agent write it up as a few sentences and save it with `--save`; the result lands in `.dolly/memo/YYYY-MM-DD.md`, committed with the repo, so the project's own history answers "what happened Tuesday?".
 
 `memo.auto = true` makes the session-start hook note it when today has no memo yet — a nudge, never an auto-write.
+
+## Compaction: rollups and digests
+
+`dolly context` carries the last three step bodies; on a long task everything older falls out of view, and with it whatever those steps decided. Compaction keeps it in view — on request, never on a timer, and without dolly writing a word of prose (it never needs a model):
+
+```bash
+dolly compact "$ID"                              # prints the old bodies + rules + the exact save command
+dolly compact "$ID" --through 0026 --save --file rollup.md
+dolly compact --tasks a,b,c --title "Install targets"            # several tasks → one digest
+dolly compact --tasks a,b,c --title "Install targets" --save --file digest.md
+dolly digest [slug]                              # list digests, or show one
+```
+
+**Rollup.** The agent writes one note covering steps 0001–0026; `--save` appends it to `steps.md` as a `rollup` entry (its own step number) and **moves** the covered bodies, byte for byte, to `context/steps.compacted.md`. `dolly context` then shows the rollup followed by the last three steps. Nothing is deleted or edited: `dolly recall`, `dolly related` and `reindex` still read the moved bodies, and step numbers are never reused. `--through` is pinned when the material is printed, so a step logged in between stays live. Compacting again folds the previous rollup into the new one. The context suggests it once ten or more bodies are out of view.
+
+**Digest.** For an area several tasks built together, the agent writes one note at `.dolly/digests/<slug>.md`. Each task gets `digest: <slug>` in its frontmatter and a log line; finished ones fold under the digest on the board, and `dolly context` / `dolly related` point at it. Saving a digest again keeps the previous prose under "Previous versions".
+
+Compaction is a schema v7 feature: a v6 dolly would number steps from `steps.md` alone and drop the `digest:` key, so it is refused writes by the version gate.
 
 ## No housekeeping
 
@@ -552,6 +605,8 @@ context [ref] [-n N] [--brief] [--json]
 current                                    alias for: context current
 project [show | init | set "<Section>" --text t]
 related [ref] [--files a,b] [--json]
+recall <words…> [--kind k,…] [--status s] [--since 30d|date] [--task ref] [-n N] [--all-projects] [--json]
+why <file> [--json]                        tasks, commits and prose behind one file
 continue | resume [ref] [--fork] [--print] [--session id] [--json]
 update [--check] [--dry-run] [--force]     self-update in place (clone: pull+rebuild; npm: reinstall)
 memo [--date d] [--json] [--save --file f|-]  today's digest → .dolly/memo/YYYY-MM-DD.md
@@ -561,7 +616,11 @@ step <ref> -m "<summary>" [--files a,b | --auto-files]
            [--detail t | --detail-file f] [--status s]
 spec <ref> [--short t | --short-file f] [--full t | --file f] [--criteria c] [--reason why]
 status | move <ref> <status> [--note t]
+review [ref] [--status s]                  humans only: walk the validating queue
 retitle | rename <ref> "<new title>"       renames the task and its directory
+compact [ref] [--keep N] [--through NNNN] [--save --file f|-]
+compact --tasks a,b,c --title t [--save --file f|-]
+digest [slug] [--json]
 
 plan start "<title>" [--brief t | --brief-file f]
 plan show <ref>
@@ -593,7 +652,7 @@ Every command that produces data takes `--json`. Every text or file flag accepts
 
 `dolly mcp` speaks MCP over stdio, no dependencies. Registered by `dolly init` / `dolly install` when asked (`--mcp`, or `install.mcp` in config) for agents that support it.
 
-`dolly_board` · `dolly_context` · `dolly_task_show` · `dolly_task_new` · `dolly_step_add` · `dolly_spec_update` · `dolly_status_set` · `dolly_plan_start` · `dolly_plan_set` · `dolly_plan_qa` · `dolly_plan_check` · `dolly_plan_finalize` · `dolly_project` · `dolly_related` · `dolly_reindex`
+`dolly_board` · `dolly_context` · `dolly_task_show` · `dolly_task_new` · `dolly_step_add` · `dolly_spec_update` · `dolly_status_set` · `dolly_plan` (start / check / set / qa / finalize) · `dolly_project` · `dolly_related` · `dolly_recall` · `dolly_compact` · `dolly_reindex`
 
 ## Agent instructions
 

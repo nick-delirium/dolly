@@ -90,3 +90,24 @@ function runRaw(args: string[], cwd: string): string | null {
     return null;
   }
 }
+
+export interface FileCommit {
+  hash: string;
+  date: string;
+  subject: string;
+  body: string;
+}
+
+/** commits that touched a file, newest first, across renames; [] outside a repo */
+export function fileLog(cwd: string, file: string, max = 15): FileCommit[] {
+  const out = run(['log', `-n${max}`, '--follow', '--format=%h%x1f%as%x1f%s%x1f%b%x1e', '--', file], cwd);
+  if (!out) return [];
+  return out
+    .split('\x1e')
+    .map((r) => r.trim())
+    .filter(Boolean)
+    .map((r) => {
+      const [hash, date, subject, body = ''] = r.split('\x1f');
+      return { hash, date, subject, body: body.trim() };
+    });
+}

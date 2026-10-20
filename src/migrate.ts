@@ -255,7 +255,68 @@ const MIGRATIONS: Migration[] = [
       return store;
     },
   },
+  {
+    // The bump itself matters as much as the cleanup: v7 is where step bodies
+    // can move to steps.compacted.md and tasks carry `digest:`. A v6 dolly
+    // would number steps from steps.md alone and drop the frontmatter key.
+    to: 7,
+    name: 'housekeeping leftovers dropped',
+    safe: true, // removes a config key nothing reads and directories holding no files
+    detect(store) {
+      const parts: string[] = [];
+      const keys = deadConfigKeys(store.root);
+      if (keys.length) parts.push(`drop ${keys.join(', ')} from config.json`);
+      if (emptyArchive(store.root)) parts.push('remove the empty archive/ directory');
+      return parts.length ? parts.join('; ') : null;
+    },
+    apply(store, actions, dryRun) {
+      dropHousekeeping(store, dryRun, actions);
+      return store;
+    },
+  },
 ];
+
+/** config keys of features that were removed; loadConfig carries them along unread */
+const DEAD_CONFIG_KEYS = ['housekeep'];
+
+function deadConfigKeys(root: string): string[] {
+  const file = path.join(root, 'config.json');
+  if (!exists(file)) return [];
+  const raw = readJsonForUpdate<Record<string, unknown>>(file, {});
+  return DEAD_CONFIG_KEYS.filter((k) => k in raw);
+}
+
+/**
+ * archive/ with no file anywhere under it. v5 removes the tree only after moving
+ * tasks out of it, so a store whose archive was already empty kept the
+ * directory forever. Anything a person put there keeps it alive — a .gitkeep
+ * included; only Finder's .DS_Store is not anyone's file.
+ */
+function emptyArchive(root: string): boolean {
+  const dir = path.join(root, 'archive');
+  if (!isDir(dir)) return false;
+  const holdsFile = (d: string): boolean =>
+    listFiles(d).some((f) => f !== '.DS_Store') ||
+    listDirs(d).some((sub) => holdsFile(path.join(d, sub)));
+  return !holdsFile(dir);
+}
+
+function dropHousekeeping(store: Store, dryRun: boolean, actions: MigrateAction[]): void {
+  const keys = deadConfigKeys(store.root);
+  if (keys.length) {
+    actions.push({ kind: 'chain', task: 'config', detail: `config.json: removed ${keys.join(', ')}` });
+    if (!dryRun) {
+      const file = path.join(store.root, 'config.json');
+      const raw = readJsonForUpdate<Record<string, unknown>>(file, {});
+      for (const k of keys) delete raw[k];
+      writeJson(file, raw);
+    }
+  }
+  if (emptyArchive(store.root)) {
+    actions.push({ kind: 'chain', task: 'archive', detail: 'removed the empty archive/ directory' });
+    if (!dryRun) rmrf(path.join(store.root, 'archive'));
+  }
+}
 
 /** task directories sitting under archive/YYYY-MM/ from pre-v5 stores */
 function archivedTaskDirs(store: Store): { bucket: string; name: string }[] {

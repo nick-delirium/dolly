@@ -14,7 +14,9 @@ import {
   startPlan,
   PLAN_PROMPTS,
 } from './core/plan.js';
-import { renderBoard, renderContext, renderShow } from './core/render.js';
+import { digestMaterial, planCompaction, rollupMaterial, saveDigest, saveRollup } from './core/compact.js';
+import { knownStores, mentionedBy, parseSince, recall } from './core/recall.js';
+import { renderBoard, renderContext, renderRecall, renderShow } from './core/render.js';
 import { Store, currentTask } from './core/store.js';
 import { addStep, createTask, fullSpec, setStatus, updateSpec } from './core/task.js';
 import type { Task } from './core/types.js';
@@ -50,7 +52,9 @@ const SArr = (description: string) => ({
   items: { type: 'string' },
   description,
 });
-const REF = S('Task ref: 8-char id, slug, unique substring, fuzzy title, or "current" (the default).');
+// what a ref may be is said once, in the server instructions — repeated in
+// every tool it cost ~1.3KB of schema per session
+const REF = S('Task ref; default current.');
 
 function store(): Store {
   return Store.open();
@@ -126,8 +130,8 @@ const TOOLS: Tool[] = [
       required: ['ref'],
     },
     run(a) {
-      const { t } = open(a.ref);
-      const base = renderShow(t, { full: false });
+      const { s, t } = open(a.ref);
+      const base = renderShow(t, { full: false, mentions: mentionedBy(s, t) });
       if (!a.full) return base;
       return `${base}\n\n--- full spec ---\n${fullSpec(t)}\n\n--- plan ---\n${readPlan(t) || '(none)'}`;
     },
@@ -235,86 +239,51 @@ const TOOLS: Tool[] = [
     },
   },
   {
-    name: 'dolly_plan_start',
-    description: 'Start planning a feature (status planning). Then dolly_plan_check, ask the user, dolly_plan_set / dolly_plan_qa.',
-    inputSchema: {
-      type: 'object',
-      properties: { title: S('Feature title.'), brief: S("The user's own description, verbatim.") },
-      required: ['title'],
-    },
-    run(a) {
-      const s = writable();
-      const t = startPlan(s, a.title, a.brief ?? '');
-      const agenda = s.config.planSections
-        .map((n) => `- ${n}: ${PLAN_PROMPTS[n] ?? ''}`)
-        .join('\n');
-      return `created ${t.meta.id} "${t.meta.title}" status planning\nplan: ${t.dir}/context/plan.md\n\nInterview agenda — ask the user about each, do not invent answers:\n${agenda}`;
-    },
-  },
-  {
-    name: 'dolly_plan_set',
-    description: 'Fill one plan section: Problem, Goal, Scope, Success Criteria, Changes, Risks, Test Plan, Open Questions.',
+    name: 'dolly_plan',
+    description: 'Plan a feature: start, then check (the interview agenda), ask the user, record with set / qa, then finalize into the spec (status todo). Never invent answers.',
     inputSchema: {
       type: 'object',
       properties: {
+        action: { type: 'string', enum: ['start', 'check', 'set', 'qa', 'finalize'] },
         ref: REF,
-        section: S('e.g. "Success Criteria".'),
-        text: S('Markdown body.'),
+        title: S('start: feature title.'),
+        brief: S("start: the user's words, verbatim."),
+        section: S('set: e.g. "Success Criteria".'),
+        text: S('set: markdown body.'),
+        question: S('qa: what you asked.'),
+        answer: S("qa: the user's answer."),
+        force: { type: 'boolean', description: 'finalize despite gaps.' },
+        short: S('finalize: override the short spec.'),
+        full: S('finalize: override the full spec.'),
+        status: S('finalize: default todo.'),
       },
-      required: ['ref', 'section', 'text'],
+      required: ['action'],
     },
     run(a) {
-      const { s, t } = open(a.ref);
-      setPlanSection(s, t, a.section, a.text);
-      const c = checkPlan(s, t);
-      return `plan ${t.meta.id} "${a.section}" updated.\n${describeCheck(c)}`;
-    },
-  },
-  {
-    name: 'dolly_plan_qa',
-    description: 'Record a question you asked the user and their answer.',
-    inputSchema: {
-      type: 'object',
-      properties: { ref: REF, question: S('Question asked.'), answer: S("User's answer.") },
-      required: ['ref', 'question', 'answer'],
-    },
-    run(a) {
-      const { s, t } = open(a.ref);
-      addPlanQA(s, t, a.question, a.answer);
-      return `Q&A recorded on ${t.meta.id}`;
-    },
-  },
-  {
-    name: 'dolly_plan_check',
-    description: 'Which plan sections are empty and which questions are open — the interview agenda.',
-    inputSchema: { type: 'object', properties: { ref: REF }, required: [] },
-    run(a) {
+      const need = (...keys: string[]) => {
+        const missing = keys.filter((k) => a[k] === undefined || a[k] === '');
+        if (missing.length) throw new Error(`${a.action} needs ${missing.join(', ')}`);
+      };
+      if (a.action === 'start') {
+        need('title');
+        const s = writable();
+        const t = startPlan(s, a.title, a.brief ?? '');
+        const agenda = s.config.planSections.map((n) => `- ${n}: ${PLAN_PROMPTS[n] ?? ''}`).join('\n');
+        return `created ${t.meta.id} "${t.meta.title}" status planning\nplan: ${t.dir}/context/plan.md\n\nInterview agenda — ask the user about each, do not invent answers:\n${agenda}`;
+      }
       const { s, t } = open(a.ref ?? 'current');
-      return describeCheck(checkPlan(s, t));
-    },
-  },
-  {
-    name: 'dolly_plan_finalize',
-    description: 'Turn a complete plan into the spec; status → todo. Blocked while gaps remain unless force=true.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        ref: REF,
-        force: { type: 'boolean' },
-        short: S('Override the derived short spec.'),
-        full: S('Override the derived full spec.'),
-        status: S('Default todo.'),
-      },
-      required: ['ref'],
-    },
-    run(a) {
-      const { s, t } = open(a.ref);
-      const c = finalizePlan(s, t, {
-        force: Boolean(a.force),
-        short: a.short,
-        full: a.full,
-        nextStatus: a.status,
-      });
+      if (a.action === 'check') return describeCheck(checkPlan(s, t));
+      if (a.action === 'set') {
+        need('section', 'text');
+        setPlanSection(s, t, a.section, a.text);
+        return `plan ${t.meta.id} "${a.section}" updated.\n${describeCheck(checkPlan(s, t))}`;
+      }
+      if (a.action === 'qa') {
+        need('question', 'answer');
+        addPlanQA(s, t, a.question, a.answer);
+        return `Q&A recorded on ${t.meta.id}`;
+      }
+      const c = finalizePlan(s, t, { force: Boolean(a.force), short: a.short, full: a.full, nextStatus: a.status });
       if (!c.ok) return `finalize blocked.\n${describeCheck(c)}\n\nAnswer these with the user, or pass force=true.`;
       return `plan ${t.meta.id} finalized · spec v${t.meta.spec_version} · status ${t.meta.status}`;
     },
@@ -373,19 +342,81 @@ const TOOLS: Tool[] = [
     },
   },
   {
+    name: 'dolly_recall',
+    description: 'Search notes, specs, plan answers, memos, the brief by words: ranked hits with path:line. Use before re-deciding.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: S('Words, or "a phrase".'),
+        kind: SArr('task|log|step|spec|plan|memo|project|digest|decision'),
+        status: S('Task status.'),
+        since: S('30d, 2w, 6m, YYYY-MM-DD.'),
+        task: S('One task (ref).'),
+        limit: { type: 'number', description: 'Max hits (8).' },
+        allProjects: { type: 'boolean', description: 'All known stores.' },
+      },
+      required: ['query'],
+    },
+    run(a) {
+      const s = store();
+      if (!s.exists && !a.allProjects) return 'dolly not initialized here.';
+      const { stores, skipped } = a.allProjects ? knownStores(s.exists ? s : null) : { stores: [s], skipped: [] };
+      const res = recall(stores, String(a.query ?? ''), {
+        kinds: Array.isArray(a.kind) ? a.kind : undefined,
+        status: a.status,
+        since: a.since ? parseSince(a.since) : undefined,
+        taskId: a.task ? s.resolve(a.task).meta.id : undefined,
+        limit: a.limit ?? 8,
+      });
+      res.skipped.push(...skipped);
+      return renderRecall(String(a.query ?? ''), res, { cap: a.limit ? undefined : 3000, multi: Boolean(a.allProjects) });
+    },
+  },
+  {
+    name: 'dolly_compact',
+    description: 'Roll a task\'s old step bodies (ref), or several tasks (tasks+title), into one note you write. save=false: material; save+text: store. Nothing deleted.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ref: REF,
+        tasks: SArr('Tasks → one digest.'),
+        title: S('Digest title.'),
+        keep: { type: 'number', description: 'Bodies kept in full (3).' },
+        through: S('Last step rolled up.'),
+        save: { type: 'boolean' },
+        text: S('Your rollup/digest.'),
+      },
+    },
+    run(a) {
+      const { s, t } = open(a.ref ?? 'current');
+      const tasks: string[] = Array.isArray(a.tasks) ? a.tasks : [];
+      if (tasks.length) {
+        if (!a.title) throw new Error('tasks needs a title');
+        const ts = tasks.map((r) => s.resolve(r));
+        if (!a.save) return digestMaterial(s, ts, a.title);
+        const d = saveDigest(s, ts, a.title, String(a.text ?? ''));
+        return `digest ${d.slug} saved (${d.covers.length} tasks)`;
+      }
+      if (!a.save) return rollupMaterial(planCompaction(t, { keep: a.keep, through: a.through }));
+      if (!a.through) throw new Error('save needs through: the step the material printed');
+      const { n, plan } = saveRollup(s, t, String(a.text ?? ''), { keep: a.keep, through: a.through });
+      return `rollup ${String(n).padStart(4, '0')} on ${t.meta.id} covers steps ${plan.from}–${plan.through}`;
+    },
+  },
+  {
     name: 'dolly_reindex',
     description: 'Adopt a conversation already in flight: apply=false returns a digest of its transcript, apply=true imports it one step per turn (idempotent). Then replace the imported spec.',
     inputSchema: {
       type: 'object',
       properties: {
-        apply: { type: 'boolean', description: 'Import; false = digest only.' },
-        into: S('Existing task to import into.'),
-        session: S('Session id/prefix. Default: the live one.'),
-        file: S('Path to a .jsonl transcript.'),
-        allTurns: { type: 'boolean', description: 'One step per turn; by default tool-less turns fold forward.' },
-        limit: { type: 'number', description: 'Last N turns only.' },
+        apply: { type: 'boolean', description: 'Import; else digest only.' },
+        into: S('Task ref to import into.'),
+        session: S('Session id/prefix; default live.'),
+        file: S('A .jsonl transcript.'),
+        allTurns: { type: 'boolean', description: 'Keep tool-less turns as steps.' },
+        limit: { type: 'number', description: 'Last N turns.' },
         rebuild: { type: 'boolean', description: 'Re-import this session.' },
-        title: S('Task title.'),
+        title: S('New task title.'),
         status: S('Default working.'),
       },
     },
@@ -451,8 +482,11 @@ function writesStore(tool: string, a: Json): boolean {
       return Boolean(a.section && a.text);
     case 'dolly_reindex':
       return Boolean(a.apply);
+    case 'dolly_compact':
+      return Boolean(a.save);
+    case 'dolly_plan':
+      return a.action !== 'check';
     case 'dolly_task_new': case 'dolly_step_add': case 'dolly_spec_update': case 'dolly_status_set':
-    case 'dolly_plan_start': case 'dolly_plan_set': case 'dolly_plan_qa': case 'dolly_plan_finalize':
       return true;
     default:
       return false;
@@ -500,6 +534,8 @@ function badArgs(tool: Tool, a: Json): string | null {
         ? Array.isArray(value) && value.every((x) => typeof x === (props[key].items?.type ?? 'string'))
         : typeof value === want;
     if (!ok) return `argument "${key}" must be ${want === 'array' ? `an array of ${props[key].items?.type ?? 'string'}s` : `a ${want}`}`;
+    const allowed: unknown[] | undefined = props[key].enum;
+    if (allowed && !allowed.includes(value)) return `argument "${key}" must be one of ${allowed.join(', ')}`;
   }
   return null;
 }
@@ -531,7 +567,7 @@ function handle(msg: Json): void {
         capabilities: { tools: { listChanged: false } },
         serverInfo: SERVER,
         instructions:
-          'dolly keeps task memory in .dolly/. Call dolly_board then dolly_context before coding. Log every major step with dolly_step_add. Plan features via dolly_plan_start -> dolly_plan_check -> ask user -> dolly_plan_set -> dolly_plan_finalize.',
+          'dolly keeps task memory in .dolly/. Call dolly_board then dolly_context before coding; dolly_recall before re-deciding anything. Log every major step with dolly_step_add. Plan features with dolly_plan: start -> check -> ask the user -> set/qa -> finalize. A ref is an 8-char id, slug, unique substring, fuzzy title, or "current".',
       });
     }
     case 'ping':

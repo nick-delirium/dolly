@@ -3,7 +3,7 @@
 
 Task memory lives in the dolly store — usually `.dolly/`, committed; `dolly whoami` prints where. Your task is one slice of an ongoing codebase: read state, never guess it. Never hand-edit the store — use the CLI. Full guide: the **dolly** skill, or `dolly guide`.
 
-- **Before code on a task:** `dolly context <ref>` (id, slug or fuzzy title; omitted = `current`). Session-start text is only an index. Unfamiliar area: `dolly project` (what is true about this repo) and `dolly related --files a.ts,b.ts` (tasks that touched that code, and what they decided).
+- **Before code on a task:** `dolly context <ref>` (id, slug or fuzzy title; omitted = `current`). Session-start text is only an index. Unfamiliar area: `dolly project` (what is true about this repo), `dolly related --files a.ts,b.ts` (tasks that touched that code, and what they decided). Before re-deciding anything: `dolly recall <words>` (every note, spec, plan answer; `--kind decision`).
 - **Pick up work:** `dolly status <ref> working` — also attaches this conversation, so auto-log follows it.
 - **Log every major step** (slice landed, bug root-caused, approach dropped): `dolly step current -m "<outcome, not the request>" --auto-files --detail-file <notes.md>`. Notes = handoff for an agent with zero context: decisions, dead ends, what next.
 - **Spec changed:** `dolly spec current --short "<2-5 lines>" --file <spec.md> --reason "<why>"` — the old version is kept.

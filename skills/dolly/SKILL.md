@@ -17,9 +17,13 @@ Your task is a SLICE of an ongoing codebase. Other tasks came before, made decis
 dolly project                      # what is true about this repo: architecture, conventions, invariants
 dolly board                        # what exists, what is in flight, what shipped
 dolly related --files a.ts,b.ts    # which tasks touched this code, and what they concluded
+dolly recall <words>               # search every step note, spec, plan answer, memo, the brief
+dolly why <file>                   # tasks, commits and prose behind one file
 ```
 
 `dolly related` is the link nothing else gives you: dolly records the files every step touched. Read it before changing shared code — you may be about to undo a deliberate choice. Skipped it if you: reinvent an existing convention, edit a file against another task's direction, ask what the repo already answers.
+
+`dolly recall` before re-deciding anything: the option may already be weighed or rejected. Hits print `path:line` — open there, don't re-grep. `--kind decision` = Decisions / Dead ends / Why sections + planning answers; narrow with `--status`, `--since 30d`, `--task <ref>`, `-n N`, `--all-projects`.
 
 Code map in repo (`.codegraph/`, `graft/`, `.serena/`)? Use it before grep. Do not build an index inside `.dolly/`.
 
@@ -30,7 +34,7 @@ Code map in repo (`.codegraph/`, `graft/`, `.serena/`)? Use it before grep. Do n
 | what work exists | `dolly board` |
 | picking up a task, about to write code | **`dolly context <ref>`** ← default |
 | orienting only | `dolly context <ref> --brief` |
-| archaeology: why is the code like this | `dolly context <ref> -n 0` |
+| archaeology: why is the code like this | `dolly why <file>` · `dolly recall <words>` · `dolly context <ref> -n 0` |
 
 `dolly context` = project brief, related tasks, spec, criteria, log, last 3 steps' full context. Log say *what* happened; step context say *why* — you need why before changing code. Session-start text is only the index.
 
@@ -56,7 +60,9 @@ Major step = slice landed · bug root-caused · migration written · approach ab
 
 Step without detail is half a step. `--auto-files` read changed files from git; `--files a.ts,b.ts` when git is noisy. Text/file flags take `-` for stdin.
 
-With hooks installed, dolly auto-logs a mechanical step per finished turn (lifted from your last message). Floor, not substitute — a turn you log yourself is skipped by the auto-logger, and your summary is better.
+## Compact — when asked, or when context says bodies are out of view
+
+`dolly compact <ref>` (one task) or `dolly compact --tasks a,b,c --title "<area>"` (one digest) prints the material, the rules and the exact `--save` command. You write the prose; dolly writes none and deletes nothing. Save with the printed `--through`.
 
 ## Statuses
 
@@ -66,7 +72,7 @@ With hooks installed, dolly auto-logs a mechanical step per finished turn (lifte
 dolly status current validating --note "<exactly what the human must check>"
 ```
 
-`validating` = you are done, human must verify. **Never set `done`** — human's call.
+`validating` = you are done, human must verify. **Never set `done`** — human's call. The `--note` is what the human sees in `dolly review` (their walk over the queue, terminal-only; it refuses under an agent): make it the checklist. Sent back to `working` → the human's note is the last status line in the log.
 
 ## Spec changed mid-flight
 
@@ -105,6 +111,8 @@ Then replace the imported spec (it only stitches raw requests together): `dolly 
 ## Hard rules
 
 - Steps are append-only. Wrong step → a new step correcting it.
+- Committing work for a task: end the message with a `Dolly-Task: <id>` trailer. `dolly why` maps commits to tasks through it.
+- Step notes: `### Decisions` / `### Dead ends` headings make them findable with `dolly recall --kind decision`.
 - Commit `.dolly/` with the code — unless `dolly whoami` says the store is `linked`/`global` (outside the repo, private, nothing to commit).
 - Every step is stamped with your handle (`DOLLY_USER` → `.dolly/local.json` → `gh` → git email → `$USER`).
 - Store newer than your dolly → writes refused. Do NOT work around it; upgrade dolly. Older store → lossless upgrades apply themselves; risky ones wait for `dolly migrate` (`--dry-run` first).

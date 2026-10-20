@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 import { parseArgs } from '../dist/core/args.js';
 import { Store } from '../dist/core/store.js';
-import { createTask, logSection, reload, setStatus } from '../dist/core/task.js';
+import { addStep, createTask, logSection, reload, setStatus } from '../dist/core/task.js';
 import { sandbox } from './helpers.mjs';
 
 const CLI = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'dist', 'cli.js');
@@ -30,10 +30,13 @@ test('a switch never swallows the ref after it', (t) => {
   const other = createTask(store, { title: 'Other task' });
   const cur = createTask(store, { title: 'Current one' });
   setStatus(store, cur, 'working');
+  // the brief view's footer only appears when there is step context to point at
+  addStep(Store.open(), reload(Store.open(), other), { summary: 'earlier', detail: 'STEP-BODY' });
 
   const ctx = run(sb.dir, ['context', '--brief', other.meta.id]);
   assert.match(ctx.out, new RegExp(`^# ${other.meta.id} · Other task`));
   assert.match(ctx.out, /Brief view/);
+  assert.doesNotMatch(ctx.out, /STEP-BODY/, '--brief was taken as a switch');
 
   run(sb.dir, ['step', '--auto-files', other.meta.id, '-m', 'landed on the named task']);
   assert.match(logSection(reload(store, other)), /landed on the named task/);

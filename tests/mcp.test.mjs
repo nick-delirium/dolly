@@ -87,7 +87,7 @@ test('reads work on a newer store; writes are refused', (t) => {
   ]);
   assert.equal(r.replies[0].result.isError, undefined);
   assert.match(r.replies[1].result.content[0].text, /upgrade dolly/);
-  assert.match(r.replies[2].result.content[0].text, /Brief view/);
+  assert.match(r.replies[2].result.content[0].text, /^# \S+ · Newer/, 'the read still works');
 });
 
 test('a leftover .dollie/ is a note, not a block on every write', (t) => {
@@ -99,4 +99,27 @@ test('a leftover .dollie/ is a note, not a block on every write', (t) => {
   const text = r.replies[0].result.content[0].text;
   assert.match(text, /step 0001 logged/);
   assert.match(text, /\.dollie still exists/);
+});
+
+test('dolly_plan runs the whole interview through one tool, and rejects an unknown action', (t) => {
+  const sb = sandbox();
+  t.after(sb.cleanup);
+  const r = rpc(sb.dir, [
+    call(1, 'dolly_plan', { action: 'start', title: 'Search memory', brief: 'find decisions' }),
+    call(2, 'dolly_plan', { action: 'check' }),
+    call(3, 'dolly_plan', { action: 'qa', question: 'Database?', answer: 'No.' }),
+    call(4, 'dolly_plan', { action: 'set', section: 'Goal' }),
+    call(5, 'dolly_plan', { action: 'finalize' }),
+    call(6, 'dolly_plan', { action: 'finalize', force: true }),
+    call(7, 'dolly_plan', { action: 'explode' }),
+  ]);
+  const text = (id) => r.replies.find((x) => x.id === id).result.content[0].text;
+  assert.match(text(1), /created \S+ "Search memory" status planning/);
+  assert.match(text(2), /Problem/);
+  assert.match(text(3), /Q&A recorded/);
+  assert.match(text(4), /set needs text/);
+  assert.match(text(5), /finalize blocked/);
+  assert.match(text(6), /finalized · spec v\d+ · status todo/);
+  assert.match(text(7), /must be one of start, check, set, qa, finalize/);
+  assert.equal(r.replies.find((x) => x.id === 7).result.isError, true);
 });
