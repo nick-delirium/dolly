@@ -22,7 +22,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import path from 'node:path';
 import { exists, readJson, writeJson } from './fsx.js';
 import { dollyHome } from './home.js';
-import { PKG_ROOT } from './pkg.js';
+import { PKG_NAME, PKG_ROOT, VERSION } from './pkg.js';
 import { notAHuman, type Env } from './tty.js';
 
 export interface UpdateCache {
@@ -38,23 +38,50 @@ const DEFAULT_TTL_HOURS = 24;
 
 /* ------------------------------- semver ---------------------------------- */
 
-function parts(v: string): number[] {
-  return v
-    .replace(/^v/, '')
-    .split('-')[0]
-    .split('.')
-    .map((n) => Number(n) || 0);
+function split(v: string): { core: number[]; pre: string[] } {
+  const [core, ...rest] = v.replace(/^v/, '').split('+')[0].split('-');
+  const pre = rest.join('-');
+  return {
+    core: core.split('.').map((n) => Number(n) || 0),
+    pre: pre ? pre.split('.') : [],
+  };
 }
 
-/** -1 / 0 / 1, comparing release versions only; prereleases sort as their base */
+/**
+ * -1 / 0 / 1 in semver order: 1.1.0-next.0 < 1.1.0-next.1 < 1.1.0. Prereleases
+ * must order among themselves, or a `next` install would never hear about the
+ * snapshot after its own.
+ */
 export function cmpSemver(a: string, b: string): number {
-  const x = parts(a);
-  const y = parts(b);
+  const x = split(a);
+  const y = split(b);
   for (let i = 0; i < 3; i++) {
-    const d = (x[i] ?? 0) - (y[i] ?? 0);
+    const d = (x.core[i] ?? 0) - (y.core[i] ?? 0);
     if (d) return d > 0 ? 1 : -1;
   }
+  // a release outranks any prerelease of itself
+  if (!x.pre.length || !y.pre.length) return Math.sign(y.pre.length - x.pre.length);
+  for (let i = 0; i < Math.max(x.pre.length, y.pre.length); i++) {
+    const p = x.pre[i];
+    const q = y.pre[i];
+    if (p === undefined) return -1;
+    if (q === undefined) return 1;
+    const pn = /^\d+$/.test(p);
+    const qn = /^\d+$/.test(q);
+    if (pn && qn && Number(p) !== Number(q)) return Number(p) > Number(q) ? 1 : -1;
+    if (pn !== qn) return pn ? -1 : 1;
+    if (p !== q) return p > q ? 1 : -1;
+  }
   return 0;
+}
+
+/**
+ * The npm dist-tag a registry install follows: a prerelease (1.1.0-next.2) came
+ * from `next`, anything else from `latest`. Read off the version itself, because
+ * npm records nowhere which tag a global package was installed from.
+ */
+export function channelOf(version: string): 'latest' | 'next' {
+  return split(version).pre.length ? 'next' : 'latest';
 }
 
 export function isNewer(latest: string | null, current: string): boolean {
@@ -121,6 +148,12 @@ export function cacheStale(
 
 /* ------------------------------ how to upgrade ---------------------------- */
 
+/**
+ * - `clone`: a git checkout (direct, or `npm link`ed — the path resolves through
+ *   the symlink to the checkout, which has .git)
+ * - `package`: installed from the npm registry; `channelOf(version)` says which
+ *   dist-tag it follows
+ */
 export type InstallKind = 'clone' | 'package';
 
 export function installKind(root = PKG_ROOT): InstallKind {
@@ -158,20 +191,22 @@ function latestFromGit(root: string): string | null {
 export async function latestForCheck(
   kind: InstallKind = installKind(),
   root = PKG_ROOT,
+  current = VERSION,
 ): Promise<{ latest: string | null; source: UpdateCache['source'] }> {
   if (kind === 'clone') {
     const latest = latestFromGit(root);
     return { latest, source: latest ? 'git' : 'none' };
   }
-  const fromNpm = await latestFromNpm('dolly');
+  // the tag this copy follows: a `next` install is compared with `next`
+  const fromNpm = await latestFromNpm(PKG_NAME, channelOf(current));
   if (fromNpm) return { latest: fromNpm, source: 'npm' };
   const latest = latestFromGit(root);
   return { latest, source: latest ? 'git' : 'none' };
 }
 
-async function latestFromNpm(name: string): Promise<string | null> {
+async function latestFromNpm(name: string, tag: string): Promise<string | null> {
   try {
-    const res = await fetch(`https://registry.npmjs.org/${name}/latest`, {
+    const res = await fetch(`https://registry.npmjs.org/${name}/${tag}`, {
       signal: AbortSignal.timeout(8000),
     });
     if (!res.ok) return null;

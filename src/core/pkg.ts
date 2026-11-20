@@ -13,22 +13,32 @@ import { fileURLToPath } from 'node:url';
 /** the installed package root, two levels up from dist/core/ */
 export const PKG_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
-function read(): { version: string; repository: string | null } {
+/**
+ * What npm calls dolly. Not `dolly`: that name belongs to an unrelated package,
+ * so asking the registry about it reports someone else's releases.
+ */
+const DEFAULT_NAME = '@dlrm/dolly';
+
+function read(): { name: string; version: string; repository: string | null } {
   try {
     const pkg = JSON.parse(fs.readFileSync(path.join(PKG_ROOT, 'package.json'), 'utf8'));
     const url: unknown = pkg.repository?.url ?? pkg.repository;
     return {
+      name: typeof pkg.name === 'string' ? pkg.name : DEFAULT_NAME,
       version: typeof pkg.version === 'string' ? pkg.version : '0.0.0',
       repository: typeof url === 'string' ? url : null,
     };
   } catch {
-    return { version: '0.0.0', repository: null };
+    return { name: DEFAULT_NAME, version: '0.0.0', repository: null };
   }
 }
 
 const PKG = read();
 
 export const VERSION = PKG.version;
+
+/** the npm package name; the command it installs is `dolly` either way */
+export const PKG_NAME = PKG.name;
 
 /** `owner/name` parsed out of the repository field, for the GitHub API */
 export function repoSlug(): string | null {

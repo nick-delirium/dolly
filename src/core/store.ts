@@ -87,7 +87,7 @@ into the repo if you want it shared.`;
 
 const STORE_README = `# .dolly — shared task memory
 
-Written and read by coding agents via the \`dolly\` CLI (\`npm i -g dolly\`).
+Written and read by coding agents via the \`dolly\` CLI (\`npm i -g @dlrm/dolly\`).
 %OPENING%
 
 - \`tasks/<id>-slug/task.md\` — short spec, success criteria, and a one-line-per-event

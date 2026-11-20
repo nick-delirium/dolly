@@ -37,13 +37,21 @@ Because task.md is never parsed back, a hand edit or a garbled merge of it canno
 
 ## Install
 
-Not on npm yet — install from the repo. Any of these gives you a `dolly` on your PATH; pick by whether you want to hack on it.
+Any of these gives you a `dolly` on your PATH; pick by whether you want to hack on it.
 
-**Straight from GitHub** (no clone, builds itself on install):
+**From npm** (the package is `@dlrm/dolly`; the command is still `dolly`):
 
 ```bash
-npm install -g github:nick-delirium/dolly
+npm install -g @dlrm/dolly
 ```
+
+**Pre-release snapshots** come from the `next` tag. Switch back to releases with `@latest`; either way, no uninstall is needed, and `dolly update` keeps you on the tag you picked:
+
+```bash
+npm install -g @dlrm/dolly@next
+```
+
+> **Installed dolly before it moved to `@dlrm/dolly`?** That copy is registered with npm as `dolly` and owns the `dolly` command, so installing the new package fails with `EEXIST: file already exists`. Remove the old one first: `npm uninstall -g dolly` (for an `npm link`, run `npm link` again in the checkout afterwards). The unscoped `dolly` package on npm is an unrelated project — never install it.
 
 **From a clone** — same result, but you have the source:
 
@@ -285,7 +293,7 @@ dolly 0.2.0 is available (you have 0.1.0)
   silence this: dolly config set updateCheck false
 ```
 
-`dolly update` does the right thing for how this copy was installed — a linked checkout is pulled (`--ff-only`, refusing on uncommitted changes) and rebuilt; an npm-installed copy is reinstalled with `npm install -g github:nick-delirium/dolly`. `--check` compares versions without touching anything, `--dry-run` prints the plan.
+`dolly update` does the right thing for how this copy was installed — a linked checkout is pulled (`--ff-only`, refusing on uncommitted changes) and rebuilt; an npm-installed copy is reinstalled from the tag it came from: `npm install -g @dlrm/dolly@latest` for a release, `@next` for a prerelease version (`1.1.0-next.2`). `--check` compares versions without touching anything, `--dry-run` prints the plan.
 
 It is deliberately timid, because dolly runs on every SessionStart, every Stop and every MCP tool call:
 
@@ -710,7 +718,7 @@ This one bites silently: the symptom is a fix that "doesn't work" because you're
 
 **Re-run `npm link` only if `package.json`'s `bin` changed.** npm materialises one symlink per bin entry at link time, so a newly added or renamed binary won't be on your PATH until you link again.
 
-Undo the link with `npm unlink -g dolly`.
+Undo the link with `npm unlink -g @dlrm/dolly`.
 
 ### Cutting a release
 
@@ -718,9 +726,21 @@ Undo the link with `npm unlink -g dolly`.
 npm version patch          # or minor/major — bumps package.json and tags vX.Y.Z
 # bump .claude-plugin/plugin.json to match (a test enforces this)
 npm test && git push --follow-tags
+npm publish                                          # → the `latest` tag
+npm dist-tag add @dlrm/dolly@"$(node -p 'require("./package.json").version')" next
 ```
 
-The update check reads the newest `vX.Y.Z` tag on the remote, so a release that is committed but not tagged is invisible to everyone else.
+The last line moves `next` up to the release, so snapshot users are never left on a prerelease older than what is already out.
+
+A snapshot for the `next` tag:
+
+```bash
+npm version prerelease --preid next   # 1.0.0 → 1.0.1-next.0, then -next.1, …
+# bump .claude-plugin/plugin.json to match
+npm test && npm publish --tag next    # npm refuses a prerelease without --tag
+```
+
+The update check asks the registry for the tag the installed version follows. A checkout compares against the newest `vX.Y.Z` tag on the remote instead, so a release that is committed but not tagged is invisible to people running from clones.
 
 The clone ships dolly's own `.claude/`, `.mcp.json`, `CLAUDE.md` and `.dolly/`, so once `dolly` is on your PATH a Claude Code session in the checkout gets the skills, slash commands, MCP server and hooks automatically — and `dolly board` shows the project's real task history. dolly is developed with dolly.
 
