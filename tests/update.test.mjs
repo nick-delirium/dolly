@@ -6,6 +6,7 @@ import { test } from 'node:test';
 import { VERSION, repoSlug } from '../dist/core/pkg.js';
 import {
   cacheStale,
+  channelOf,
   checkEnabled,
   cmpSemver,
   installKind,
@@ -50,7 +51,17 @@ test('semver comparison handles the cases a release actually hits', () => {
   assert.equal(cmpSemver('1.0.0', '0.9.9'), 1);
   assert.equal(cmpSemver('0.1.10', '0.1.9'), 1, 'numeric, not lexical');
   assert.equal(cmpSemver('v0.2.0', '0.2.0'), 0, 'a leading v is the tag form');
-  assert.equal(cmpSemver('0.2.0-beta.1', '0.2.0'), 0, 'prereleases sort as their base');
+  // semver order, so a `next` install hears about the snapshot after its own
+  assert.equal(cmpSemver('0.2.0-beta.1', '0.2.0'), -1, 'a release outranks its prereleases');
+  assert.equal(cmpSemver('0.2.0', '0.2.0-beta.1'), 1);
+  assert.equal(cmpSemver('1.1.0-next.1', '1.1.0-next.0'), 1);
+  assert.equal(cmpSemver('1.1.0-next.10', '1.1.0-next.9'), 1, 'numeric identifiers are numeric');
+  assert.equal(cmpSemver('1.1.0-next.0', '1.0.9'), 1, 'a prerelease of a higher version is higher');
+  assert.equal(cmpSemver('1.1.0-next', '1.1.0-next.0'), -1, 'fewer identifiers sort first');
+  assert.equal(cmpSemver('1.1.0-alpha', '1.1.0-beta'), -1);
+  assert.equal(cmpSemver('1.1.0-next.1', '1.1.0-next.1'), 0);
+  assert.equal(isNewer('1.1.0-next.3', '1.1.0-next.2'), true);
+  assert.equal(isNewer('1.1.0', '1.1.0-next.3'), true, 'a release supersedes the snapshots before it');
 
   assert.equal(isNewer('0.2.0', '0.1.0'), true);
   assert.equal(isNewer('0.1.0', '0.1.0'), false);
@@ -137,6 +148,12 @@ test('install kind is detected from the checkout', () => {
   assert.equal(installKind(ROOT), 'clone', 'this checkout is a git clone');
 });
 
+test('a registry install follows the dist-tag its version came from', () => {
+  assert.equal(channelOf('1.0.0'), 'latest');
+  assert.equal(channelOf('1.1.0-next.2'), 'next');
+  assert.equal(channelOf('v1.1.0-next.2'), 'next');
+});
+
 test('update plan matches the install kind, and dirty clones are caught', (t) => {
   const clone = planUpdate('clone', '/tmp/somewhere');
   assert.deepEqual(clone.steps, [
@@ -145,8 +162,9 @@ test('update plan matches the install kind, and dirty clones are caught', (t) =>
   ]);
   assert.match(clone.reason, /checkout/);
 
-  const pkg = planUpdate('package');
-  assert.deepEqual(pkg.steps, [['npm', 'install', '-g', 'github:nick-delirium/dolly']]);
+  // a registry install stays on its channel
+  assert.deepEqual(planUpdate('package', ROOT, '1.0.0').steps, [['npm', 'install', '-g', '@dlrm/dolly@latest']]);
+  assert.deepEqual(planUpdate('package', ROOT, '1.1.0-next.2').steps, [['npm', 'install', '-g', '@dlrm/dolly@next']]);
 
   // a real repo has git; an empty dir does not
   assert.equal(dirtyClone('/tmp/definitely-not-a-repo'), null);

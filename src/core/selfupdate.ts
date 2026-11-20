@@ -1,8 +1,8 @@
 /**
  * Self-update. The passive notice tells a human they are behind; this is the
  * command that notice points at. One rule drives everything: update in the way
- * this copy was installed — a linked checkout is pulled and rebuilt, an
- * npm-managed copy is reinstalled from its source.
+ * this copy was installed — a linked checkout is pulled and rebuilt, a registry
+ * install is reinstalled from the dist-tag it follows (`latest` or `next`).
  *
  * Deliberately manual: nothing here ever runs on a timer or from a hook, so
  * "dolly never needs a network" still holds, and the binary never changes
@@ -12,8 +12,8 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { exists } from './fsx.js';
-import { PKG_ROOT, repoSlug, VERSION } from './pkg.js';
-import type { InstallKind } from './update.js';
+import { PKG_NAME, PKG_ROOT, VERSION } from './pkg.js';
+import { channelOf, type InstallKind } from './update.js';
 
 export interface UpdatePlan {
   kind: InstallKind;
@@ -24,12 +24,11 @@ export interface UpdatePlan {
 }
 
 /**
- * What updating this installation looks like. Detection is `installKind()`:
- * the module path resolves through symlinks, so an npm link points at the
- * checkout (which has .git) while an npm install lands in a plain directory.
+ * What updating this installation looks like, for the kind `installKind()`
+ * detected. A registry install stays on its channel: someone on `next`
+ * snapshots is never moved to releases behind their back, nor the reverse.
  */
-export function planUpdate(kind: InstallKind, root = PKG_ROOT): UpdatePlan {
-  const slug = repoSlug() ?? 'nick-delirium/dolly';
+export function planUpdate(kind: InstallKind, root = PKG_ROOT, version = installedVersion(root)): UpdatePlan {
   if (kind === 'clone') {
     return {
       kind,
@@ -41,10 +40,14 @@ export function planUpdate(kind: InstallKind, root = PKG_ROOT): UpdatePlan {
         'this dolly runs from a git checkout (npm link or direct clone) — pull and rebuild in place',
     };
   }
+  const tag = channelOf(version);
   return {
     kind,
-    steps: [['npm', 'install', '-g', `github:${slug}`]],
-    reason: 'this dolly was installed as a package — reinstall it from source to replace it',
+    steps: [['npm', 'install', '-g', `${PKG_NAME}@${tag}`]],
+    reason:
+      tag === 'next'
+        ? 'this dolly is a prerelease from npm — reinstall the newest `next` snapshot'
+        : 'this dolly is a release from npm — reinstall the latest one',
   };
 }
 

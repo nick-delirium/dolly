@@ -1,7 +1,7 @@
 {
   "name": "dolly",
   "description": "Long-term memory + feature planning for coding agents. Git-tracked task board, step log with GitHub attribution, full-context archive, planning interview with a completeness gate.",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "author": {
     "name": "nick-delirium"
   },
