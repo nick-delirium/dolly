@@ -6,7 +6,7 @@ allowed-tools: Bash(dolly:*), Read, Grep, Glob
 
 User wants: **$ARGUMENTS**
 
-Follow the **dolly-planning** skill. Read the repo first — `dolly project`, `dolly related --files <expected files>`, and the code itself — then:
+Follow the **dolly-planning** skill. Read the repo first — `dolly project`, `dolly why <expected files>`, and the code itself — then:
 
 ```
 dolly plan start "<short title>" --brief "$ARGUMENTS"

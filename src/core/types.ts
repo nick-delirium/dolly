@@ -7,11 +7,13 @@
  * 4 — identity split out of the shared config into gitignored local.json
  * 5 — housekeeping removed: archive/YYYY-MM/ flattened back into tasks/
  * 6 — sequential ids rewritten to random hash ids
+ * 7 — housekeeping leftovers dropped; step bodies may move to steps.compacted.md
+ * 8 — task.md rendered from an append-only log.jsonl; step ids carry their author
  *
  * Bump this and add a Migration whenever the layout changes. A store stamped
  * higher than this is from a newer dolly and must not be written to.
  */
-export const STORE_VERSION = 7;
+export const STORE_VERSION = 8;
 
 export const DEFAULT_STATUSES = [
   'todo',
@@ -37,7 +39,11 @@ export interface TaskMeta {
   updated: string;
   /** Claude Code session ids this task was worked in, oldest first */
   sessions: string[];
-  /** slug of the digest (`.dolly/digests/<slug>.md`) this task was rolled into */
+  /**
+   * Legacy: the digest (`.dolly/digests/<slug>.md`) an older dolly rolled this
+   * task into. Nothing sets it any more; it is only carried through saves so a
+   * rewrite never drops a key a teammate's store still has.
+   */
   digest?: string;
 }
 
@@ -77,12 +83,12 @@ export interface ReindexConfig {
   includeThinking: boolean;
 }
 
-export interface MemoConfig {
+export interface DreamConfig {
   /**
-   * When true, the session-start hook notes it when today has no memo yet —
-   * a nudge, never an auto-write. The memo itself is always written on purpose.
+   * Session start says when a dream is due (work since the last one, over a
+   * day old). A nudge only — dreams are always written on purpose.
    */
-  auto: boolean;
+  nudge: boolean;
 }
 
 export interface Config {
@@ -94,7 +100,13 @@ export interface Config {
   doneStatus: Status;
   /** sections a plan must fill before `dolly plan check` passes */
   planSections: string[];
-  memo: MemoConfig;
+  dream: DreamConfig;
+  /**
+   * Days without activity after which an open task stops being offered as
+   * "current" to a conversation that never wrote to it, and the board flags
+   * it. 0 turns it off.
+   */
+  staleDays: number;
   install: InstallConfig;
   reindex: ReindexConfig;
   /** override the auto-detected identity */
@@ -116,9 +128,10 @@ export const DEFAULT_CONFIG: Config = {
     'Test Plan',
     'Open Questions',
   ],
-  memo: {
-    auto: false,
+  dream: {
+    nudge: true,
   },
+  staleDays: 14,
   install: {
     scope: 'local',
     // every supported agent has a shell and the instructions teach the CLI; the

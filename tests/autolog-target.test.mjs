@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
-import { Store, currentTask } from '../dist/core/store.js';
+import { Store, currentTask, isStale } from '../dist/core/store.js';
 import { createTask, linkSession, logSection, reload, saveTask, setStatus, stepEntries } from '../dist/core/task.js';
 import { withStoreLock } from '../dist/core/lock.js';
 import { ageTask, daysAgo, sandbox } from './helpers.mjs';
@@ -210,4 +210,95 @@ test('generated harness plugins are valid JavaScript', (t) => {
     const r = spawnSync(process.execPath, ['--check', copy], { encoding: 'utf8' });
     assert.equal(r.status, 0, `${f}: ${r.stderr}`);
   }
+});
+
+test('a todo task the conversation created never steals current from the one it is working', (t) => {
+  const sb = sandbox();
+  t.after(sb.cleanup);
+  const store = Store.open();
+  const work = createTask(store, { title: 'The real work' });
+  setStatus(store, work, 'working');
+  attach(reload(store, work), 'conv');
+  ageTask(work.dir, daysAgo(1));
+  // mid-work, the agent files a follow-up: `dolly new` attaches the conversation too
+  const later = createTask(Store.open(), { title: 'Follow-up idea' });
+  attach(later, 'conv');
+  const pick = () => currentTask(Store.open().loadTasks(), store.config, { session: 'conv', user: 'tester' }).meta.id;
+  assert.equal(pick(), work.meta.id, 'todo is not being worked');
+
+  // a newer planning task in the same conversation does not win over working either
+  const plan = createTask(Store.open(), { title: 'Next feature', status: 'planning' });
+  attach(plan, 'conv');
+  assert.equal(pick(), work.meta.id, 'working beats a newer planning task');
+
+  // and the CLI's `step current` lands on the working task
+  const r = run(sb.dir, ['step', 'current', '-m', 'Logged on the right task.'], { env: { DOLLY_SESSION_ID: 'conv' } });
+  assert.equal(r.code, 0, r.err);
+  assert.match(logSection(reload(store, work)), /Logged on the right task/);
+  assert.doesNotMatch(logSection(reload(store, later)), /Logged on the right task/);
+});
+
+test('an agent cannot close a task — status, step, new and finalize all refuse done', (t) => {
+  const sb = sandbox();
+  t.after(sb.cleanup);
+  const store = Store.open();
+  const task = createTask(store, { title: 'Closing' });
+  setStatus(store, task, 'validating');
+  const agent = { CLAUDECODE: '1' };
+  for (const args of [
+    ['status', task.meta.id, 'done'],
+    ['step', task.meta.id, '-m', 'x', '--status', 'done'],
+    ['new', 'Born closed', '--status', 'done'],
+    ['plan', 'finalize', task.meta.id, '--force', '--status', 'done'],
+  ]) {
+    const r = run(sb.dir, args, { env: agent });
+    assert.equal(r.code, 1, `${args.join(' ')} should refuse`);
+    assert.match(r.err, /only a person closes a task/);
+  }
+  assert.equal(reload(store, task).meta.status, 'validating');
+  assert.equal(Store.open().loadTasks().length, 1, 'no task was created');
+});
+
+test('an idle task is not offered as current, unless this conversation is on it', (t) => {
+  const sb = sandbox();
+  t.after(sb.cleanup);
+  const store = Store.open();
+  const old = createTask(store, { title: 'Forgotten work' });
+  setStatus(store, old, 'working');
+  attach(reload(store, old), 'old-conv');
+  ageTask(old.dir, daysAgo(40));
+  const cfg = store.config;
+  const tasks = () => Store.open().loadTasks();
+  assert.equal(isStale(tasks()[0], cfg), true);
+  assert.equal(currentTask(tasks(), cfg, { user: 'tester' }), null, 'a new conversation is not handed a 40-day-old task');
+  assert.equal(currentTask(tasks(), cfg, { session: 'old-conv' }).meta.id, old.meta.id, 'the conversation that wrote to it keeps it');
+  assert.equal(currentTask(tasks(), { ...cfg, staleDays: 0 }).meta.id, old.meta.id, 'staleDays 0 turns it off');
+
+  const r = run(sb.dir, ['step', 'current', '-m', 'x']);
+  assert.equal(r.code, 1);
+  assert.match(r.err, /1 open task\(s\) went idle over 14d/);
+
+  const start = run(sb.dir, ['hook', 'session-start', '--raw'], { env: { DOLLY_SESSION_ID: 'fresh' } });
+  assert.match(start.out, /No fresh open task \(1 idle over 14d/);
+  assert.doesNotMatch(start.out, /Forgotten work/);
+
+  const board = run(sb.dir, ['board']);
+  assert.match(board.out, /idle 1mo/);
+  assert.match(board.out, /1 open task idle over 14d/);
+
+  // `status X working` picks it back up: fresh again
+  run(sb.dir, ['status', old.meta.id, 'working'], { env: { DOLLY_SESSION_ID: 'new-conv' } });
+  assert.equal(isStale(tasks()[0], cfg), false);
+});
+
+test('the board says how long the oldest hand-over has waited', (t) => {
+  const sb = sandbox();
+  t.after(sb.cleanup);
+  const store = Store.open();
+  for (const [title, days] of [['A', 30], ['B', 2]]) {
+    const task = createTask(Store.open(), { title });
+    setStatus(Store.open(), task, 'validating');
+    ageTask(task.dir, daysAgo(days));
+  }
+  assert.match(run(sb.dir, ['board']).out, /2 awaiting a human, oldest 1mo/);
 });

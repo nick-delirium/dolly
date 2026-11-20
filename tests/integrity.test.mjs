@@ -85,19 +85,27 @@ test('a spec quoting dolly markers is stored whole and superseded whole', (t) =>
   assert.match(file, /after/, 'the superseded v2 kept its tail');
 });
 
-test('a spec update is validated before anything is written', (t) => {
+test('task.md is rendered, never parsed back: a corrupted copy changes nothing and is replaced', (t) => {
   const sb = sandbox();
   t.after(sb.cleanup);
   const store = Store.open();
   const task = createTask(store, { title: 'Order' });
-  // hand-corrupted task.md with two Log sections
+  // hand-corrupted task.md with a second Log section — this used to redirect
+  // every later step into the wrong section, then a guard refused writes
   const file = path.join(task.dir, 'task.md');
   fs.writeFileSync(file, `${fs.readFileSync(file, 'utf8')}\n## Log\n\ndup\n`);
   const t2 = reload(store, task);
-  assert.throws(() => updateSpec(store, t2, { full: 'new', short: 'x' }), /"## Log" headings/);
-  assert.equal(reload(store, task).meta.spec_version, 1);
-  assert.doesNotMatch(fs.readFileSync(path.join(task.dir, 'context', 'spec.md'), 'utf8'), /new/);
-  assert.throws(() => updateSpec(store, t2, {}), /nothing to change/);
+  assert.doesNotMatch(logSection(t2), /dup/, 'the reader never saw the corruption');
+  updateSpec(store, t2, { full: 'new', short: 'x' });
+  assert.equal(reload(store, task).meta.spec_version, 2);
+  const after = fs.readFileSync(file, 'utf8');
+  assert.equal(after.match(/^## Log$/gm).length, 1, 'the write re-rendered task.md from the log');
+  assert.doesNotMatch(after, /^dup$/m);
+  // a spec that talks about the format is just prose
+  updateSpec(store, reload(store, task), { short: 'about the format:\n## Log\nis where steps go' });
+  addStep(store, reload(store, task), { summary: 'LANDS-IN-LOG' });
+  assert.match(logSection(reload(store, task)), /LANDS-IN-LOG/);
+  assert.throws(() => updateSpec(store, reload(store, task), {}), /nothing to change/);
 });
 
 test('short spec and criteria edits leave a log line with the reason', (t) => {
@@ -142,7 +150,8 @@ test('step numbers never reuse an id already in steps.md', (t) => {
   const task = createTask(store, { title: 'Merge' });
   addStep(store, task, { summary: 'a', detail: 'A' });
   addStep(store, task, { summary: 'b', detail: 'B' });
-  // simulate a merge that resolved the counter to the older side
+  // a merge that resolved task.md's counter to the older side changes nothing:
+  // the counter is derived from the log, which merged as a union
   const file = path.join(task.dir, 'task.md');
   fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace(/^steps: 2$/m, 'steps: 1'));
   const t2 = reload(store, task);
@@ -152,7 +161,7 @@ test('step numbers never reuse an id already in steps.md', (t) => {
   fs.appendFileSync(steps, '\n<!-- dolly:step 0003 -->\ntheir C\n<!-- /dolly:step 0003 -->\n');
   assert.deepEqual(
     stepEntries(task.dir).map((e) => e.id),
-    ['0001', '0002', '0003', '0003'],
+    ['0001-tester', '0002-tester', '0003-tester', '0003'],
   );
 });
 
@@ -293,14 +302,11 @@ test('transcript lookup never borrows another project’s sessions', async (t) =
   assert.equal(listSessions('/nowhere/app').length, 1, 'a unique suffix match is still used');
 });
 
-test('memo rejects dates that do not exist', async (t) => {
-  const { buildDigest } = await import('../dist/core/memo.js');
-  const sb = sandbox();
-  t.after(sb.cleanup);
-  const store = Store.open();
-  store.init();
-  assert.throws(() => buildDigest(store, '2026-02-31'), /bad date/);
-  assert.doesNotThrow(() => buildDigest(store, '2028-02-29'));
+test('dream --since rejects what is not a date or a span', async () => {
+  const { parseSinceArg } = await import('../dist/core/dream.js');
+  assert.throws(() => parseSinceArg('yesterday-ish'), /--since takes/);
+  assert.equal(parseSinceArg('2d', 10 * 86_400_000), 8 * 86_400_000);
+  assert.ok(Number.isFinite(parseSinceArg('2028-02-29')));
 });
 
 test('the gh identity cache lives under DOLLY_HOME', async (t) => {

@@ -2,20 +2,21 @@
 id: 5nbx4mdy
 slug: add-dolly-update-command
 title: Add dolly update command
-status: validating
+status: done
 owner: nick.delirium
-collaborators: [nick.delirium]
+collaborators: [nick.delirium, nick-delirium]
 tags: []
 steps: 2
 spec_version: 1
 created: 2026-08-25T17:15:07Z
-updated: 2026-08-25T17:42:44Z
+updated: 2026-11-20T10:00:12Z
+sessions: [36d7b4d9-0ca0-4cb9-8bd0-8b3723565119]
 ---
 
 # 5nbx4mdy · Add dolly update command
 
 <!-- dolly:header -->
-`validating` · spec v1 · @nick.delirium · 2 steps · updated 2026-08-25 17:42Z
+`done` · spec v1 · @nick.delirium · 2 steps · updated 2026-11-20 10:00Z
 <!-- /dolly:header -->
 
 ## Spec
@@ -40,4 +41,5 @@ Explicit human command that detects how this copy was installed (linked clone vs
 - `2026-08-25 17:22Z` @nick.delirium: status working → validating. human: run dolly update --check and dolly update --dry-run; real pull can wait until these changes are committed
 - `2026-08-25 17:42Z` @nick.delirium: Cross-feature review of today's work landed here by mistake via 'step current' — see jd8s6t23 step 0003 for the six findings fixed (docs re-teaching numeric ids, memo wrong-file+regex bugs, v5 migration rmrf data-loss path, picker empty-list bug, missing session links, README drift). Note: jd8s6t23 is an old smoke-test stuck in working and currently hijacks every 'current' resolution in this repo — human may want to close it.
   files: `src/cli.ts`, `src/migrate.ts`, `src/core/memo.ts`, `src/prompt.ts`, `src/templates/instructions.ts`, `skills/dolly/SKILL.md` +1 more
+- `2026-11-20 10:00Z` @nick-delirium: status validating → done. Reviewed: update --check reports its source (git).
 

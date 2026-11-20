@@ -2,21 +2,21 @@
 id: t26kjrsz
 slug: agent-footprint-hot-path-latency-audit
 title: Agent footprint + hot-path latency audit
-status: validating
+status: done
 owner: nick-delirium
 collaborators: [nick-delirium]
 tags: [footprint]
 steps: 1
 spec_version: 1
 created: 2026-10-20T11:40:31Z
-updated: 2026-10-20T11:49:01Z
-sessions: [30490afd-79ca-44be-91bb-1f8b86dff17b]
+updated: 2026-11-20T10:00:12Z
+sessions: [30490afd-79ca-44be-91bb-1f8b86dff17b, 36d7b4d9-0ca0-4cb9-8bd0-8b3723565119]
 ---
 
 # t26kjrsz · Agent footprint + hot-path latency audit
 
 <!-- dolly:header -->
-`validating` · spec v1 · @nick-delirium · 1 step · updated 2026-10-20 11:49Z
+`done` · spec v1 · @nick-delirium · 1 step · updated 2026-11-20 10:00Z
 <!-- /dolly:header -->
 
 ## Spec
@@ -39,4 +39,5 @@ Measure everything dolly puts into an agent's context (instruction block, MCP to
 - `2026-10-20 11:49Z` @nick-delirium: MCP tool list 8987→7444 B (one dolly_plan tool, ref described once, enum checks), skill 8.2→7.2KB, context drops the short spec when the full spec already contains it and the empty brief footer; hot paths measured (hook stop 90ms on a 4.4MB transcript) — no latency work needed.
   files: `src/mcp.ts`, `src/core/render.ts`, `skills/dolly/SKILL.md`, `README.md`, `tests/mcp.test.mjs`, `tests/footprint.test.mjs` +3 more · full: `steps.md#0001`
 - `2026-10-20 11:49Z` @nick-delirium: status working → validating. npm test (323). MCP: dolly_plan replaces dolly_plan_start/set/qa/check/finalize — check any saved prompts. Decide: install.mcp in this repo, and the block living in both ~/.claude/CLAUDE.md and project CLAUDE.md.
+- `2026-11-20 10:00Z` @nick-delirium: status validating → done. Reviewed: audit landed. Its two open choices (install.mcp in this repo, the block in both CLAUDE.md files) are the human's.
 

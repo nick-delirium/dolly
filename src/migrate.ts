@@ -23,7 +23,10 @@ import {
   stampVersion,
   storeVersion,
 } from './core/store.js';
-import { contextDir, readSpecDoc, saveTask, specFile, stepsFile } from './core/task.js';
+import { contextDir, readSpecDoc, saveTask, specFile, stepsFile, taskFile } from './core/task.js';
+import { appendEvent, hasEventLog, headerLine, renderFromLog } from './core/log.js';
+import { countSections, parseFrontmatter, sectionNames, setBlock } from './core/md.js';
+import { REQUIRED_ATTRIBUTES, missingAttributes } from './core/store.js';
 import { STORE_VERSION, type Task } from './core/types.js';
 
 export interface MigrateAction {
@@ -274,7 +277,121 @@ const MIGRATIONS: Migration[] = [
       return store;
     },
   },
+  {
+    // v8: task.md is rendered from log.jsonl and never parsed back. A v7 dolly
+    // would keep writing task.md and never the log, so its writes would be
+    // lost on the next render — the version gate refuses it.
+    to: 8,
+    name: 'task.md rendered from an append-only log.jsonl',
+    // adds files only: each log starts from task.md verbatim (checked to
+    // render byte-identical first), and a task.md is only ever rewritten
+    // from its own log
+    safe: true,
+    detect(store) {
+      const parts: string[] = [];
+      const { fresh, drift } = logState(store);
+      if (fresh.length) parts.push(`start log.jsonl for ${fresh.length} task(s)`);
+      if (drift.length) parts.push(`re-render ${drift.length} task.md from its log (merged or hand-edited)`);
+      if (missingAttributes(store.root).length) parts.push('add .dolly/.gitattributes (union merges for the append-only files)');
+      if (memoKey(store.root)) parts.push('drop memo from config.json (dream.nudge replaced it)');
+      return parts.length ? parts.join('; ') : null;
+    },
+    apply(store, actions, dryRun) {
+      startLogs(store, dryRun, actions);
+      return store;
+    },
+  },
 ];
+
+/**
+ * Tasks without a log that can start one, those that cannot, and tasks whose
+ * task.md no longer matches their log. The log starts from the body verbatim,
+ * so the only thing a render can lose is frontmatter dolly does not know — a
+ * task carrying a custom key, or a section a merge duplicated, is refused and
+ * reported instead. A missing key is not a loss: the render fills its default.
+ */
+function logState(store: Store): { fresh: string[]; refused: { dir: string; why: string }[]; drift: string[] } {
+  const fresh: string[] = [];
+  const refused: { dir: string; why: string }[] = [];
+  const drift: string[] = [];
+  for (const dir of listDirs(store.tasksDir).map((d) => path.join(store.tasksDir, d))) {
+    const file = taskFile(dir);
+    // a deleted task.md is drift too: the log is the record, task.md its rendering
+    if (hasEventLog(dir)) {
+      const out = renderFromLog(dir);
+      if (out !== null && (!exists(file) || out !== readTextOr(file))) drift.push(dir);
+      continue;
+    }
+    if (!exists(file)) continue;
+    const why = cannotStartLog(dir);
+    if (why) refused.push({ dir, why });
+    else fresh.push(dir);
+  }
+  return { fresh, refused, drift };
+}
+
+const KNOWN_FRONT = new Set(['id', 'slug', 'title', 'status', 'owner', 'collaborators', 'tags', 'steps', 'spec_version', 'created', 'updated', 'sessions', 'digest']);
+
+function cannotStartLog(dir: string): string | null {
+  const task = readTaskDir(dir, path.basename(dir));
+  if (!task) return 'task.md does not parse';
+  const dup = sectionNames(task.body).find((n) => countSections(task.body, n) > 1);
+  if (dup) return `"## ${dup}" appears twice — remove the duplicate by hand`;
+  const extra = Object.keys(parseFrontmatter(readTextOr(taskFile(dir))).front).filter((k) => !KNOWN_FRONT.has(k));
+  if (extra.length) return `frontmatter carries ${extra.join(', ')}, which a render would drop — move it into the prose`;
+  return null;
+}
+
+function memoKey(root: string): boolean {
+  const raw = readJsonForUpdate<Record<string, unknown>>(path.join(root, 'config.json'), {});
+  return Object.prototype.hasOwnProperty.call(raw, 'memo');
+}
+
+function startLogs(store: Store, dryRun: boolean, actions: MigrateAction[]): void {
+  const { fresh, refused, drift } = logState(store);
+  for (const dir of fresh) {
+    const task = readTaskDir(dir, path.basename(dir))!;
+    actions.push({ kind: 'chain', task: task.meta.id, detail: 'log.jsonl started from task.md' });
+    if (dryRun) continue;
+    const body = setBlock(task.body, 'header', headerLine(task.meta));
+    appendEvent(dir, { v: 1, at: task.meta.updated || task.meta.created, by: task.meta.owner, base: { meta: { ...task.meta }, body } });
+    // render now, in the same run: a hand-written frontmatter normalizes here
+    // rather than showing up as drift on the next one
+    const out = renderFromLog(dir);
+    if (out !== null && out !== readTextOr(taskFile(dir))) writeText(taskFile(dir), out);
+  }
+  for (const r of refused) {
+    actions.push({ kind: 'chain', task: path.basename(r.dir), detail: `left on task.md, no log: ${r.why}` });
+  }
+  for (const dir of drift) {
+    actions.push({ kind: 'chain', task: path.basename(dir), detail: 'task.md re-rendered from log.jsonl' });
+    if (!dryRun) writeText(taskFile(dir), renderFromLog(dir)!);
+  }
+  const missing = missingAttributes(store.root);
+  if (missing.length) {
+    actions.push({ kind: 'chain', task: '-', detail: `.gitattributes: ${missing.join(', ')}` });
+    if (!dryRun) writeAttributes(store.root);
+  }
+  if (memoKey(store.root)) {
+    actions.push({ kind: 'chain', task: '-', detail: 'config.json: dropped memo' });
+    if (!dryRun) {
+      const raw = readJsonForUpdate<Record<string, unknown>>(path.join(store.root, 'config.json'), {});
+      delete raw.memo;
+      writeJson(path.join(store.root, 'config.json'), raw);
+    }
+  }
+}
+
+function writeAttributes(root: string): void {
+  const file = path.join(root, '.gitattributes');
+  const base = readTextOr(file);
+  const add = missingAttributes(root);
+  if (!add.length) return;
+  const head = base ? '' : '# dolly: append-only files merge as a union, so git never stops on them\n';
+  writeText(file, `${base}${base && !base.endsWith('\n') ? '\n' : ''}${head}${add.join('\n')}\n`);
+}
+
+export { REQUIRED_ATTRIBUTES };
 
 /** config keys of features that were removed; loadConfig carries them along unread */
 const DEAD_CONFIG_KEYS = ['housekeep'];

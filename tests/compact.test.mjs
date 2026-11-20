@@ -4,8 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
-import { planCompaction, rollupMaterial, saveDigest, saveRollup } from '../dist/core/compact.js';
-import { listDigests, readDigest } from '../dist/core/digest.js';
+import { planCompaction, rollupMaterial, saveRollup } from '../dist/core/compact.js';
 import { recall } from '../dist/core/recall.js';
 import { filesOfTask } from '../dist/core/related.js';
 import { importedTurns } from '../dist/reindex.js';
@@ -44,7 +43,7 @@ function roll(task, prose, opts = {}) {
   return saveRollup(Store.open(), fresh, prose, { ...opts, through: opts.through ?? planCompaction(fresh, opts).through });
 }
 
-const blocks = (src) => [...src.matchAll(/<!-- dolly:step (\d+) -->[\s\S]*?<!-- \/dolly:step \1 -->/g)].map((m) => m[0]);
+const blocks = (src) => [...src.matchAll(/<!-- dolly:step ([\w.-]+) -->[\s\S]*?<!-- \/dolly:step \1 -->/g)].map((m) => m[0]);
 
 test('a rollup moves the old bodies verbatim and keeps the last ones live', (t) => {
   const sb = sandbox();
@@ -54,9 +53,9 @@ test('a rollup moves the old bodies verbatim and keeps the last ones live', (t) 
   const before = fs.readFileSync(stepsFile(task.dir), 'utf8');
 
   const plan = planCompaction(task, { keep: 3 });
-  assert.equal(plan.from, '0001');
-  assert.equal(plan.through, '0026');
-  assert.match(rollupMaterial(plan), /--through 0026 --save/);
+  assert.equal(plan.from, '0001', 'from is for reading: the number');
+  assert.equal(plan.through, '0026-tester', 'through pins the exact block');
+  assert.match(rollupMaterial(plan), /--through 0026-tester --save/);
   assert.match(rollupMaterial(plan), /BODY-1:/);
   assert.doesNotMatch(rollupMaterial(plan), /BODY-27:/, 'kept steps are not material');
 
@@ -65,7 +64,7 @@ test('a rollup moves the old bodies verbatim and keeps the last ones live', (t) 
   const live = fs.readFileSync(stepsFile(task.dir), 'utf8');
   const moved = fs.readFileSync(compactedFile(task.dir), 'utf8');
   assert.equal(blocks(live).length, 3);
-  assert.equal((live.match(/<!-- dolly:rollup 0030 -->/g) ?? []).length, 1);
+  assert.equal((live.match(/<!-- dolly:rollup 0030-tester -->/g) ?? []).length, 1);
   assert.equal(blocks(moved).length, 26);
   for (const b of blocks(moved)) assert.ok(before.includes(b), 'byte-identical');
   assert.match(fs.readFileSync(path.join(task.dir, 'task.md'), 'utf8'), /rolled up steps 0001–0026/);
@@ -146,7 +145,7 @@ test('an interrupted save converges on retry, with no duplicated block', (t) => 
   roll(task, 'P');
   const moved = fs.readFileSync(compactedFile(task.dir), 'utf8');
   assert.equal(blocks(moved).length, 3);
-  assert.equal((moved.match(/<!-- dolly:step 0001 -->/g) ?? []).length, 1);
+  assert.equal((moved.match(/<!-- dolly:step 0001-tester -->/g) ?? []).length, 1);
 });
 
 test('a compacted id that collides with a different live body is refused, and nothing moves', (t) => {
@@ -159,7 +158,7 @@ test('a compacted id that collides with a different live body is refused, and no
   const theirs = blocks(live)[0].replace('BODY-1:', 'THEIR-BODY-1:');
   fs.writeFileSync(compactedFile(task.dir), `# compacted\n\n${theirs}\n`);
   const before = { live, moved: fs.readFileSync(compactedFile(task.dir), 'utf8') };
-  assert.throws(() => roll(task, 'P'), /already holds a different step 0001/);
+  assert.throws(() => roll(task, 'P'), /already holds a different step 0001-tester/);
   assert.equal(fs.readFileSync(stepsFile(task.dir), 'utf8'), before.live, 'our body is still live');
   assert.equal(fs.readFileSync(compactedFile(task.dir), 'utf8'), before.moved);
 });
@@ -171,7 +170,7 @@ test('a merged steps.md holding one id twice is refused, not guessed at', (t) =>
   const task = longTask(6);
   const live = fs.readFileSync(stepsFile(task.dir), 'utf8');
   fs.writeFileSync(stepsFile(task.dir), `${live}\n${blocks(live)[1]}\n`);
-  assert.throws(() => planCompaction(reload(Store.open(), task)), /holds step 0002 twice/);
+  assert.throws(() => planCompaction(reload(Store.open(), task)), /holds step 0002-tester twice/);
 });
 
 test('moved bodies stay findable: recall, recorded files, imported turns', (t) => {
@@ -194,49 +193,7 @@ test('moved bodies stay findable: recall, recorded files, imported turns', (t) =
   assert.equal(stepEntries(task.dir).length, 3);
 });
 
-test('a digest covers several tasks, stamps them, and folds the finished ones', (t) => {
-  const sb = sandbox();
-  t.after(sb.cleanup);
-  Store.open().init();
-  const a = longTask(2, 'Pi target');
-  const b = longTask(2, 'Opencode target');
-  const c = longTask(2, 'Zcode target');
-  setStatus(Store.open(), reload(Store.open(), a), 'done');
-  setStatus(Store.open(), reload(Store.open(), b), 'done');
-  const tasks = [a, b, c].map((x) => reload(Store.open(), x));
-  assert.throws(() => saveDigest(Store.open(), [tasks[0]], 'Solo', 'x'), /two or more/);
-  const d = saveDigest(Store.open(), tasks, 'Install targets', '### How it works\n\nDIGEST-PROSE');
-  assert.equal(d.slug, 'install-targets');
-  const read = readDigest(d.file);
-  assert.deepEqual(read.covers, [a.meta.id, b.meta.id, c.meta.id]);
-  assert.match(read.body, /DIGEST-PROSE/);
-  for (const x of [a, b, c]) {
-    const fresh = reload(Store.open(), x);
-    assert.equal(fresh.meta.digest, 'install-targets');
-    assert.match(fs.readFileSync(path.join(fresh.dir, 'task.md'), 'utf8'), /^digest: install-targets$/m);
-    assert.match(fs.readFileSync(path.join(fresh.dir, 'task.md'), 'utf8'), /rolled into digest `install-targets`/);
-  }
-  const board = renderBoard(Store.open(), Store.open().loadTasks());
-  assert.match(board, /⧉ Install targets {2}2 tasks · dolly digest install-targets/);
-  assert.match(board, /Zcode target/, 'unfinished covered tasks stay on the board');
-  assert.doesNotMatch(board, /Pi target/);
-  assert.match(renderContext(reload(Store.open(), c), { store: Store.open() }), /Rolled into digest `install-targets`/);
-  assert.equal(recall([Store.open()], 'DIGEST-PROSE').hits[0].kind, 'digest');
-
-  // saving again keeps the old prose as history and never forks the task
-  saveDigest(Store.open(), [a, b, c].map((x) => reload(Store.open(), x)), 'Install targets', 'NEWER-PROSE');
-  const raw = fs.readFileSync(d.file, 'utf8');
-  assert.match(raw, /NEWER-PROSE/);
-  assert.match(raw, /## Previous versions[\s\S]*DIGEST-PROSE/);
-  assert.equal(listDigests(Store.open()).length, 1);
-  const other = longTask(1, 'Unrelated');
-  assert.throws(
-    () => saveDigest(Store.open(), [reload(Store.open(), a), reload(Store.open(), other)], 'Elsewhere', 'x'),
-    /already in digest install-targets/,
-  );
-});
-
-test('CLI: print, save from stdin, digest list; MCP: dolly_compact', (t) => {
+test('CLI: print, save from stdin; --tasks is gone; MCP: dolly_compact', (t) => {
   const sb = sandbox();
   t.after(sb.cleanup);
   Store.open().init();
@@ -257,9 +214,10 @@ test('CLI: print, save from stdin, digest list; MCP: dolly_compact', (t) => {
   assert.match(dolly(sb.dir, ['context', task.meta.id], env), /CLI-ROLLUP/);
 
   const other = longTask(1, 'Second');
-  dolly(sb.dir, ['compact', '--tasks', `${task.meta.id},${other.meta.id}`, '--title', 'Area', '--save', '--file', '-'], env, 'AREA-PROSE');
-  assert.match(dolly(sb.dir, ['digest'], env), /area {2}Area {2}2 tasks/);
-  assert.match(dolly(sb.dir, ['digest', 'area'], env), /AREA-PROSE/);
+  const gone = spawnSync(process.execPath, [CLI, 'compact', '--tasks', `${task.meta.id},${other.meta.id}`, '--title', 'Area'], {
+    cwd: sb.dir, encoding: 'utf8', env: { ...process.env, ...env, DOLLY_USER: 'tester', NO_COLOR: '1' },
+  });
+  assert.equal(gone.status, 1, 'several-task digests are a dream\'s job now');
 
   const r = spawnSync(process.execPath, [CLI, 'mcp'], {
     cwd: sb.dir,
@@ -268,5 +226,5 @@ test('CLI: print, save from stdin, digest list; MCP: dolly_compact', (t) => {
     env: { ...process.env, ...env, DOLLY_USER: 'tester', NO_COLOR: '1' },
   });
   const reply = JSON.parse(r.stdout.trim().split('\n').pop());
-  assert.match(reply.result.content[0].text, /--through 0001 --save/);
+  assert.match(reply.result.content[0].text, /--through 0001-tester --save/, 'the save pins the exact block');
 });

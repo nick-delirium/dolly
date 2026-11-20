@@ -2,20 +2,21 @@
 id: 2rhqyc8c
 slug: scrap-archiving-and-time-based-housekeeping
 title: Scrap archiving and time-based housekeeping
-status: validating
+status: done
 owner: nick.delirium
-collaborators: [nick.delirium]
+collaborators: [nick.delirium, nick-delirium]
 tags: []
 steps: 1
 spec_version: 2
 created: 2026-08-25T15:14:54Z
-updated: 2026-08-25T15:54:58Z
+updated: 2026-11-20T10:00:12Z
+sessions: [36d7b4d9-0ca0-4cb9-8bd0-8b3723565119]
 ---
 
 # 2rhqyc8c · Scrap archiving and time-based housekeeping
 
 <!-- dolly:header -->
-`validating` · spec v2 · @nick.delirium · 1 step · updated 2026-08-25 15:54Z
+`done` · spec v2 · @nick.delirium · 1 step · updated 2026-11-20 10:00Z
 <!-- /dolly:header -->
 
 ## Spec
@@ -52,4 +53,5 @@ Plan complete. Status → todo.
 - `2026-08-25 15:54Z` @nick.delirium: Archiving and time-based housekeeping removed entirely: housekeep/archive/restore commands, auto-runs, config keys, MCP tools, board ARCHIVED section, stale flags all gone; v5 migration flattens archive/YYYY-MM back into tasks/ (this repo migrated: 5 tasks restored). Tasks now only ever change via explicit commands.
   files: `.claude/commands/dolly/housekeep.md`, `.opencode/commands/dolly-adopt.md`, `.opencode/commands/dolly-board.md`, `.opencode/commands/dolly-housekeep.md`, `.opencode/commands/dolly-plan.md`, `.opencode/commands/dolly-resume.md` +34 more
 - `2026-08-25 15:54Z` @nick.delirium: status working → validating. human: skim git status for the migration diff shape (archive/ deletions + tasks/ additions) and confirm board reads right
+- `2026-11-20 10:00Z` @nick-delirium: status validating → done. Reviewed: archive/restore gone, migrate flattens legacy archives; the later idle marking (c46qzykf) moves nothing.
 

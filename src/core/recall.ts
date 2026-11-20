@@ -2,30 +2,31 @@
  * Full-text recall over everything a store remembers, derived on demand.
  *
  * Decisions live in prose — step notes, superseded specs, planning answers,
- * memos — and nothing else in dolly searches it: refs match titles, `related`
+ * dreams — and nothing else in dolly searches it: refs match titles, `related`
  * matches recorded files. Nothing is persisted: every query reads the markdown
  * as it is now, so a hit's `path:line` cannot be stale and the store stays the
  * only source of truth. BM25 is hand-rolled because zero dependencies is an
  * invariant and the ranking core is small.
  */
 import path from 'node:path';
-import { listDigests } from './digest.js';
+import { listDreams } from './dream.js';
 import { isDir, listFiles, readTextOr } from './fsx.js';
 import { fileLog, type FileCommit } from './git.js';
-import { memoDir } from './memo.js';
 import { projectFile } from './project.js';
 import { parseLog, type LogEntry } from './related.js';
 import { Store, byRecency, readProjectIndex } from './store.js';
 import { compactedFile, normalizeFiles, planFile, specFile, stepEntries, stepsFile, taskFile } from './task.js';
 import type { Task } from './types.js';
 
-export type RecallKind = 'task' | 'log' | 'step' | 'spec' | 'plan' | 'memo' | 'project' | 'digest';
+export type RecallKind = 'task' | 'log' | 'step' | 'spec' | 'plan' | 'dream' | 'project';
 /** what `--kind` accepts: the unit kinds, plus `decision` which cuts across them */
-export const RECALL_KINDS = ['task', 'log', 'step', 'spec', 'plan', 'memo', 'project', 'digest', 'decision'] as const;
+export const RECALL_KINDS = ['task', 'log', 'step', 'spec', 'plan', 'dream', 'project', 'decision'] as const;
+/** kinds that were folded into another; still accepted on `--kind` */
+export const KIND_ALIASES: Record<string, string> = { memo: 'dream', digest: 'dream' };
 /** a rolled-up body still answers, below the rollup that replaced it */
 const COMPACTED_WEIGHT = 0.6;
-/** a digest is the area's overview: it should surface before its fragments */
-const DIGEST_WEIGHT = 1.2;
+/** a week dream is the consolidated view of its days: it should surface first */
+const WEEK_WEIGHT = 1.2;
 
 /** one searchable slice of a file: a section, a log entry, a Q&A pair */
 interface Unit {
@@ -197,7 +198,7 @@ function queryTerms(raw: string): Map<string, number> {
 
 /* --------------------------------- corpus -------------------------------- */
 
-const DECISION_HEADING = /\b(decisions?|decided|choices?|dead[ -]?ends?|rejected|why|trade-?offs?|chose|gotchas?|alternatives?)\b/i;
+const DECISION_HEADING = /\b(decisions?|decided|choices?|dead[ -]?ends?|rejected|why|trade-?offs?|chose|gotchas?|alternatives?|lessons?|went wrong)\b/i;
 /** importer-written sections of an auto-logged step: tool traces, not prose */
 const NOISE_HEADING = /^(Work chain|Commands run|Tools)\b/;
 const HEADING = /^(#{1,6})\s+(.*)$/;
@@ -409,29 +410,23 @@ function storeUnits(store: Store): Unit[] {
   if (proj) {
     out.push(...sections({ ...base, kind: 'project', file: projectFile(store), label: 'project brief', at: '' }, proj, 0, proj.length, /^##\s/));
   }
-  for (const d of listDigests(store)) {
-    const lines = readLines(d.file);
-    if (!lines) continue;
-    // the live prose ranks above its own history
-    const cur = lines.findIndex((l) => /^<!--\s*dolly:digest\s*-->/.test(l));
-    const end = lines.findIndex((l) => /^<!--\s*\/dolly:digest\s*-->/.test(l));
-    const hist = lines.findIndex((l) => /^<!--\s*dolly:digest-history\s*-->/.test(l));
-    const base2 = { ...base, kind: 'digest' as const, file: d.file, at: d.updated };
-    if (cur >= 0 && end > cur) {
-      out.push(...sections({ ...base2, label: `digest ${d.slug}`, weight: DIGEST_WEIGHT }, lines, cur + 1, end));
-    }
-    if (hist >= 0) {
-      const hend = lines.findIndex((l, i) => i > hist && /^<!--\s*\/dolly:digest-history\s*-->/.test(l));
-      out.push(...sections({ ...base2, label: `digest ${d.slug} (superseded)`, weight: 0.5 }, lines, hist + 1, hend > hist ? hend : lines.length));
-    }
+  // dreams, one unit per section of each dream block
+  const files = new Map<string, string>();
+  for (const d of listDreams(store)) files.set(d.file, d.period);
+  for (const [file, period] of files) {
+    const lines = readLines(file);
+    const weight = /W\d{2}$/.test(period) ? WEEK_WEIGHT : 1;
+    if (lines) out.push(...sections({ ...base, kind: 'dream', file, label: `dream ${period}`, at: period, weight }, lines, 0, lines.length, /^#{2,4}\s/));
   }
-  const memos = memoDir(store.root);
-  if (isDir(memos)) {
-    for (const name of listFiles(memos).filter((f) => /^\d{4}-\d{2}-\d{2}\.md$/.test(f))) {
-      const file = path.join(memos, name);
+  // what came before dreams — memos and digests — stays searchable as such
+  for (const [dir, label] of [['memo', 'memo'], ['digests', 'digest']] as const) {
+    const full = path.join(store.root, dir);
+    if (!isDir(full)) continue;
+    for (const name of listFiles(full).filter((f) => f.endsWith('.md'))) {
+      const file = path.join(full, name);
       const lines = readLines(file);
-      const date = name.slice(0, 10);
-      if (lines) out.push(...sections({ ...base, kind: 'memo', file, label: `memo ${date}`, at: date }, lines, 0, lines.length, /^##\s/));
+      const id = name.replace(/\.md$/, '');
+      if (lines) out.push(...sections({ ...base, kind: 'dream', file, label: `${label} ${id}`, at: /^\d{4}-\d{2}-\d{2}$/.test(id) ? id : '' }, lines, 0, lines.length, /^##\s/));
     }
   }
   return out;
@@ -651,7 +646,8 @@ export function recall(stores: Store[], query: string, opts: RecallOpts = {}): R
   const skipped: RecallResult['skipped'] = [];
   if (!q.groups.length) return { hits: [], total: 0, fuzzy: {}, skipped };
   if (opts.kinds) {
-    const bad = opts.kinds.filter((k) => !(RECALL_KINDS as readonly string[]).includes(k));
+    opts = { ...opts, kinds: opts.kinds.map((k) => KIND_ALIASES[k] ?? k) };
+    const bad = opts.kinds!.filter((k) => !(RECALL_KINDS as readonly string[]).includes(k));
     if (bad.length) throw new Error(`unknown --kind ${bad.join(', ')} — one of ${RECALL_KINDS.join(', ')}`);
   }
   const units: Unit[] = [];
@@ -773,7 +769,7 @@ export function why(store: Store, file: string): WhyReport {
   });
 
   const base = path.posix.basename(rel).toLowerCase();
-  const prose = recall([store], rel, { kinds: ['task', 'step', 'spec', 'plan', 'memo', 'project', 'digest'] })
+  const prose = recall([store], rel, { kinds: ['task', 'step', 'spec', 'plan', 'dream', 'project'] })
     .hits.filter((h) => h.snippet.toLowerCase().includes(base) && !/^- files:/.test(h.snippet))
     .slice(0, 5);
   return { file: rel, touched, commits, prose };

@@ -22,6 +22,7 @@ export const PROJECT_SECTIONS = [
   'Conventions',
   'Invariants',
   'Glossary',
+  'Lessons',
 ] as const;
 
 const PROMPTS: Record<string, string> = {
@@ -30,6 +31,7 @@ const PROMPTS: Record<string, string> = {
   Conventions: 'How code here is written: patterns to follow, patterns banned, and why.',
   Invariants: 'Things that must stay true. Break one and something silently rots.',
   Glossary: 'Domain words that mean something specific here.',
+  Lessons: 'Rules learned the hard way: what went wrong or right, phrased as what to do. Dreams append here.',
 };
 
 export function projectFile(store: Store): string {
@@ -106,6 +108,8 @@ export interface DigestOpts {
   sections?: readonly string[];
   /** per-section cap, cut at a line boundary; 0 = none */
   maxPerSection?: number;
+  /** sections the caller shows by other means: left out of the pointer line */
+  shownElsewhere?: readonly string[];
 }
 
 /**
@@ -128,9 +132,37 @@ export function projectDigest(store: Store, opts: DigestOpts = {}): string {
       .trim();
     out.push(`### ${name}`, '', clip(clean, opts.maxPerSection ?? 0), '');
   }
-  const rest = filled.filter((n) => !chosen.includes(n));
+  const rest = filled.filter((n) => !chosen.includes(n) && !(opts.shownElsewhere ?? []).includes(n));
   if (rest.length) out.push(`_Also in the brief: ${rest.join(', ')} — \`dolly project\`._`);
   return out.join('\n').trim();
+}
+
+/**
+ * The brief's newest Lessons, within `max` bytes. Dreams append them, so the
+ * newest are at the end — clipping from the top, like every other section,
+ * would drop exactly the ones just learned. Whole bullets only; '' when the
+ * section is empty or unfilled.
+ */
+export function recentLessons(store: Store, max = 900): string {
+  const src = readProject(store);
+  const body = src ? getSection(src, 'Lessons') : null;
+  if (!isFilled(body)) return '';
+  // a bullet with its wrapped continuation lines is one lesson
+  const items: string[] = [];
+  for (const line of body!.split('\n')) {
+    if (/^\s*<!--/.test(line) || !line.trim()) continue;
+    if (/^[-*]\s+/.test(line) || !items.length) items.push(line);
+    else items[items.length - 1] += `\n${line}`;
+  }
+  const kept: string[] = [];
+  let size = 0;
+  for (let i = items.length - 1; i >= 0; i--) {
+    if (kept.length && size + items[i].length + 1 > max) break;
+    kept.unshift(items[i]);
+    size += items[i].length + 1;
+  }
+  const older = items.length - kept.length;
+  return older ? `_${older} older lesson${older === 1 ? '' : 's'} — \`dolly project\`._\n${kept.join('\n')}` : kept.join('\n');
 }
 
 /** whole lines up to `max` chars, marked when anything was cut */

@@ -79,20 +79,20 @@ test('addStep writes both tiers and bumps the counter', (t) => {
   assert.equal(task.meta.steps, 1);
 
   const steps = fs.readFileSync(path.join(task.dir, 'context', 'steps.md'), 'utf8');
-  assert.match(steps, /<!-- dolly:step 0001 -->/);
+  assert.match(steps, /<!-- dolly:step 0001-tester -->/, 'block ids carry their author');
   assert.match(steps, /## 0001 · .* · @tester/);
   assert.match(steps, /Implicit blocked by CSP/);
 
   const log = logSection(reload(store, task));
   assert.match(log, /^- `[\d-]+ [\d:]+Z` @tester: Wired the callback route\.$/m);
-  assert.match(log, /files: `src\/a\.ts`, `src\/b\.ts` · full: `steps\.md#0001`/);
+  assert.match(log, /files: `src\/a\.ts`, `src\/b\.ts` · full: `steps\.md#0001-tester`/);
   assert.doesNotMatch(log, /_no steps yet_/);
 
   // a summary-only step adds no entry to steps.md and no `full:` trailer
   addStep(store, task, { summary: 'Tidied imports.' });
   assert.equal(task.meta.steps, 2);
   const steps2 = fs.readFileSync(path.join(task.dir, 'context', 'steps.md'), 'utf8');
-  assert.deepEqual(listBlocks(steps2, 'step'), ['0001']);
+  assert.deepEqual(listBlocks(steps2, 'step'), ['0001-tester']);
   const log2 = logSection(reload(store, task));
   assert.match(log2, /@tester: Tidied imports\.$/m);
   assert.doesNotMatch(log2, /full: _none_/);
@@ -107,10 +107,10 @@ test('step entries are readable back in order, oldest first', (t) => {
     addStep(store, task, { summary: `s${i}`, detail: `detail ${i}` });
   }
   const all = stepEntries(task.dir);
-  assert.deepEqual(all.map((e) => e.id), ['0001', '0002', '0003']);
+  assert.deepEqual(all.map((e) => e.id), ['0001-tester', '0002-tester', '0003-tester']);
   assert.match(all[0].text, /detail 1/);
-  assert.deepEqual(recentStepDetails(task, 2).map((e) => e.id), ['0002', '0003']);
-  assert.deepEqual(recentStepDetails(task, 0).map((e) => e.id), ['0001', '0002', '0003']);
+  assert.deepEqual(recentStepDetails(task, 2).map((e) => e.id), ['0002-tester', '0003-tester']);
+  assert.deepEqual(recentStepDetails(task, 0).map((e) => e.id), ['0001-tester', '0002-tester', '0003-tester']);
 });
 
 test('updateSpec versions the full spec but only replaces the short one', (t) => {
@@ -286,7 +286,7 @@ test('retitle renames the task, its heading and its directory', (t) => {
   assert.match(fresh.body, new RegExp(`^# ${task.meta.id} · Brand new name$`, 'm'));
   assert.match(logSection(fresh), /retitled: "Old name here" → "Brand new name"/);
   assert.match(logSection(fresh), /some work/);
-  assert.deepEqual(stepEntries(fresh.dir).map((e) => e.id), ['0001']);
+  assert.deepEqual(stepEntries(fresh.dir).map((e) => e.id), ['0001-tester']);
 
   // resolving by the new slug works, and a no-op retitle is harmless
   assert.equal(Store.open().resolve('brand-new-name').meta.id, task.meta.id);

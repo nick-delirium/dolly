@@ -131,7 +131,9 @@ test('a typo is corrected against the store vocabulary and reported', (t) => {
   seed();
   const res = recall([Store.open()], 'quartelry');
   assert.deepEqual(res.fuzzy, { quartelry: 'quarterly' });
-  assert.equal(res.hits[0].kind, 'memo');
+  // memos predate dreams: still searchable, folded into the dream kind
+  assert.equal(res.hits[0].kind, 'dream');
+  assert.match(res.hits[0].label, /^memo \d{4}-\d{2}-\d{2}$/);
   assert.equal(editDistance('compactoin', 'compaction', 1), 1, 'a transposition is one edit');
 });
 

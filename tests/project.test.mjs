@@ -21,7 +21,7 @@ import {
 } from '../dist/core/related.js';
 import { Store, sharedUserLeak } from '../dist/core/store.js';
 import { migrate } from '../dist/migrate.js';
-import { addStep, createTask, setStatus } from '../dist/core/task.js';
+import { addStep, createTask, reload, setStatus } from '../dist/core/task.js';
 import { ageTask, daysAgo, sandbox } from './helpers.mjs';
 
 test('the project brief tracks which sections are still unanswered', (t) => {
@@ -236,4 +236,25 @@ test('a task whose only entries are status moves says so', (t) => {
   const task = createTask(store, { title: 'No steps yet' });
   setStatus(Store.open(), Store.open().loadTasks()[0], 'working');
   assert.match(latestOutcome(Store.open().loadTasks()[0]), /^\(no step logged yet\)/);
+});
+
+test('related ranks a rare shared file above a hub every task touches, and context drops hub-only overlap', (t) => {
+  const sb = sandbox();
+  t.after(sb.cleanup);
+  const mk = (title, files) => {
+    const task = createTask(Store.open(), { title });
+    addStep(Store.open(), task, { summary: `${title} work`, files });
+    return task;
+  };
+  for (let i = 0; i < 8; i++) mk(`Hub user ${i}`, ['src/hub.ts']);
+  const rare = mk('Rare partner', ['src/hub.ts', 'src/rare.ts']);
+  const me = mk('Subject', ['src/hub.ts', 'src/rare.ts']);
+
+  const ranked = relatedByFiles(Store.open(), ['src/hub.ts', 'src/rare.ts'], me.meta.id);
+  assert.equal(ranked[0].task.meta.id, rare.meta.id, 'the rare file wins');
+  assert.deepEqual(ranked[0].shared, ['src/rare.ts', 'src/hub.ts'], 'rarest first');
+  assert.ok(ranked.slice(1).every((r) => r.hubOnly), 'the rest share only the hub');
+
+  const mine = relatedToTask(Store.open(), reload(Store.open(), me));
+  assert.deepEqual(mine.map((r) => r.task.meta.id), [rare.meta.id], 'a task context keeps only real leads');
 });

@@ -2,21 +2,21 @@
 id: rqdpztdy
 slug: auto-log-targets-this-session-s-task-lock-store
 title: "Auto-log targets this session's task; lock store writes"
-status: validating
+status: done
 owner: nick-delirium
 collaborators: [nick-delirium]
 tags: [autolog]
 steps: 1
 spec_version: 1
 created: 2026-09-29T13:59:33Z
-updated: 2026-09-29T14:34:35Z
-sessions: [9b8fa6e3-cae2-461d-83e8-303d1b261b96]
+updated: 2026-11-20T10:00:12Z
+sessions: [9b8fa6e3-cae2-461d-83e8-303d1b261b96, 36d7b4d9-0ca0-4cb9-8bd0-8b3723565119]
 ---
 
 # rqdpztdy · Auto-log targets this session's task; lock store writes
 
 <!-- dolly:header -->
-`validating` · spec v1 · @nick-delirium · 1 step · updated 2026-09-29 14:34Z
+`done` · spec v1 · @nick-delirium · 1 step · updated 2026-11-20 10:00Z
 <!-- /dolly:header -->
 
 ## Spec
@@ -43,4 +43,5 @@ Stop-hook auto-log and 'current' pick the most recently updated working task reg
 - `2026-09-29 14:34Z` @nick-delirium: Auto-log now writes only to a task this conversation already wrote to (the stale-'current' pollution is gone); current prefers session, then own tasks. Every write holds a per-store lock (8 parallel steps → 8 distinct). Plugin hooks defer to settings hooks; pi logs per prompt, opencode survives restarts.
   files: `src/core/lock.ts`, `src/core/session.ts`, `src/core/store.ts`, `src/core/task.ts`, `src/cli.ts`, `src/mcp.ts` +7 more · full: `steps.md#0001`
 - `2026-09-29 14:34Z` @nick-delirium: status working → validating. Run npm test (276). In a real session: open a new Claude session in a repo with an old working task, do a turn without any dolly write → nothing logged; run 'dolly status <ref> working' → next turn logs there.
+- `2026-11-20 10:00Z` @nick-delirium: status validating → done. Reviewed: session-scoped auto-log and the store lock are tested; tightened further in h2snm7k7.
 

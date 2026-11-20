@@ -2,21 +2,21 @@
 id: 3tx3c6t5
 slug: shrink-dolly-s-agent-context-footprint
 title: "Shrink dolly's agent context footprint"
-status: validating
+status: done
 owner: nick-delirium
 collaborators: [nick-delirium]
 tags: [context]
 steps: 2
 spec_version: 1
 created: 2026-09-29T13:59:33Z
-updated: 2026-09-29T14:45:38Z
-sessions: [9b8fa6e3-cae2-461d-83e8-303d1b261b96]
+updated: 2026-11-20T10:00:12Z
+sessions: [9b8fa6e3-cae2-461d-83e8-303d1b261b96, 36d7b4d9-0ca0-4cb9-8bd0-8b3723565119]
 ---
 
 # 3tx3c6t5 · Shrink dolly's agent context footprint
 
 <!-- dolly:header -->
-`validating` · spec v1 · @nick-delirium · 2 steps · updated 2026-09-29 14:45Z
+`done` · spec v1 · @nick-delirium · 2 steps · updated 2026-11-20 10:00Z
 <!-- /dolly:header -->
 
 ## Spec
@@ -46,4 +46,5 @@ Cut what dolly injects into agent context: slim always-loaded instruction block 
 - `2026-09-29 14:45Z` @nick-delirium: Always-loaded block 6.2KB→1.5KB with the full guide behind 'dolly guide'; skill 10.6→6.1KB and both skill descriptions halved; MCP opt-in with a 22% smaller tool list; checkpoint command dropped. Budgets asserted in tests so they cannot creep back.
   files: `src/templates/instructions.ts`, `src/cli.ts`, `src/mcp.ts`, `src/core/types.ts`, `skills/dolly/SKILL.md`, `skills/dolly-planning/SKILL.md` +9 more · full: `steps.md#0002`
 - `2026-09-29 14:45Z` @nick-delirium: status working → validating. Start a fresh Claude session here: CLAUDE.md block + session-start should total ~3.5KB; run dolly context on a planned task (no Plan section, criteria once); dolly guide prints the skill. npm test 284.
+- `2026-11-20 10:00Z` @nick-delirium: status validating → done. Reviewed: instruction block 1.66KB, session start 1.9KB, MCP off by default, checkpoint gone.
 

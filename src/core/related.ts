@@ -25,7 +25,7 @@ export interface LogEntry {
   user: string;
   text: string;
   files: string[];
-  /** the steps.md block holding this entry's full context, e.g. `0003` */
+  /** the steps.md block holding this entry's full context, e.g. `0003-alice` (or `0003` before v8) */
   ref?: string;
 }
 
@@ -43,7 +43,7 @@ export function parseLog(task: Task): LogEntry[] {
     // indented trailer belonging to the entry above: `files: …` / `full: …`
     const last = out[out.length - 1];
     if (!last) continue;
-    const ref = /full:\s*`?steps\.md#(\d+)/.exec(raw)?.[1];
+    const ref = /full:\s*`?steps\.md#(\d+(?:-[A-Za-z0-9._-]+)?)/.exec(raw)?.[1];
     if (ref) last.ref = ref;
     const files = /(?:^|·\s*)files:\s*(.+?)(?:\s*·\s*full:|$)/.exec(raw.trim())?.[1];
     if (!files) continue;
@@ -92,30 +92,52 @@ export function latestOutcome(task: Task, max = 200): string {
 
 export interface RelatedTask {
   task: Task;
-  /** files this task and the subject both touched */
+  /** files this task and the subject both touched, rarest first */
   shared: string[];
   outcome: string;
+  /** how strongly it relates: rare shared files count for more than hub files */
+  score: number;
+  /** every shared file is one most tasks touch — overlap, not a relationship */
+  hubOnly: boolean;
 }
 
+/** a file touched by more than this share of tasks says nothing about any one of them */
+const HUB_SHARE = 0.25;
+
 /**
- * Tasks that touched any of `files`, most overlap first. `excludeId` keeps a
- * task from being reported as related to itself.
+ * Tasks that touched any of `files`, strongest relation first. Sharing a file
+ * that a third of all tasks touched (cli.ts, task.ts) is near-meaningless;
+ * sharing one only two tasks ever touched is the signal. So each shared file
+ * weighs its inverse document frequency, and a task that touched dozens of
+ * files is damped — it overlaps everything. `excludeId` keeps a task from
+ * being reported as related to itself.
  */
 export function relatedByFiles(store: Store, files: string[], excludeId?: string): RelatedTask[] {
   const wanted = new Set(normalizeFiles(store.project, files));
   if (!wanted.size) return [];
+  const all = store.loadTasks().map((task) => ({ task, files: filesOfTask(task) }));
+  const withFiles = all.filter((x) => x.files.length).length || 1;
+  const df = new Map<string, number>();
+  for (const x of all) for (const f of x.files) df.set(f, (df.get(f) ?? 0) + 1);
+  const idf = (f: string) => Math.log(1 + withFiles / (df.get(f) ?? 1));
+  // with a handful of tasks every file is "common"; hubs only exist at scale
+  const isHub = (f: string) => withFiles >= 8 && (df.get(f) ?? 0) / withFiles > HUB_SHARE;
+
   const out: RelatedTask[] = [];
-  for (const task of store.loadTasks()) {
+  for (const { task, files: theirs } of all) {
     if (task.meta.id === excludeId) continue;
-    const shared = filesOfTask(task).filter((f) => wanted.has(f));
+    const shared = theirs.filter((f) => wanted.has(f)).sort((a, b) => idf(b) - idf(a));
     if (!shared.length) continue;
-    out.push({ task, shared, outcome: latestOutcome(task) });
+    const damp = 1 / Math.sqrt(Math.max(1, theirs.length / 10));
+    const score = shared.reduce((sum, f) => sum + idf(f), 0) * damp;
+    out.push({ task, shared, outcome: latestOutcome(task), score, hubOnly: shared.every(isHub) });
   }
-  return out.sort((a, b) => b.shared.length - a.shared.length);
+  return out.sort((a, b) => b.score - a.score || byRecency(a.task, b.task));
 }
 
+/** for a task's own context: hub-only overlaps are noise there, not leads */
 export function relatedToTask(store: Store, task: Task): RelatedTask[] {
-  return relatedByFiles(store, filesOfTask(task), task.meta.id);
+  return relatedByFiles(store, filesOfTask(task), task.meta.id).filter((r) => !r.hubOnly);
 }
 
 /* --------------------------- title / spec overlap -------------------------- */
@@ -174,7 +196,7 @@ export function renderRelated(related: RelatedTask[], limit = 6): string {
     const files = r.shared.slice(0, 4).map((f) => `\`${f}\``).join(', ');
     const more = r.shared.length > 4 ? ` +${r.shared.length - 4} more` : '';
     out.push(
-      `- **${r.task.meta.id} ${r.task.meta.title}** (${r.task.meta.status}${r.task.meta.digest ? ` · digest ${r.task.meta.digest}` : ''}) — shares ${files}${more}`,
+      `- **${r.task.meta.id} ${r.task.meta.title}** (${r.task.meta.status}) — shares ${files}${more}`,
       `  last: ${r.outcome}`,
     );
   }

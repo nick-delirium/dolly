@@ -17,8 +17,23 @@ export function sandbox() {
   };
 }
 
-/** backdate a task's activity (and its archive stamp, if archived) */
+/**
+ * Backdate a task's activity (and its archive stamp, if archived). A task with
+ * a log is read from the log, so that is what gets backdated: every event's
+ * time — `updated` is derived from the newest one — and task.md is left to be
+ * re-rendered.
+ */
 export function ageTask(taskDir, iso) {
+  const log = path.join(taskDir, 'log.jsonl');
+  if (fs.existsSync(log)) {
+    const lines = fs.readFileSync(log, 'utf8').split('\n').filter(Boolean).map((l) => {
+      const e = JSON.parse(l);
+      e.at = iso;
+      if (e.base) e.base.meta.updated = iso;
+      return JSON.stringify(e);
+    });
+    fs.writeFileSync(log, `${lines.join('\n')}\n`, 'utf8');
+  }
   const file = path.join(taskDir, 'task.md');
   const raw = fs.readFileSync(file, 'utf8');
   fs.writeFileSync(

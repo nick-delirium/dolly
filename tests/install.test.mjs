@@ -8,7 +8,8 @@ import { DEFAULT_CONFIG } from '../dist/core/types.js';
 import { Store } from '../dist/core/store.js';
 import { sandbox } from './helpers.mjs';
 
-const CLI = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'dist', 'cli.js');
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const CLI = path.join(ROOT, 'dist', 'cli.js');
 
 function dolly(cwd, args, env = {}) {
   return execFileSync(process.execPath, [CLI, ...args], {
@@ -222,7 +223,7 @@ test('install pi --global writes the slash commands as prompts, transformed', (t
   // a command with two inline-exec lines transforms both
   const step = fs.readFileSync(path.join(prompts, 'dolly-step.md'), 'utf8');
   assert.doesNotMatch(step, /!`/);
-  assert.match(step, /```bash\ndolly show \$ARGUMENTS 2>&1 \| head -20\n```/);
+  assert.match(step, /```bash\ndolly context \$ARGUMENTS --brief 2>&1 \| head -30\n```/);
   assert.match(step, /```bash\ngit status --porcelain 2>\/dev\/null \| head -30\n```/);
 
   // plan.md has no inline-exec — it must copy through untouched
@@ -299,7 +300,10 @@ test('install opencode wires skills, commands, plugin, instructions and mcp', (t
   const plugin = path.join(sb.dir, '.opencode', 'plugins', 'dolly.js');
   assert.ok(fs.existsSync(plugin), 'plugin written to .opencode/plugins/dolly.js');
   const body = fs.readFileSync(plugin, 'utf8');
-  assert.match(body, /experimental\.chat\.system\.transform/, 'session-start injection hook');
+  assert.match(body, /experimental\.chat\.system\.transform/, 'session-start injection hook (v1)');
+  assert.match(body, /export default \{ id: "dolly", setup, server: DollyPlugin \}/, 'one module for opencode v2 (setup) and v1 (server)');
+  assert.match(body, /hook\(\s*"context"/, 'v2 injects through the session context hook');
+  assert.equal(body, fs.readFileSync(path.join(ROOT, 'plugins', 'opencode.js'), 'utf8'), 'installed verbatim from the shipped file');
   assert.match(body, /experimental\.session\.compacting/, 'compaction reinjection hook');
   assert.match(body, /session\.idle/, 'turn-end auto-log trigger');
   assert.match(body, /hook.*stop.*--from-stdin/s, 'auto-log feeds the stdin path');

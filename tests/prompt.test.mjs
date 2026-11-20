@@ -222,3 +222,42 @@ test('long lines are clipped so a redraw cannot lose count of its own rows', asy
 function stripAnsi(s) {
   return s.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '');
 }
+
+/* ------------------------------ text, raw mode ----------------------------- */
+
+const plain = (s) => s.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '');
+
+test('raw text: the placeholder stands in the empty input; typing replaces it', async () => {
+  const term = scriptTerm({ keys: ['n', 'i', 'c', 'k', 'return'] });
+  const v = await text(term, { question: 'Your username', value: 'octocat', placeholder: '⏎ enter to use octocat · from GitHub' });
+  assert.equal(v, 'nick');
+  const out = term.text();
+  assert.match(plain(out), /› ⏎ enter to use octocat · from GitHub/, 'drawn in the empty input');
+  assert.match(out, /\x1b\[\d+D/, 'the cursor waits in front of the placeholder');
+  assert.match(plain(out), /✓ Your username nick/);
+});
+
+test('raw text: enter on an empty input takes the default; backspace and ctrl-u edit', async () => {
+  assert.equal(await text(scriptTerm({ keys: ['return'] }), { question: 'q', value: 'octocat' }), 'octocat');
+  assert.equal(await text(scriptTerm({ keys: ['a', 'b', 'backspace', 'c', 'return'] }), { question: 'q' }), 'ac');
+  const ctrlU = scriptTerm({ keys: ['x', 'y', 'return'] });
+  assert.equal(await text(ctrlU, { question: 'q' }), 'xy');
+});
+
+test('raw text: with no default, enter is refused until something is typed', async () => {
+  const term = scriptTerm({ keys: ['return', 'a', 'l', 'return'] });
+  const v = await text(term, {
+    question: 'Your username',
+    placeholder: 'Write your username',
+    validate: (s) => (s.trim() ? null : 'a username is required'),
+  });
+  assert.equal(v, 'al');
+  assert.match(plain(term.text()), /a username is required/);
+  await assert.rejects(text(scriptTerm({ keys: ['c-c'] }), { question: 'q' }), PromptCancelled);
+});
+
+test('line text: the placeholder is shown beside the question', async () => {
+  const term = scriptTerm({ raw: false, lines: [''] });
+  assert.equal(await text(term, { question: 'Your username', value: 'octocat', placeholder: '⏎ enter to use octocat' }), 'octocat');
+  assert.match(plain(term.text()), /Your username ⏎ enter to use octocat\n> /);
+});

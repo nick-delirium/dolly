@@ -4,7 +4,7 @@ argument-hint: "[ref] (default: current)"
 allowed-tools: Bash(dolly:*), Bash(git:*), Write
 ---
 
-!`dolly show $ARGUMENTS 2>&1 | head -20`
+!`dolly context $ARGUMENTS --brief 2>&1 | head -30`
 
 !`git status --porcelain 2>/dev/null | head -30`
 

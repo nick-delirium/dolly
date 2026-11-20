@@ -1,5 +1,5 @@
 /**
- * The setup screen behind `dolly init` and `dolly setup`.
+ * The setup screen behind `dolly init` (run again on an existing store to change it).
  *
  * Everything it asks was already a setting; the wizard's only job is to stop
  * those settings from being discoverable exclusively by reading source. Two
@@ -27,6 +27,7 @@ import {
   moveStore,
   recordProject,
 } from './core/store.js';
+import { type Identity } from './core/identity.js';
 import { type Config } from './core/types.js';
 import { TARGETS, installTargets } from './install.js';
 import { confirm, heading, multiselect, note, select, text, type Term } from './prompt.js';
@@ -45,6 +46,8 @@ export interface WizardPre {
   scope?: 'local' | 'global';
   mcp?: boolean;
   hooks?: boolean;
+  /** `--user <handle>`: the handle to stamp on every step */
+  user?: string;
 }
 
 export interface WizardOpts {
@@ -53,6 +56,8 @@ export interface WizardOpts {
   cwd?: string;
   /** ask everything, write nothing */
   dryRun?: boolean;
+  /** what dolly resolves the handle to on its own — injectable so tests need no gh */
+  identity?: Identity;
 }
 
 export interface WizardResult {
@@ -72,7 +77,7 @@ export async function runWizard(opts: WizardOpts): Promise<WizardResult> {
   const cfg = store.config;
   const isRepo = Boolean(repoRoot(project));
 
-  term.write(`\n${color.bold('dolly setup')} ${color.dim(`· ${project}`)}\n`);
+  term.write(`\n${color.bold('dolly init')} ${color.dim(`· ${project}`)}\n`);
   if (store.exists) note(term, `reconfiguring the store at ${store.root} — enter keeps what it is`);
 
   /* ---------------------------- task memory ----------------------------- */
@@ -106,6 +111,30 @@ export async function runWizard(opts: WizardOpts): Promise<WizardResult> {
     });
   }
   const targetRoot = loc.kind === 'env' ? store.root : storeChoice === 'local' ? localRoot : globalRoot;
+
+  /* --------------------------------- you -------------------------------- */
+
+  // Asked outright: someone with a GitHub login, a work email and a laptop
+  // account has three plausible handles, and a silently auto-picked one is
+  // hard to remember when filtering `--mine` or reading a teammate's log. The
+  // laptop's $USER is never offered — it is the guess that is usually wrong.
+  heading(term, 'You');
+  const id = opts.identity ?? store.identity;
+  const SOURCE: Record<string, string> = { gh: 'GitHub', git: 'git config', config: 'local.json', env: 'DOLLY_USER' };
+  const suggested = pre.user?.trim() || (id.source === 'os' ? '' : id.user);
+  const from = pre.user?.trim() ? '--user' : SOURCE[id.source];
+  const keep = !pre.user && (id.source === 'config' || id.source === 'env');
+  const handle = await text(term, {
+    question: 'Your username — stamped on every step you log',
+    value: suggested || undefined,
+    placeholder: suggested ? `⏎ enter to ${keep ? 'keep' : 'use'} ${suggested} · from ${from}` : 'Write your username',
+    validate: (v) => {
+      const h = v.trim().replace(/^@/, '');
+      if (!h) return 'a username is required — it is how your steps are told apart from a teammate\'s';
+      return /\s/.test(h) ? 'one word, no spaces (it is written as @handle)' : null;
+    },
+  });
+  const user = handle.trim().replace(/^@/, '');
 
   /* ------------------------------- agents ------------------------------- */
 
@@ -150,11 +179,6 @@ export async function runWizard(opts: WizardOpts): Promise<WizardResult> {
   /* ------------------------------ behaviour ----------------------------- */
 
   heading(term, 'Behaviour');
-  const handle = await text(term, {
-    question: 'Handle to stamp on every step',
-    value: store.user,
-    validate: (s) => (s.trim() ? null : 'a handle cannot be empty'),
-  });
   const autoLog = await confirm(term, {
     question: 'Auto-log a step for every finished turn the agent did not log itself?',
     value: cfg.reindex.autoLog,
@@ -213,11 +237,17 @@ export async function runWizard(opts: WizardOpts): Promise<WizardResult> {
     if (!dryRun) next.saveConfig(desired);
     wrote.push(`wrote ${next.configPath}`);
   }
-  // Only pin the handle when it differs from what dolly already resolves to —
-  // writing it otherwise turns an auto-detected identity into a frozen one.
-  if (handle.trim() && handle.trim() !== store.user) {
-    if (!dryRun) next.saveLocal({ user: handle.trim() });
+  // A handle confirmed here is pinned in the gitignored local.json: an
+  // auto-detected one drifts (a gh login switch, another repo's git email) and
+  // the same person ends up under two names. DOLLY_USER is already an explicit
+  // pin, so accepting it is not copied anywhere.
+  const pinned = id.source === 'config' ? id.user : null;
+  if (user !== pinned && !(id.source === 'env' && user === id.user)) {
+    if (!dryRun) next.saveLocal({ user });
     wrote.push(`wrote ${next.localConfigPath} (user)`);
+  }
+  if (id.source === 'env' && user !== id.user) {
+    note(term, `DOLLY_USER=${id.user} is set in this shell and still wins over ${user} until you unset it`);
   }
 
   if (agents.length) {
@@ -265,7 +295,7 @@ export async function runWizard(opts: WizardOpts): Promise<WizardResult> {
 
   term.write(`\n${color.bold('Done.')}\n`);
   term.write(`  store        ${finalRoot} ${color.dim(`(${finalChoice})`)}\n`);
-  term.write(`  handle       @${handle}\n`);
+  term.write(`  username     @${user}\n`);
   term.write(`  agents       ${agents.length ? agents.join(', ') : color.dim('none')}\n`);
   if (agents.length) {
     term.write(`  instructions ${scope}${mcp ? ' · mcp' : ''}${hooks && agents.some((a) => HOOK_CAPABLE.has(a)) ? ' · hooks' : ''}\n`);
@@ -321,7 +351,7 @@ export function nonTtyHint(cmd: string, reason: string): string {
   return (
     `\`dolly ${cmd}\` opens a setup screen and ${reason}. ` +
     'Pass --yes to take the defaults, or set it explicitly: ' +
-    `--store local|global --agents ${TARGETS.slice(0, 2).map((t) => t.id).join(',')} ` +
+    `--store local|global --agents ${TARGETS.slice(0, 2).map((t) => t.id).join(',')} --user <handle> ` +
     '--local|--global --no-mcp --no-hooks --no-agents.'
   );
 }

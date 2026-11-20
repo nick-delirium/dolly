@@ -1,10 +1,9 @@
 import path from 'node:path';
 import { exists } from './fsx.js';
-import { digestFile, listDigests } from './digest.js';
-import { codeMapLine, projectDigest } from './project.js';
+import { codeMapLine, projectDigest, recentLessons } from './project.js';
 import { mentionedBy, type Mention, type RecallHit, type RecallResult, type WhyReport } from './recall.js';
-import { filesOfTask, relatedByFiles, renderRelated } from './related.js';
-import { tildeEncode, type Store } from './store.js';
+import { filesOfTask, relatedToTask, renderRelated, type RelatedTask } from './related.js';
+import { isStale, tildeEncode, type Store } from './store.js';
 import type { Task } from './types.js';
 import {
   compactedFile,
@@ -15,7 +14,6 @@ import {
   recentStepDetails,
   rollupEntries,
   shortSpec,
-  specHistory,
   stepEntries,
 } from './task.js';
 import { humanAge } from './time.js';
@@ -109,41 +107,45 @@ export function renderBoard(store: Store, tasks: Task[]): string {
   const statuses = [...store.config.statuses];
   for (const t of tasks) if (!statuses.includes(t.meta.status)) statuses.push(t.meta.status);
 
-  // finished tasks rolled into a digest fold under it: the digest is what a
-  // reader of that area wants, not five closed tasks in a row
-  const digests = new Map(listDigests(store).map((d) => [d.slug, d]));
   let printed = 0;
   for (const status of statuses) {
     const group = tasks.filter((t) => t.meta.status === status);
     if (!group.length) continue;
     const style = STATUS_STYLE[status] ?? ((s: string) => s);
     out.push(style(`${STATUS_ICON[status] ?? '·'} ${status.toUpperCase()}  ${C.dim(`(${group.length})`)}`));
-    const folded = new Map<string, number>();
-    for (const t of group) {
-      if (status === store.config.doneStatus && t.meta.digest) folded.set(t.meta.digest, (folded.get(t.meta.digest) ?? 0) + 1);
-      else out.push(`  ${taskLine(t)}`);
-    }
-    for (const [slug, n] of folded) {
-      const title = digests.get(slug)?.title ?? slug;
-      out.push(`  ${C.bold('⧉')} ${title}  ${C.dim(`${n} task${n === 1 ? '' : 's'} · dolly digest ${slug}`)}`);
-    }
+    for (const t of group) out.push(`  ${taskLine(t, isStale(t, store.config) && status !== store.config.reviewStatus)}`);
     out.push('');
     printed += group.length;
   }
 
   if (!printed) out.push(C.dim('no tasks — `dolly new "<title>"` or `dolly plan start "<idea>"`'));
-  // agents may not close tasks, so the queue only drains if a human sees it
-  const waiting = tasks.filter((t) => t.meta.status === store.config.reviewStatus).length;
-  if (waiting) out.push(C.dim(`${waiting} awaiting a human — \`dolly review\` walks them in a terminal`));
+  // agents may not close tasks, so the queue only drains if a human sees it —
+  // and its age is what makes "15 waiting" read as a problem, not a number
+  const waiting = tasks
+    .filter((t) => t.meta.status === store.config.reviewStatus)
+    .sort((a, b) => a.meta.updated.localeCompare(b.meta.updated));
+  if (waiting.length) {
+    const oldest = waiting.length > 1 ? `, oldest ${humanAge(waiting[0].meta.updated).replace(/ ago$/, '')}` : '';
+    out.push(C.dim(`${waiting.length} awaiting a human${oldest} — \`dolly review\` walks them in a terminal`));
+  }
+  const idle = tasks.filter((t) => t.meta.status !== store.config.reviewStatus && isStale(t, store.config)).length;
+  if (idle) {
+    out.push(
+      C.dim(
+        `${idle} open task${idle === 1 ? '' : 's'} idle over ${store.config.staleDays}d — no longer offered as current. ` +
+          'Pick one up: `dolly status <ref> working`; shelve it: `dolly status <ref> todo`.',
+      ),
+    );
+  }
   return out.join('\n');
 }
 
-function taskLine(t: Task): string {
+function taskLine(t: Task, stale = false): string {
   const bits = [
     C.bold(t.meta.id),
     t.meta.title,
     C.dim(`@${t.meta.owner}`),
-    C.dim(humanAge(t.meta.updated || t.meta.created)),
+    stale ? C.yellow(`idle ${humanAge(t.meta.updated || t.meta.created).replace(/ ago$/, '')}`) : C.dim(humanAge(t.meta.updated || t.meta.created)),
     C.dim(`${t.meta.steps}✎`),
   ];
   if (t.meta.spec_version > 1) bits.push(C.dim(`spec v${t.meta.spec_version}`));
@@ -151,47 +153,13 @@ function taskLine(t: Task): string {
   return bits.join('  ');
 }
 
-export function renderShow(task: Task, opts: { full?: boolean; mentions?: Mention[] } = {}): string {
-  const out: string[] = [];
-  out.push(C.bold(`${task.meta.id} · ${task.meta.title}`));
-  out.push(
-    [
-      (STATUS_STYLE[task.meta.status] ?? ((s: string) => s))(task.meta.status),
-      C.dim(`spec v${task.meta.spec_version}`),
-      C.dim(`@${task.meta.owner}`),
-      C.dim(`${task.meta.steps} steps`),
-      C.dim(humanAge(task.meta.updated)),
-    ]
-      .filter(Boolean)
-      .join(' · '),
-  );
-  if (task.meta.collaborators.length > 1) {
-    out.push(C.dim(`collaborators: ${task.meta.collaborators.map((c) => `@${c}`).join(', ')}`));
-  }
-  if (task.meta.sessions.length) {
-    out.push(
-      C.dim(
-        `conversations: ${task.meta.sessions.map((x) => x.slice(0, 8)).join(', ')} · dolly continue ${task.meta.id}`,
-      ),
-    );
-  }
-  out.push(C.dim(task.dir), '');
-  out.push(C.bold('Spec'), '', shortSpec(task) || C.dim('(empty)'), '');
-  out.push(C.bold('Success Criteria'), '', criteria(task) || C.dim('(empty)'), '');
-  if (opts.mentions?.length) out.push(C.bold('Mentioned by'), '', renderMentions(opts.mentions), '');
-  out.push(C.bold('Log'), '', logSection(task) || C.dim('(empty)'));
-  if (opts.full) {
-    out.push('', C.bold('Full spec (context/spec.md)'), '', fullSpec(task) || C.dim('(empty)'));
-    const hist = specHistory(task);
-    if (hist) out.push('', C.bold('Superseded spec versions'), '', hist);
-    const p = plan(task);
-    if (p) out.push('', C.bold('Plan (context/plan.md)'), '', p.trim());
-  }
-  return out.join('\n');
-}
-
-/** sections of the brief every context carries; the rest are one `dolly project` away */
-const CONTEXT_BRIEF = ['Overview', 'Invariants', 'Conventions'];
+/**
+ * Sections of the brief a full context carries; the rest are one `dolly
+ * project` away. Not Overview: session start already injected it (and
+ * re-injects it after a compaction), so here it was the same 700 bytes again.
+ * Lessons come along too, but newest-first (`recentLessons`).
+ */
+const CONTEXT_BRIEF = ['Invariants', 'Conventions'];
 /** short-log entries shown; older ones are in task.md */
 const CONTEXT_LOG = 20;
 /** step bodies out of view before the context suggests a rollup */
@@ -219,20 +187,28 @@ export function renderContext(
     `\`${m.status}\` · spec v${m.spec_version} · @${m.owner}${others.length ? ` (+${others.map((c) => `@${c}`).join(', ')})` : ''}` +
       ` · ${m.steps} step${m.steps === 1 ? '' : 's'} · updated ${humanAge(m.updated)} · \`${task.dir}\``,
   );
-  if (m.digest && opts.store) {
-    out.push('', `_Rolled into digest \`${m.digest}\` — \`${shownPath(digestFile(opts.store, m.digest))}\` is the overview of its area._`);
-  }
   // Repo before task: this is one slice of an ongoing codebase, and an agent
   // that does not know that will happily reinvent its conventions.
   if (opts.store) {
-    const brief = projectDigest(opts.store, { sections: CONTEXT_BRIEF, maxPerSection: 1500 });
-    if (brief) out.push('', '## Project brief', '', brief);
+    // the brief view orients on the task; the repo's rules come with the full
+    // read, right before code is written
+    // Lessons are rules learned from mistakes — worth their bytes in the read
+    // right before code is written, newest first within a budget
+    const lessons = opts.brief ? '' : recentLessons(opts.store);
+    const brief = opts.brief
+      ? ''
+      : projectDigest(opts.store, { sections: CONTEXT_BRIEF, maxPerSection: 1500, shownElsewhere: lessons ? ['Lessons'] : [] });
+    if (brief || lessons) {
+      out.push('', '## Project brief');
+      if (brief) out.push('', brief);
+      if (lessons) out.push('', '### Lessons — do not repeat these', '', lessons);
+    }
     const maps = codeMapLine(opts.store.project);
     if (maps) out.push('', '## Code map available — use it before grepping', '', maps);
     const files = filesOfTask(task);
-    const related = relatedByFiles(opts.store, files, m.id);
+    const related = relatedToTask(opts.store, task);
     if (related.length) {
-      out.push('', '## Other tasks in this code — read their outcome before undoing it', '', renderRelated(related, 4));
+      out.push('', '## Other tasks in this code — read their outcome before undoing it', '', renderRelated(related, opts.brief ? 2 : 4));
     }
     const mentions = mentionedBy(opts.store, task);
     if (mentions.length) out.push('', '## Mentioned by other tasks', '', renderMentions(mentions));
@@ -252,16 +228,18 @@ export function renderContext(
   const short = shortSpec(task);
   const lead = short.split(/\n\s*\n/)[0]?.trim() ?? '';
   const squash = (x: string) => x.replace(/\s+/g, ' ');
-  if (!(full && lead && squash(full).includes(squash(lead)))) out.push('', '## Spec (short)', '', short || '_empty_');
+  // the brief view is the short spec, never the full one: the full spec was
+  // most of its bytes, and it is exactly what the full read is for
+  if (opts.brief || !(full && lead && squash(full).includes(squash(lead)))) out.push('', '## Spec (short)', '', short || '_empty_');
   out.push('', '## Success Criteria', '', crit || '_empty_');
-  if (full) out.push('', '## Spec (full, current)', '', demote(full));
+  if (full && !opts.brief) out.push('', '## Spec (full, current)', '', demote(full));
   const p = plan(task).trim();
   if (p && opts.plan !== false) {
     // the plan is the spec's source until finalize, a duplicate of it after
     if (m.status === 'planning') out.push('', '## Plan', '', demote(p));
     else out.push('', '_Planning interview: `context/plan.md` (finalized into the spec above)._');
   }
-  out.push('', '## Step log (short)', '', compactLog(logSection(task), CONTEXT_LOG) || '_empty_');
+  out.push('', '## Step log (short)', '', compactLog(logSection(task), opts.brief ? CONTEXT_LOG / 2 : CONTEXT_LOG) || '_empty_');
   // the rollup is what the early steps established — orientation, so it is in
   // the brief view too; only the newest one is live
   const rollup = rollupEntries(task.dir).pop();
@@ -270,12 +248,12 @@ export function renderContext(
     out.push('', `## Rollup${covers ? ` of steps ${covers}` : ''} — what the earlier steps established`, '', compactStep(rollup.text));
   }
   if (opts.brief) {
-    // pointing at step context that does not exist made the brief view of a
-    // fresh task longer than the full one
-    if (stepEntries(task.dir).length) {
+    // pointing at context that does not exist made the brief view of a fresh
+    // task longer than the full one
+    if (stepEntries(task.dir).length || full) {
       out.push(
         '',
-        `_Brief view. Full context of the recent steps — decisions, rejected options, gotchas — is in \`context/steps.md\`; re-run without \`--brief\` to include it._`,
+        `_Brief view: short spec, recent log. The full spec, the repo's invariants and the recent steps' full context come without \`--brief\`._`,
       );
     }
     return out.join('\n');
@@ -454,27 +432,38 @@ export function renderMentions(mentions: Mention[], limit = 5): string {
   return out.join('\n');
 }
 
+/** tasks a single-file `why` shows in full; past this each shows its newest step only */
+const WHY_TASKS = 6;
+const WHY_COMMITS = 8;
+
 export function renderWhy(w: WhyReport): string {
   const out: string[] = [C.bold(`why ${w.file}`)];
   if (!w.touched.length && !w.commits.length && !w.prose.length) {
     out.push('', 'no task recorded this file and no commit touched it — it has no recorded history');
     return out.join('\n');
   }
+  // A hub file (cli.ts) has been through most tasks: listing all of them cost
+  // 10KB of history to say "everyone". The newest few are the ones a change is
+  // likely to collide with; the rest are counted, and `--json` has them all.
   if (w.touched.length) {
     out.push('', `Changed by ${w.touched.length} task(s), newest first`);
-    for (const { task, entries } of w.touched) {
+    const many = w.touched.length > WHY_TASKS;
+    for (const { task, entries } of w.touched.slice(0, WHY_TASKS)) {
       out.push(`- ${C.bold(`${task.meta.id} ${task.meta.title}`)} (${task.meta.status})`);
-      for (const e of entries.slice(-3)) {
+      const per = many ? 1 : 3;
+      for (const e of entries.slice(-per)) {
         out.push(`    ${e.at.slice(0, 10)}: ${clip(e.text, 200)}${e.ref ? C.dim(` · steps.md#${e.ref}`) : ''}`);
       }
-      if (entries.length > 3) out.push(C.dim(`    +${entries.length - 3} earlier step(s) — dolly show ${task.meta.id}`));
+      if (entries.length > per) out.push(C.dim(`    +${entries.length - per} earlier step(s) — dolly context ${task.meta.id}`));
     }
+    if (many) out.push(C.dim(`- +${w.touched.length - WHY_TASKS} older task(s) — \`--json\` lists every one`));
   }
   if (w.commits.length) {
     out.push('', `Commits (${w.commits.length}, newest first)`);
-    for (const c of w.commits) {
+    for (const c of w.commits.slice(0, WHY_COMMITS)) {
       out.push(`- ${c.hash} ${c.date} ${clip(c.subject, 90)}${c.tasks.length ? ` → ${c.tasks.join(', ')}` : ''}`);
     }
+    if (w.commits.length > WHY_COMMITS) out.push(C.dim(`- +${w.commits.length - WHY_COMMITS} older — git log -- ${w.file}`));
   }
   if (w.prose.length) {
     out.push('', 'Prose naming it');
@@ -482,6 +471,29 @@ export function renderWhy(w: WhyReport): string {
       const who = h.task ? `${h.task.meta.id} ` : '';
       out.push(`- ${who}${hitLabel(h)} · ${shownPath(h.file)}:${h.line}`, `    ${h.snippet}`);
     }
+  }
+  return out.join('\n');
+}
+
+/** `why` over several files: the tasks across them, strongest first, then their commits */
+export function renderWhyMany(reports: WhyReport[], related: RelatedTask[]): string {
+  const out: string[] = [C.bold(`why ${reports.map((r) => r.file).join(', ')}`)];
+  if (related.length) {
+    out.push('', 'Tasks in this code, strongest first (a rare shared file outweighs a hub)', '', renderRelated(related, 8));
+  } else {
+    out.push('', 'no task recorded any of these files');
+  }
+  const seen = new Set<string>();
+  const commits = reports
+    .flatMap((r) => r.commits)
+    .filter((c) => !seen.has(c.hash) && seen.add(c.hash))
+    .sort((a, b) => (a.date < b.date ? 1 : -1));
+  if (commits.length) {
+    out.push('', `Commits (${commits.length}, newest first)`);
+    for (const c of commits.slice(0, 10)) {
+      out.push(`- ${c.hash} ${c.date} ${clip(c.subject, 90)}${c.tasks.length ? ` → ${c.tasks.join(', ')}` : ''}`);
+    }
+    if (commits.length > 10) out.push(C.dim(`- +${commits.length - 10} more — \`dolly why <one file>\` for its full story`));
   }
   return out.join('\n');
 }
