@@ -35,6 +35,11 @@ Not on npm yet — install from the repo. Any of these gives you a `dolly` on yo
 ```bash
 npm install -g github:nick-delirium/dolly
 ```
+or using mise
+
+```bash
+mise use -g 'npm:github:nick-delirium/dolly'
+```
 
 **From a clone** — same result, but you have the source:
 
