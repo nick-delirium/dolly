@@ -2,21 +2,21 @@
 id: q8gr2gnc
 slug: publish-to-npm-as-dlrm-dolly
 title: Publish to npm as @dlrm/dolly
-status: validating
+status: done
 owner: nick-delirium
 collaborators: [nick-delirium]
 tags: []
 steps: 3
 spec_version: 1
 created: 2026-11-20T10:18:56Z
-updated: 2026-11-20T10:45:34Z
+updated: 2026-11-20T10:50:51Z
 sessions: [681d18ed-9add-4d60-b97f-80d377aa129b]
 ---
 
 # q8gr2gnc · Publish to npm as @dlrm/dolly
 
 <!-- dolly:header -->
-`validating` · spec v1 · @nick-delirium · 3 steps · updated 2026-11-20 10:45Z
+`done` · spec v1 · @nick-delirium · 3 steps · updated 2026-11-20 10:50Z
 <!-- /dolly:header -->
 
 ## Spec
@@ -43,4 +43,5 @@ Unscoped 'dolly' is owned by someone else on npm. Publish as @dlrm/dolly (bin st
   files: `.claude-plugin/plugin.json`, `README.md`, `package-lock.json`, `package.json`, `src/core/pkg.ts`, `src/core/selfupdate.ts` +3 more · full: `steps.md#0002-nick-delirium`
 - `2026-11-20 10:38Z` @nick-delirium: status validating → validating. npm uninstall -g dolly (old link name), then npm publish; check npm i -g @dlrm/dolly gives a working dolly and dolly update --dry-run shows @latest
 - `2026-11-20 10:45Z` @nick-delirium: 1.0.0 published to npm as @dlrm/dolly (dist-tag latest); committed and tagged v1.0.0 on dolly-review-fixes
+- `2026-11-20 10:50Z` @nick-delirium: status validating → done.
 
