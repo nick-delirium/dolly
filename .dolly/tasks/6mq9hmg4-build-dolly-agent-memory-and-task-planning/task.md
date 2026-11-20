@@ -2,21 +2,21 @@
 id: 6mq9hmg4
 slug: build-dolly-agent-memory-and-task-planning
 title: "Build dolly: agent memory and task planning"
-status: validating
+status: done
 owner: nick-delirium
 collaborators: [nick-delirium]
 tags: []
 steps: 15
 spec_version: 2
 created: 2026-08-07T08:50:48Z
-updated: 2026-08-07T11:06:38Z
-sessions: [faa33f88-d19e-451a-8321-307f7d37483e]
+updated: 2026-11-20T10:00:12Z
+sessions: [faa33f88-d19e-451a-8321-307f7d37483e, 36d7b4d9-0ca0-4cb9-8bd0-8b3723565119]
 ---
 
 # 6mq9hmg4 · Build dolly: agent memory and task planning
 
 <!-- dolly:header -->
-`validating` · spec v2 · @nick-delirium · 15 steps · updated 2026-08-07 11:06Z
+`done` · spec v2 · @nick-delirium · 15 steps · updated 2026-11-20 10:00Z
 <!-- /dolly:header -->
 
 ## Spec
@@ -79,4 +79,5 @@ Task memory and planning for coding agents, as plain markdown in the repo. Board
   files: `.claude/commands/dolly/adopt.md`, `.claude/commands/dolly/board.md`, `.claude/commands/dolly/housekeep.md`, `.claude/commands/dolly/plan.md`, `.claude/commands/dolly/resume.md`, `.claude/commands/dolly/spec.md` +15 more · full: `steps.md#0014`
 - `2026-08-07 11:06Z` @nick-delirium: dolly reads its version from package.json instead of four hardcoded copies, releases are tagged, and a cached, detached update check tells a human at a terminal when they are behind — never an agent, never a protocol stream, never blocking. Tests caught a missing repository field and a suppression predicate that read process.env directly and so could not be tested inside an agent.
   files: `README.md`, `package.json`, `src/cli.ts`, `src/core/pkg.ts`, `src/core/update.ts`, `src/mcp.ts` +1 more · full: `steps.md#0015`
+- `2026-11-20 10:00Z` @nick-delirium: status validating → done. Reviewed: core shipped; the housekeeping criterion was dropped by design in 2rhqyc8c.
 

@@ -2,21 +2,21 @@
 id: dhhjdz3b
 slug: fix-review-findings-on-the-fuzzy-memo-zcode-comm
 title: "Fix review findings on the fuzzy/memo/zcode commits: picker hang, memo file trailers, update --check"
-status: validating
+status: done
 owner: nick-delirium
 collaborators: [nick-delirium]
 tags: []
 steps: 1
 spec_version: 1
 created: 2026-09-01T07:29:07Z
-updated: 2026-09-01T07:29:52Z
-sessions: [1db55685-411f-4cb5-8ecf-6c263f7aeb07]
+updated: 2026-11-20T10:00:12Z
+sessions: [1db55685-411f-4cb5-8ecf-6c263f7aeb07, 36d7b4d9-0ca0-4cb9-8bd0-8b3723565119]
 ---
 
 # dhhjdz3b · Fix review findings on the fuzzy/memo/zcode commits: picker hang, memo file trailers, update --check
 
 <!-- dolly:header -->
-`validating` · spec v1 · @nick-delirium · 1 step · updated 2026-09-01 07:29Z
+`done` · spec v1 · @nick-delirium · 1 step · updated 2026-11-20 10:00Z
 <!-- /dolly:header -->
 
 ## Spec
@@ -39,4 +39,5 @@ Review of 9eb5f41 + 701d3d9 found seven defects. Two blocking: the numbered ambi
   dolly memo also dropped the files: trailer for any multi-line step summary (the entry regex captured one following line, and logLine puts trailers last), and dolly update --check hardcoded the git lookup that by definition cannot work for the npm installs the update notice sends there.
   files: `src/cli.ts`, `src/core/memo.ts`, `src/core/store.ts`, `src/core/update.ts`, `src/prompt.ts`, `tests/memo.test.mjs` +2 more · full: `steps.md#0001`
 - `2026-09-01 07:29Z` @nick-delirium: status working → validating. run npm test on your own machine (that is where it was red); then try: dolly show add < /dev/null should print candidates and exit 1, not hang; dolly update --check should name its source
+- `2026-11-20 10:00Z` @nick-delirium: status validating → done. Reviewed: an ambiguous ref without a terminal lists candidates and exits 1; update --check names its source.
 

@@ -2,20 +2,21 @@
 id: xb925jmt
 slug: daily-memo-command
 title: Daily memo command
-status: validating
+status: done
 owner: nick.delirium
-collaborators: [nick.delirium]
+collaborators: [nick.delirium, nick-delirium]
 tags: []
 steps: 2
 spec_version: 2
 created: 2026-08-25T15:14:54Z
-updated: 2026-08-25T17:08:27Z
+updated: 2026-11-20T10:00:12Z
+sessions: [36d7b4d9-0ca0-4cb9-8bd0-8b3723565119]
 ---
 
 # xb925jmt · Daily memo command
 
 <!-- dolly:header -->
-`validating` · spec v2 · @nick.delirium · 2 steps · updated 2026-08-25 17:08Z
+`done` · spec v2 · @nick.delirium · 2 steps · updated 2026-11-20 10:00Z
 <!-- /dolly:header -->
 
 ## Spec
@@ -55,4 +56,5 @@ Plan complete. Status → todo.
 - `2026-08-25 17:08Z` @nick.delirium: dolly memo ships: one command aggregates today's task events, chat sessions (claude + opencode mirrors) and commits into a digest; prose gets saved to .dolly/memo/YYYY-MM-DD.md with --save. memo.auto adds a session-start nudge. /dolly-memo works in opencode and claude — verified live, first memo of the day is committed below.
   files: `.claude/commands/dolly/board.md`, `.claude/commands/dolly/housekeep.md`, `.claude/commands/dolly/memo.md`, `.claude/skills/dolly/SKILL.md`, `.opencode/commands/dolly-adopt.md`, `.opencode/commands/dolly-board.md` +50 more · full: `steps.md#0002`
 - `2026-08-25 17:08Z` @nick.delirium: status working → validating. human: skim .dolly/memo/2026-08-25.md (written by opencode) and try dolly memo yourself
+- `2026-11-20 10:00Z` @nick-delirium: status validating → done. Reviewed: shipped; since replaced by dolly dream (q2wsmks8).
 

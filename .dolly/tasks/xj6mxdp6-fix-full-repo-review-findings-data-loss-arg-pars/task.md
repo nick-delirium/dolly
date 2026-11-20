@@ -2,21 +2,21 @@
 id: xj6mxdp6
 slug: fix-full-repo-review-findings-data-loss-arg-pars
 title: "Fix full-repo review findings: data loss, arg parsing, version gate, install safety, dead code"
-status: validating
+status: done
 owner: nick-delirium
 collaborators: [nick-delirium]
 tags: [review]
 steps: 4
 spec_version: 1
 created: 2026-09-29T13:59:19Z
-updated: 2026-09-29T14:25:50Z
-sessions: [9b8fa6e3-cae2-461d-83e8-303d1b261b96]
+updated: 2026-11-20T10:00:12Z
+sessions: [9b8fa6e3-cae2-461d-83e8-303d1b261b96, 36d7b4d9-0ca0-4cb9-8bd0-8b3723565119]
 ---
 
 # xj6mxdp6 · Fix full-repo review findings: data loss, arg parsing, version gate, install safety, dead code
 
 <!-- dolly:header -->
-`validating` · spec v1 · @nick-delirium · 4 steps · updated 2026-09-29 14:25Z
+`done` · spec v1 · @nick-delirium · 4 steps · updated 2026-11-20 10:00Z
 <!-- /dolly:header -->
 
 ## Spec
@@ -51,4 +51,5 @@ Fix every bug from the 2026-09-29 whole-repo review (three parallel reviewers: c
 - `2026-09-29 14:25Z` @nick-delirium: Last findings closed: caches honour DOLLY_HOME (gh identity expires after 7d), memo rejects impossible dates and reuses parseLog, reindex folds turns only after a real interrupt and never borrows another project's transcripts; stale docs fixed. 266/266.
   files: `src/core/home.ts`, `src/core/store.ts`, `src/core/identity.ts`, `src/core/update.ts`, `src/core/memo.ts`, `src/core/transcript.ts` +8 more · full: `steps.md#0004`
 - `2026-09-29 14:25Z` @nick-delirium: status working → validating. Review diff; run npm test (266). Spot-check: dolly context --brief <ref>, dolly step x --file a (should error), install into a repo with a JSONC opencode.json (skipped, untouched).
+- `2026-11-20 10:00Z` @nick-delirium: status validating → done. Reviewed: unknown flags rejected, version gate by operation, install safety tested.
 

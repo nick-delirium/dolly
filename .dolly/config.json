@@ -1,5 +1,5 @@
 {
-  "version": 7,
+  "version": 8,
   "statuses": [
     "todo",
     "planning",
@@ -19,9 +19,6 @@
     "Test Plan",
     "Open Questions"
   ],
-  "memo": {
-    "auto": true
-  },
   "install": {
     "scope": "local",
     "mcp": true

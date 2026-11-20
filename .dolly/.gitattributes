@@ -1,0 +1,5 @@
+# dolly: append-only files merge as a union, so git never stops on them
+tasks/*/log.jsonl merge=union
+tasks/*/task.md merge=union
+tasks/*/context/steps.md merge=union
+dreams/*.md merge=union

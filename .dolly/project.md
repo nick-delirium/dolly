@@ -26,9 +26,11 @@ Must not stop being true: the store is human-readable markdown, and dolly never 
 - `src/install.ts` — writes agent instructions for 10 targets, idempotently. Resolves the user's home per call, never at module load, so a caller that redirects `HOME` is honoured. dolly-owned dirs are mirrored with `syncTree` (stale files pruned); user JSON goes through `editJson` (skip + instructions on unparseable files); `--global` is honoured per target or reported as project-only.
 - `src/core/home.ts` — `dollyHome()`: the one resolver for ~/.dolly (DOLLY_HOME overrides), used by the store index, identity cache and update cache.
 - `src/core/recall.ts` — full-text recall: corpus of units (sections, log entries, step blocks, Q&A pairs, memos, digests, compacted steps), hand-rolled BM25, typo correction by edit distance, `path:line` snippets; plus `why`, `mentionedBy` backlinks, `similarTasks`. Derived per query, never indexed or cached.
-- `src/core/compact.ts` + `src/core/digest.ts` — rollups and digests: dolly prints material + rules, the agent writes the prose, `--save` stores it. `digest.ts` is read-only so render.ts can read digests without importing compact.ts (which imports render).
+- `src/core/compact.ts` — one long task's rollup: dolly prints material + rules, the agent writes the prose, `--save` stores it.
+- `src/core/dream.ts` — dreams: material since the last dream (capped, agent notes before auto-steps), append-only `dreams/YYYY-MM-DD.md` / `YYYY-Www.md`, and the ONLY automatic write to the brief: appending Lessons. Other brief edits are proposals a human applies. Replaced memo.ts and digest.ts.
 - `src/review.ts` — the human-only `dolly review` walk; locks per action like the wizard.
 - `skills/`, `commands/`, `.claude-plugin/` — agent-facing instructions, shipped in the npm package and doubling as the Claude Code plugin.
+- `src/core/log.ts` — `log.jsonl`: event types, `readEvents` (bases first, then stable sort by `at`), `fold`, `diffEvent`, rendering (`metaToFront`, `headerLine`, `renderTaskMd`, `renderFromLog`). `task.ts` writes through it; `store.readTaskDir` reads through it.
 
 ## Conventions
 
@@ -45,7 +47,7 @@ Must not stop being true: the store is human-readable markdown, and dolly never 
 
 ## Invariants
 
-- **Markers are parsed, not decorative.** `<!-- dolly:step 0003 -->` and friends are matched by literal prefix in `md.ts`. Rename or reformat one without a migration and step context silently disappears — the log still lists steps while their bodies are unreachable. An end marker pairs only with the start BEFORE it; a start with no end is refused (`setBlock` throws), never repaired by guessing.
+- **Markers are parsed, not decorative.** `<!-- dolly:step 0003-alice -->` and friends are matched by literal prefix in `md.ts`. Rename or reformat one without a migration and step context silently disappears — the log still lists steps while their bodies are unreachable. An end marker pairs only with the start BEFORE it; a start with no end is refused (`setBlock` throws), never repaired by guessing.
 - **Content is escaped on write.** `neutralizeMarkers()` runs on every block write and on spec.md bodies, and `demoteHeadings()` turns `## ` lines in user content into `### ` — sections end at the next `## `, so prose headings would otherwise truncate a section.
 - **Frontmatter round-trips.** `emitScalar` escapes and `scalar` unescapes the same set; a value must read back identical after any number of saves.
 - **Steps are append-only.** Corrections are new entries. Nothing rewrites history, and prose is never machine-edited — it is a record of what someone actually wrote. The one move allowed: `dolly compact` relocates covered blocks byte-for-byte into `steps.compacted.md` behind an agent-written rollup. Step numbers come from `nextStepNumber` = max(counter, highest step/rollup block in steps.md AND steps.compacted.md), so neither a merge nor a compaction reuses one. Anything that must see every step ever logged (files, imported turns, recall, backlinks) reads both files.
@@ -57,6 +59,8 @@ Must not stop being true: the store is human-readable markdown, and dolly never 
 
 - **One writer per store.** Every write command (CLI via `writesStore`, MCP write tools, `hook stop`) holds `.local/write.lock` for its whole run, taken BEFORE it loads anything — so every load is fresh. Library functions do not lock; entry points do.
 - **Auto-log follows the conversation.** `hook stop` writes only to a task whose `sessions` contains the running session (`sessionTask`); `current` prefers that task, then your own. Any dolly write attaches the session.
+- **task.md is rendered, never parsed back (v8).** A task with `log.jsonl` is read only from the log (`core/log.ts` fold); task.md is its rendering. Every write goes through `saveTask`, which appends ONE event = diff of the writer's state against the fold (base/set/add/inc/lead/sec/log/body) and self-checks that the fold reproduces the writer's body, falling back to a `body` op. `steps`, `spec_version`, `updated` are derived (inc sums, max at). Never write task.md directly, never edit an event — a correction is a new event. `.dolly/.gitattributes` makes log.jsonl, task.md, steps.md and dreams merge=union; the v8 migration's detect re-renders any task.md that drifted from its log (after a merge) on the next command.
+- **Step block ids carry their author** since v8: `<!-- dolly:step 0013-alice -->`, refs `steps.md#0013-alice`; the block header stays `## 0013 · <at> · @alice`. Parse ids with `parseInt`, not `Number`. A bare number resolves to the current user's (`compact.resolveStepId`).
 
 ## Glossary
 
@@ -67,3 +71,7 @@ Must not stop being true: the store is human-readable markdown, and dolly never 
 - **work chain** — the ordered, repeat-collapsed trace of tool calls in a turn.
 - **the store** — `.dolly/` itself.
 
+## Lessons
+
+- Give test fixtures real paths (transcript `cwd`, the project dir). `tests/hooks.test.mjs` used `cwd: '/unused'`, which hid every Edit until the auto-log floor depended on files.
+- Pass the full list to `dolly spec --criteria`, because it replaces the list instead of appending to it. q2wsmks8 lost its planned criteria this way.

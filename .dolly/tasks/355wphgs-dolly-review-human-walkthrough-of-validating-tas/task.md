@@ -2,21 +2,21 @@
 id: 355wphgs
 slug: dolly-review-human-walkthrough-of-validating-tas
 title: "dolly review: human walkthrough of validating tasks"
-status: validating
+status: done
 owner: nick-delirium
 collaborators: [nick-delirium]
 tags: []
 steps: 2
 spec_version: 2
 created: 2026-10-20T10:39:40Z
-updated: 2026-10-20T11:27:35Z
-sessions: [30490afd-79ca-44be-91bb-1f8b86dff17b]
+updated: 2026-11-20T10:00:12Z
+sessions: [30490afd-79ca-44be-91bb-1f8b86dff17b, 36d7b4d9-0ca0-4cb9-8bd0-8b3723565119]
 ---
 
 # 355wphgs · dolly review: human walkthrough of validating tasks
 
 <!-- dolly:header -->
-`validating` · spec v2 · @nick-delirium · 2 steps · updated 2026-10-20 11:27Z
+`done` · spec v2 · @nick-delirium · 2 steps · updated 2026-11-20 10:00Z
 <!-- /dolly:header -->
 
 ## Spec
@@ -59,4 +59,5 @@ Plan complete. Status → todo.
 - `2026-10-20 11:18Z` @nick-delirium: status working → validating. In a real terminal: dolly review — walk a few of the 13 waiting tasks (tick, done, send one back, skip, quit). Check the screens read well and task.md diffs only touch the box + a log line. npm test (318).
 - `2026-10-20 11:27Z` @nick-delirium: Review fix: criteria heading matched case-sensitively (## Success criteria showed none); now case-insensitive like getSection.
   files: `src/core/task.ts`, `tests/review.test.mjs`
+- `2026-11-20 10:00Z` @nick-delirium: status validating → done. Reviewed: review walks the queue and refuses under an agent; tests green.
 

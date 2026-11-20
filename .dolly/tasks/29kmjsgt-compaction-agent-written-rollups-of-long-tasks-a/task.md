@@ -2,21 +2,21 @@
 id: 29kmjsgt
 slug: compaction-agent-written-rollups-of-long-tasks-a
 title: "Compaction: agent-written rollups of long tasks and task groups"
-status: validating
+status: done
 owner: nick-delirium
 collaborators: [nick-delirium]
 tags: []
 steps: 2
 spec_version: 2
 created: 2026-10-20T10:39:40Z
-updated: 2026-10-20T11:27:34Z
-sessions: [30490afd-79ca-44be-91bb-1f8b86dff17b]
+updated: 2026-11-20T10:00:12Z
+sessions: [30490afd-79ca-44be-91bb-1f8b86dff17b, 36d7b4d9-0ca0-4cb9-8bd0-8b3723565119]
 ---
 
 # 29kmjsgt · Compaction: agent-written rollups of long tasks and task groups
 
 <!-- dolly:header -->
-`validating` · spec v2 · @nick-delirium · 2 steps · updated 2026-10-20 11:27Z
+`done` · spec v2 · @nick-delirium · 2 steps · updated 2026-11-20 10:00Z
 <!-- /dolly:header -->
 
 ## Spec
@@ -61,4 +61,5 @@ Plan complete. Status → todo.
 - `2026-10-20 11:14Z` @nick-delirium: status working → validating. npm test (311). Try on a COPY first: cp -R .dolly /tmp/x && DOLLY_DIR=/tmp/x dolly compact 6mq9hmg4, write a rollup, --save it, read dolly context 6mq9hmg4. Digest: DOLLY_DIR=/tmp/x dolly compact --tasks qfcm3sn9,twjnrqcd,6qp6wxbq --title 'Install targets' then board. MCP tool list at 8987/9000 bytes.
 - `2026-10-20 11:27Z` @nick-delirium: Review fixes: id collision in steps.compacted.md now refused (was silent body loss), reindex finds compacted imports (was a duplicate task), --through required on save, numeric flags reject typos.
   files: `src/core/task.ts`, `src/core/compact.ts`, `src/reindex.ts`, `src/core/args.ts`, `src/cli.ts`, `src/mcp.ts` +2 more · full: `steps.md#0002`
+- `2026-11-20 10:00Z` @nick-delirium: status validating → done. Reviewed: rollups live and tested; the digest half was retired in n58fpdzt (dream covers it).
 

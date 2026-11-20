@@ -2,21 +2,21 @@
 id: 27cnrmhh
 slug: search-task-memory-recall-why-backlinks
 title: "Search task memory: recall, why, backlinks"
-status: validating
+status: done
 owner: nick-delirium
 collaborators: [nick-delirium]
 tags: []
 steps: 1
 spec_version: 2
 created: 2026-10-20T10:39:40Z
-updated: 2026-10-20T11:06:56Z
-sessions: [30490afd-79ca-44be-91bb-1f8b86dff17b]
+updated: 2026-11-20T10:00:12Z
+sessions: [30490afd-79ca-44be-91bb-1f8b86dff17b, 36d7b4d9-0ca0-4cb9-8bd0-8b3723565119]
 ---
 
 # 27cnrmhh · Search task memory: recall, why, backlinks
 
 <!-- dolly:header -->
-`validating` · spec v2 · @nick-delirium · 1 step · updated 2026-10-20 11:06Z
+`done` · spec v2 · @nick-delirium · 1 step · updated 2026-11-20 10:00Z
 <!-- /dolly:header -->
 
 ## Spec
@@ -61,4 +61,5 @@ Plan complete. Status → todo.
 - `2026-10-20 11:06Z` @nick-delirium: dolly recall (BM25 over every note/spec/plan answer/memo/brief, path:line hits, --kind decision, filters, --all-projects, typo correction), dolly why <file>, Mentioned-by backlinks, body-aware duplicate warning, and dolly_recall over MCP — 400ms on 1000 tasks.
   files: `src/core/recall.ts`, `src/core/render.ts`, `src/core/related.ts`, `src/core/git.ts`, `src/cli.ts`, `src/mcp.ts` +9 more · full: `steps.md#0001`
 - `2026-10-20 11:06Z` @nick-delirium: status working → validating. npm test (301). In this repo: dolly recall lock; dolly recall --kind decision mysql; dolly recall compactoin (typo); dolly why src/core/lock.ts; dolly show rqdpztdy (Mentioned by); dolly recall zebra --all-projects. Check: hits open at the printed line; text output feels right-sized. JSON caps at 100 hits (spec said every hit).
+- `2026-11-20 10:00Z` @nick-delirium: status validating → done. Reviewed: recall, why and backlinks live; recall tests green.
 

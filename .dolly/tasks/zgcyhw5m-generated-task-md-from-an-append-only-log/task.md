@@ -2,30 +2,40 @@
 id: zgcyhw5m
 slug: generated-task-md-from-an-append-only-log
 title: Generated task.md from an append-only log
-status: planning
+status: done
 owner: nick-delirium
 collaborators: [nick-delirium]
 tags: []
-steps: 0
-spec_version: 1
+steps: 1
+spec_version: 2
 created: 2026-08-07T10:43:02Z
-updated: 2026-08-07T10:44:03Z
-sessions: [faa33f88-d19e-451a-8321-307f7d37483e]
+updated: 2026-11-20T10:00:12Z
+sessions: [faa33f88-d19e-451a-8321-307f7d37483e, 36d7b4d9-0ca0-4cb9-8bd0-8b3723565119]
 ---
 
 # zgcyhw5m · Generated task.md from an append-only log
 
 <!-- dolly:header -->
-`planning` · spec v1 · @nick-delirium · 0 steps · updated 2026-08-07 10:44Z
+`done` · spec v2 · @nick-delirium · 1 step · updated 2026-11-20 10:00Z
 <!-- /dolly:header -->
 
 ## Spec
 
-_planning in progress — see `context/plan.md`_
+Structure lives where escaping is solved, prose lives where it cannot collide. An append-only `log.jsonl` is the record; `task.md` becomes a generated rendering that dolly never parses back. Concurrent teammates merge as a union with no conflict, and a corrupted `task.md` is regenerable rather than lost.
+
+Out of scope: changing `context/spec.md` or `context/steps.md` prose files; any change to the CLI surface: command names and flags stay; a database or index beyond the jsonl.
+
+Full spec: `context/spec.md` · plan: `context/plan.md`
 
 ## Success Criteria
 
-- [ ] _TBD_
+- [ ] two teammates can each log a step offline on the same task and the result merges with no conflict
+- [ ] `dolly render` rebuilds a deleted or corrupted task.md identically from log.jsonl
+- [ ] a spec whose prose contains `## Log` no longer affects anything, and the assertOneSection guard is removed
+- [ ] `steps` and `spec_version` are derived; deleting them from frontmatter changes no output
+- [ ] a bare step number resolves against the current git user, and lists candidates when still ambiguous
+- [ ] migration converts an existing store with no data loss, and is idempotent
+- [ ] every existing test still passes with no change to the CLI surface
 
 ## Full Context
 
@@ -35,4 +45,17 @@ _planning in progress — see `context/plan.md`_
 
 ## Log
 
-_no steps yet_
+- `2026-11-20 09:22Z` @nick-delirium: spec → v2. planning finished — spec derived from plan.md
+  previous version kept in `spec.md`
+
+### plan finalized · 2026-11-20 09:22Z · @nick-delirium
+
+Plan complete. Status → todo.
+
+- plan: `context/plan.md`
+- `2026-11-20 09:22Z` @nick-delirium: status todo → working.
+- `2026-11-20 09:34Z` @nick-delirium: Store v8: task.md is rendered from an append-only log.jsonl (one diff event per write) and never parsed back; step ids carry their author; .gitattributes merges the append-only files as a union, so two teammates' offline work on one task merges with no conflict. This repo's store migrated losslessly (30/30).
+  files: `src/core/log.ts`, `src/core/task.ts`, `src/core/store.ts`, `src/core/compact.ts`, `src/core/related.ts`, `src/core/types.ts` +13 more · full: `steps.md#0001-nick-delirium`
+- `2026-11-20 09:34Z` @nick-delirium: status working → validating. Two clones of a repo: log a step on the same task in each, merge — git does not stop, dolly context shows both, steps add up. Delete a task.md, run any dolly command: it comes back identical. Teammates need this dolly before writing (store is v8).
+- `2026-11-20 10:00Z` @nick-delirium: status validating → done. Reviewed: built and tested this session (362 tests green). This repo migrated to v8 losslessly.
+

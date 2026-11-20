@@ -71,8 +71,8 @@ Manual: migrate this repo own store — 13 steps, spec v2 — and diff the gener
 
 ## Open Questions
 
-- [ ] Should `log.jsonl` also absorb `context/steps.md` bodies, or do prose bodies stay in markdown keyed by event id? Leaning: keep prose in markdown, since diffs of prose are the thing humans read in PRs.
-- [ ] Does `NNNN` stay a per-task counter (so offline teammates both produce 0013, distinguished by user), or become a global monotonic value? Leaning: per-task counter, since the point is that collisions are harmless.
+- [x] Should `log.jsonl` also absorb `context/steps.md` bodies, or do prose bodies stay in markdown keyed by event id? Leaning: keep prose in markdown, since diffs of prose are the thing humans read in PRs.
+- [x] Does `NNNN` stay a per-task counter (so offline teammates both produce 0013, distinguished by user), or become a global monotonic value? Leaning: per-task counter, since the point is that collisions are harmless.
 
 ## Q&A
 
@@ -95,4 +95,24 @@ Manual: migrate this repo own store — 13 steps, spec v2 — and diff the gener
 **Q (2026-08-07 10:44Z):** Correction to the answer above, which lost a word to a shell quoting slip: what regenerates task.md?
 
 **A:** A `dolly render` command. The earlier answer should read "regenerable with `dolly render`".
+
+**Q (2026-11-20 08:55Z):** When does log.jsonl land relative to the other work?
+
+**A:** Last, as its own task, after correctness fixes, loop-closing, signal cleanup, command merges and dream. Dry-run migration checked against this repo's own store.
+
+**Q (2026-11-20 09:22Z):** Should log.jsonl absorb context/steps.md bodies?
+
+**A:** No (the plan's own leaning, adopted): prose stays in markdown keyed by step id; diffs of prose are what humans read in PRs. log.jsonl holds task.md's state only.
+
+**Q (2026-11-20 09:22Z):** NNNN per-task or global?
+
+**A:** Per-task counter (the plan's leaning, adopted), suffixed with the author: new step blocks are <!-- dolly:step 0013-alice -->, refs steps.md#0013-alice. The block header stays '## 0013 · <at> · @alice' so heading parsers are unchanged. Old NNNN ids stay as they are.
+
+**Q (2026-11-20 09:22Z):** Design: what is an event in log.jsonl?
+
+**A:** A diff of task.md state taken at saveTask (the one choke point every writer already calls): base (first line: meta + verbatim body), set (scalar meta), add (sessions/collaborators), inc (steps/spec_version — summed, so two teammates' steps both count), lead/sec (raw section replacement), log (text appended to the Log section), body (full replacement, fallback). Fold sorts by at (stable), applies, renders task.md. Writers stay as they are; saveTask self-checks that the fold reproduces exactly what the writer meant and falls back to a body op if not.
+
+**Q (2026-11-20 09:22Z):** How do merges avoid conflicts, and is the v8 migration automatic?
+
+**A:** .dolly/.gitattributes sets merge=union for tasks/*/log.jsonl, tasks/*/task.md and tasks/*/context/steps.md: git never stops on them; dolly never parses task.md once log.jsonl exists and regenerates it on the next write or with dolly render. The migration only ADDS log.jsonl (base = task.md body verbatim, render checked byte-identical) and .gitattributes, so it is lossless and auto-applies; a task whose render would differ is left on the legacy path and reported.
 

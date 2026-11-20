@@ -1,21 +1,22 @@
 ---
 id: jd8s6t23
-slug: autolog-smoke-test
-title: autolog smoke test
-status: working
+slug: autolog-smoke-test-aug-25-cross-feature-review-f
+title: Autolog smoke test + Aug 25 cross-feature review findings
+status: done
 owner: rjshrjndrn
-collaborators: [rjshrjndrn, nick.delirium]
+collaborators: [rjshrjndrn, nick.delirium, nick-delirium]
 tags: []
 steps: 3
 spec_version: 1
 created: 2026-08-08T03:13:29Z
-updated: 2026-08-25T17:42:29Z
+updated: 2026-11-20T10:00:12Z
+sessions: [36d7b4d9-0ca0-4cb9-8bd0-8b3723565119]
 ---
 
-# jd8s6t23 · autolog smoke test
+# jd8s6t23 · Autolog smoke test + Aug 25 cross-feature review findings
 
 <!-- dolly:header -->
-`working` · spec v1 · @rjshrjndrn · 3 steps · updated 2026-08-25 17:42Z
+`done` · spec v1 · @rjshrjndrn · 3 steps · updated 2026-11-20 10:00Z
 <!-- /dolly:header -->
 
 ## Spec
@@ -42,4 +43,6 @@ throwaway: prove pi turn_end auto-logs a step end-to-end
 - `2026-08-08 03:13Z` @rjshrjndrn: archived.
 - `2026-08-25 17:42Z` @nick.delirium: Cross-feature review found and fixed six issues before they shipped: agent docs re-teaching dead numeric-id formats, memo reading the wrong file for file-trailers (+ regex never matching trailers), v5 migration rmrf-ing archive copies it had promised to preserve on collision, picker prefilter able to empty its own list, auto-log dropping opencode/pi session links, README tool/agent counts.
   files: `.claude/commands/dolly/board.md`, `.claude/commands/dolly/checkpoint.md`, `.claude/commands/dolly/memo.md`, `.claude/skills/dolly/SKILL.md`, `.opencode/commands/dolly-adopt.md`, `.opencode/commands/dolly-board.md` +54 more · full: `steps.md#0003`
+- `2026-11-20 09:59Z` @nick-delirium: retitled: "autolog smoke test" → "Autolog smoke test + Aug 25 cross-feature review findings".
+- `2026-11-20 10:00Z` @nick-delirium: status working → done. Closed on request. Kept rather than deleted: it holds the Aug 25 cross-feature review (step 0003) that 5nbx4mdy points at.
 

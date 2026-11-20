@@ -2,20 +2,21 @@
 id: 3pkndyj2
 slug: hash-task-ids-fuzzy-title-matching
 title: Hash task ids + fuzzy title matching
-status: validating
+status: done
 owner: nick.delirium
-collaborators: [nick.delirium]
+collaborators: [nick.delirium, nick-delirium]
 tags: []
 steps: 1
 spec_version: 2
 created: 2026-08-25T15:14:54Z
-updated: 2026-08-25T16:49:16Z
+updated: 2026-11-20T10:00:12Z
+sessions: [36d7b4d9-0ca0-4cb9-8bd0-8b3723565119]
 ---
 
 # 3pkndyj2 · Hash task ids + fuzzy title matching
 
 <!-- dolly:header -->
-`validating` · spec v2 · @nick.delirium · 1 step · updated 2026-08-25 16:49Z
+`done` · spec v2 · @nick.delirium · 1 step · updated 2026-11-20 10:00Z
 <!-- /dolly:header -->
 
 ## Spec
@@ -53,4 +54,5 @@ Plan complete. Status → todo.
 - `2026-08-25 16:49Z` @nick.delirium: Task ids are now 8-char vowel-free hashes; any ref accepts id/slug/substring/fuzzy title, ambiguous matches open an interactive type-to-filter picker (numbered list when scripted); v6 migration rewrote all legacy ids losslessly (this repo migrated, e.g. 0009 → 3pkndyj2).
   files: `.claude/commands/dolly/housekeep.md`, `.opencode/commands/dolly-adopt.md`, `.opencode/commands/dolly-board.md`, `.opencode/commands/dolly-housekeep.md`, `.opencode/commands/dolly-plan.md`, `.opencode/commands/dolly-resume.md` +42 more · full: `steps.md#0001`
 - `2026-08-25 16:49Z` @nick.delirium: status working → validating. human: try dolly continue <part of a task title> in a real TTY to see the picker
+- `2026-11-20 10:00Z` @nick-delirium: status validating → done. Reviewed: hash ids, fuzzy refs and the picker live; tests green.
 
