@@ -324,10 +324,10 @@ test('every non-default answer lands in the file that owns it', async (t) => {
       [/MCP server/i, 'n'],
       [/hooks/i, 'n'],
       [/Auto-log/i, 'n'],
+      [/Your username/i, [...'someone-else', 'return']],
       NO_BRIEF,
       NO_STAGE,
     ],
-    lines: ['someone-else'],
   });
   const res = await runWizard({ term, cwd: g.project });
   assert.deepEqual(term.unanswered(), []);
@@ -533,15 +533,16 @@ test('--store never relocates an existing store without a confirmation', (t) => 
   }
   assert.ok(err, 'refused');
   assert.match(err.stderr, /already has a store/);
-  assert.match(err.stderr, /dolly setup/);
+  assert.match(err.stderr, /dolly init/);
   assert.ok(fs.existsSync(path.join(g.project, '.dolly')), 'the store is untouched');
   assert.equal(fs.existsSync(globalStoreFor(g.project, g.home)), false, 'and nothing was created');
 });
 
-test('setup always needs a terminal', (t) => {
+test('init on an existing store reopens the setup screen, which needs a terminal; setup points at init', (t) => {
   const g = ground(t);
   dolly(g.project, ['init', '--yes', '--no-agents']);
-  assert.throws(() => dolly(g.project, ['setup']), /not a terminal|--yes/);
+  assert.throws(() => dolly(g.project, ['init']), /not a terminal|--yes/);
+  assert.throws(() => dolly(g.project, ['setup']), /`setup` was removed — use `dolly init`/);
 });
 
 test('an agent gets the same refusal as a pipe, and never a prompt', (t) => {
@@ -566,4 +567,58 @@ test('the MCP server exposes no wizard tool', () => {
   });
   assert.doesNotMatch(out, /wizard|dolly_setup/i);
   assert.match(out, /dolly_board/);
+});
+
+/* ------------------------------- username --------------------------------- */
+
+const plainOut = (term) => stripAnsi(term.text());
+const localUser = (g) => {
+  const f = path.join(g.project, '.dolly', 'local.json');
+  return fs.existsSync(f) ? JSON.parse(fs.readFileSync(f, 'utf8')).user : undefined;
+};
+
+test('username: gh is offered first, and the confirmed handle is pinned', async (t) => {
+  const g = ground(t);
+  const term = replyTerm({ reply: [NO_AGENTS, NO_BRIEF, NO_STAGE] });
+  await runWizard({ term, cwd: g.project, identity: { user: 'octocat', source: 'gh' } });
+  assert.match(plainOut(term), /You\nYour username — stamped on every step you log\n\r?› ⏎ enter to use octocat · from GitHub/);
+  assert.equal(localUser(g), 'octocat', 'pinned so it cannot drift to another alias later');
+  assert.match(plainOut(term), /username {5}@octocat/);
+});
+
+test('username: without gh, git config is offered', async (t) => {
+  const g = ground(t);
+  const term = replyTerm({ reply: [NO_AGENTS, NO_BRIEF, NO_STAGE] });
+  await runWizard({ term, cwd: g.project, identity: { user: 'nick', source: 'git' } });
+  assert.match(plainOut(term), /⏎ enter to use nick · from git config/);
+  assert.equal(localUser(g), 'nick');
+});
+
+test('username: with neither, it asks — the OS account is never offered', async (t) => {
+  const g = ground(t);
+  const term = replyTerm({
+    reply: [NO_AGENTS, [/Your username/i, ['return', ...'@alice', 'return']], NO_BRIEF, NO_STAGE],
+  });
+  await runWizard({ term, cwd: g.project, identity: { user: 'laptop-account', source: 'os' } });
+  const out = plainOut(term);
+  assert.match(out, /› Write your username/);
+  assert.doesNotMatch(out, /laptop-account/);
+  assert.match(out, /a username is required/);
+  assert.equal(localUser(g), 'alice', 'a leading @ is not part of the handle');
+});
+
+test('username: a handle already pinned is kept on enter, not rewritten', async (t) => {
+  const g = ground(t);
+  await runWizard({ term: replyTerm({ reply: [NO_AGENTS, NO_BRIEF, NO_STAGE] }), cwd: g.project, identity: { user: 'octocat', source: 'gh' } });
+  const term = replyTerm({ reply: [NO_AGENTS, NO_BRIEF, NO_STAGE] });
+  const res = await runWizard({ term, cwd: g.project, identity: { user: 'octocat', source: 'config' } });
+  assert.match(plainOut(term), /⏎ enter to keep octocat · from local\.json/);
+  assert.ok(!res.wrote.some((w) => /local\.json/.test(w)), 'nothing rewritten');
+});
+
+test('username: init --yes --user pins it without a terminal', (t) => {
+  const g = ground(t);
+  const out = dolly(g.project, ['init', '--yes', '--no-agents', '--user', '@scripted']);
+  assert.match(out, /username: @scripted \(pinned in local\.json\)/);
+  assert.equal(localUser(g), 'scripted');
 });

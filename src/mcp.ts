@@ -9,19 +9,19 @@ import {
   addPlanQA,
   checkPlan,
   finalizePlan,
-  readPlan,
   setPlanSection,
   startPlan,
   PLAN_PROMPTS,
 } from './core/plan.js';
-import { digestMaterial, planCompaction, rollupMaterial, saveDigest, saveRollup } from './core/compact.js';
-import { knownStores, mentionedBy, parseSince, recall } from './core/recall.js';
-import { renderBoard, renderContext, renderRecall, renderShow } from './core/render.js';
+import { planCompaction, rollupMaterial, saveRollup } from './core/compact.js';
+import { dayMaterial, saveDream, weekMaterial } from './core/dream.js';
+import { knownStores, parseSince, recall, why } from './core/recall.js';
+import { renderBoard, renderContext, renderRecall, renderWhy, renderWhyMany } from './core/render.js';
 import { Store, currentTask } from './core/store.js';
-import { addStep, createTask, fullSpec, setStatus, updateSpec } from './core/task.js';
+import { addStep, createTask, retitle, setStatus, updateSpec } from './core/task.js';
 import type { Task } from './core/types.js';
 import { codeMapLine, ensureProject, projectDigest, projectStatus, setProjectSection } from './core/project.js';
-import { relatedByFiles, relatedToTask, renderRelated } from './core/related.js';
+import { relatedByFiles } from './core/related.js';
 import { legacyOrphan, maybeAutoMigrate, versionState } from './migrate.js';
 import {
   applyReindex,
@@ -75,7 +75,7 @@ function writable(): Store {
 /**
  * The task-memory core of the CLI. Deliberately absent: `setup`/`init` (an
  * interactive screen — a prompt on a JSON-RPC stream hangs the client),
- * `continue` (spawns a TUI), and the maintenance commands (`retitle`, `memo`,
+ * `continue` (spawns a TUI), and the maintenance commands (`retitle`,
  * `config`, `whoami`, `migrate`, `install`, `update`) — an agent with a shell
  * runs those through the CLI.
  */
@@ -111,7 +111,7 @@ const TOOLS: Tool[] = [
       properties: {
         ref: REF,
         steps: { type: 'number', description: 'Recent steps in full. Default 3, 0 = all.' },
-        brief: { type: 'boolean', description: 'No step bodies.' },
+        brief: { type: 'boolean', description: 'Short read: no step bodies, no full spec.' },
       },
     },
     run(a) {
@@ -119,21 +119,6 @@ const TOOLS: Tool[] = [
       // the store is what adds the project brief, related tasks and file list —
       // omitting it made the recommended integration the impoverished one
       return renderContext(t, { steps: a.steps ?? 3, brief: Boolean(a.brief), store: s });
-    },
-  },
-  {
-    name: 'dolly_task_show',
-    description: 'One task: metadata, short spec, criteria, log. full=true adds full spec and plan.',
-    inputSchema: {
-      type: 'object',
-      properties: { ref: REF, full: { type: 'boolean' } },
-      required: ['ref'],
-    },
-    run(a) {
-      const { s, t } = open(a.ref);
-      const base = renderShow(t, { full: false, mentions: mentionedBy(s, t) });
-      if (!a.full) return base;
-      return `${base}\n\n--- full spec ---\n${fullSpec(t)}\n\n--- plan ---\n${readPlan(t) || '(none)'}`;
     },
   },
   {
@@ -203,6 +188,7 @@ const TOOLS: Tool[] = [
       type: 'object',
       properties: {
         ref: REF,
+        title: S('New title (renames the task dir).'),
         short: S('New 2-5 line summary.'),
         full: S('New full spec; bumps the version.'),
         criteria: SArr('Replacement criteria.'),
@@ -211,7 +197,12 @@ const TOOLS: Tool[] = [
       required: ['ref'],
     },
     run(a) {
-      const { s, t } = open(a.ref);
+      const { s } = open(a.ref);
+      let { t } = open(a.ref);
+      if (a.title) {
+        t = retitle(s, t, String(a.title));
+        if (!a.short && !a.full && !a.criteria) return `${t.meta.id} retitled "${t.meta.title}"`;
+      }
       const v = updateSpec(s, t, {
         short: a.short,
         full: a.full,
@@ -320,35 +311,29 @@ const TOOLS: Tool[] = [
     },
   },
   {
-    name: 'dolly_related',
-    description: "Tasks that touched these files (or this task's files), and what they concluded. Call before changing shared code.",
+    name: 'dolly_why',
+    description: 'Who has been in these files and what they concluded: tasks ranked by shared rare files, commits, prose (one file: its full story). Call before changing shared code.',
     inputSchema: {
       type: 'object',
-      properties: {
-        ref: REF,
-        files: SArr('Paths you are about to touch; wins over ref.'),
-      },
+      properties: { files: SArr('Paths you are about to touch.') },
+      required: ['files'],
     },
     run(a) {
       const s = store();
       if (!s.exists) return 'dolly not initialized here.';
-      const files: string[] = Array.isArray(a.files) ? a.files : [];
-      const related = files.length
-        ? relatedByFiles(s, files)
-        : relatedToTask(s, s.resolve(a.ref ?? 'current'));
-      const subject = files.length ? `${files.length} file(s)` : (a.ref ?? 'current');
-      if (!related.length) return `No other task has touched this code (${subject}).`;
-      return `Tasks sharing code with ${subject}:\n\n${renderRelated(related, 20)}`;
+      const files: string[] = a.files;
+      if (files.length === 1) return renderWhy(why(s, files[0]));
+      return renderWhyMany(files.map((f) => why(s, f)), relatedByFiles(s, files));
     },
   },
   {
     name: 'dolly_recall',
-    description: 'Search notes, specs, plan answers, memos, the brief by words: ranked hits with path:line. Use before re-deciding.',
+    description: 'Search notes, specs, plan answers, dreams, the brief by words: ranked hits with path:line. Use before re-deciding.',
     inputSchema: {
       type: 'object',
       properties: {
         query: S('Words, or "a phrase".'),
-        kind: SArr('task|log|step|spec|plan|memo|project|digest|decision'),
+        kind: SArr('task|log|step|spec|plan|dream|project|decision'),
         status: S('Task status.'),
         since: S('30d, 2w, 6m, YYYY-MM-DD.'),
         task: S('One task (ref).'),
@@ -374,33 +359,47 @@ const TOOLS: Tool[] = [
   },
   {
     name: 'dolly_compact',
-    description: 'Roll a task\'s old step bodies (ref), or several tasks (tasks+title), into one note you write. save=false: material; save+text: store. Nothing deleted.',
+    description: 'Roll a long task\'s old step bodies into one note you write. save=false: material; save+text+through: store. Nothing deleted.',
     inputSchema: {
       type: 'object',
       properties: {
         ref: REF,
-        tasks: SArr('Tasks → one digest.'),
-        title: S('Digest title.'),
         keep: { type: 'number', description: 'Bodies kept in full (3).' },
         through: S('Last step rolled up.'),
         save: { type: 'boolean' },
-        text: S('Your rollup/digest.'),
+        text: S('Your rollup.'),
       },
     },
     run(a) {
       const { s, t } = open(a.ref ?? 'current');
-      const tasks: string[] = Array.isArray(a.tasks) ? a.tasks : [];
-      if (tasks.length) {
-        if (!a.title) throw new Error('tasks needs a title');
-        const ts = tasks.map((r) => s.resolve(r));
-        if (!a.save) return digestMaterial(s, ts, a.title);
-        const d = saveDigest(s, ts, a.title, String(a.text ?? ''));
-        return `digest ${d.slug} saved (${d.covers.length} tasks)`;
-      }
       if (!a.save) return rollupMaterial(planCompaction(t, { keep: a.keep, through: a.through }));
       if (!a.through) throw new Error('save needs through: the step the material printed');
       const { n, plan } = saveRollup(s, t, String(a.text ?? ''), { keep: a.keep, through: a.through });
-      return `rollup ${String(n).padStart(4, '0')} on ${t.meta.id} covers steps ${plan.from}–${plan.through}`;
+      return `rollup ${String(n).padStart(4, '0')} on ${t.meta.id} covers steps ${plan.from}–${plan.through.replace(/-.*$/, '')}`;
+    },
+  },
+  {
+    name: 'dolly_dream',
+    description: 'Consolidate work since the last dream. save=false: material + rules (large — use a subagent if you can); save+text+through: store it. Lessons append to the brief; other brief edits are only proposed.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        week: S('YYYY-Www: roll up that week\'s day dreams.'),
+        since: S('Window start: 3d, 12h, a date.'),
+        through: S('Stamp the material printed.'),
+        save: { type: 'boolean' },
+        text: S('Your dream.'),
+      },
+    },
+    run(a) {
+      const s = store();
+      if (!s.exists) throw new Error('dolly not initialized here — run `dolly init` in the project');
+      if (!a.save) return (a.week ? weekMaterial(s, a.week) : dayMaterial(s, { since: a.since })).text;
+      const r = saveDream(s, String(a.text ?? ''), { through: String(a.through ?? ''), week: a.week });
+      const out = [`dream saved → ${r.file}`];
+      if (r.lessons.length) out.push(`lessons appended to the brief: ${r.lessons.map((l) => `\n- ${l}`).join('')}`);
+      if (r.proposals.length) out.push(`proposed brief edits, NOT applied — show the user: ${r.proposals.map((l) => `\n- ${l}`).join('')}`);
+      return out.join('\n');
     },
   },
   {
@@ -482,7 +481,7 @@ function writesStore(tool: string, a: Json): boolean {
       return Boolean(a.section && a.text);
     case 'dolly_reindex':
       return Boolean(a.apply);
-    case 'dolly_compact':
+    case 'dolly_compact': case 'dolly_dream':
       return Boolean(a.save);
     case 'dolly_plan':
       return a.action !== 'check';
@@ -589,6 +588,13 @@ function handle(msg: Json): void {
       if (bad) return result(id, { content: [{ type: 'text', text: `error: ${bad}` }], isError: true });
       const guard = guardVersion(name, a);
       if (guard.error) return result(id, { content: [{ type: 'text', text: guard.error }], isError: true });
+      // whoever speaks MCP is a program: closing a task is a person's call
+      // (only on writes: `status` is a filter on the board and in recall)
+      const s0 = store();
+      if (writesStore(name, a) && s0.exists && a.status === s0.config.doneStatus) {
+        const text = `error: agents never set ${a.status} — hand over with status ${s0.config.reviewStatus} and a note on what to check; a human closes it with \`dolly review\``;
+        return result(id, { content: [{ type: 'text', text }], isError: true });
+      }
       try {
         // same rule as the CLI: a write holds the store lock for the whole call
         const s = writesStore(name, a) ? store() : null;

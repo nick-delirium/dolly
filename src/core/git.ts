@@ -111,3 +111,41 @@ export function fileLog(cwd: string, file: string, max = 15): FileCommit[] {
       return { hash, date, subject, body: body.trim() };
     });
 }
+
+/** the branch work lands on: origin's HEAD, else a local main/master; null when unknown */
+export function defaultBranch(cwd: string): string | null {
+  const remote = run(['symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD'], cwd);
+  if (remote) return remote;
+  for (const b of ['main', 'master']) {
+    if (run(['rev-parse', '--verify', '--quiet', `refs/heads/${b}`], cwd) !== null) return b;
+  }
+  return null;
+}
+
+export interface TaskCommit {
+  hash: string;
+  date: string;
+  subject: string;
+  /** reachable from the default branch — the work has landed */
+  landed: boolean;
+}
+
+/**
+ * Commits whose message names a task id — a `Dolly-Task:` trailer or the id in
+ * prose — on any branch, newest first. The evidence a reviewer wants before
+ * closing: did this work actually land? [] outside a repo.
+ */
+export function commitsNaming(cwd: string, id: string, max = 5): TaskCommit[] {
+  const out = run(['log', '--all', '--topo-order', `-n${max}`, '-F', `--grep=${id}`, '--format=%h%x1f%as%x1f%s'], cwd);
+  if (!out) return [];
+  const base = defaultBranch(cwd);
+  return out
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => {
+      const [hash, date, subject = ''] = line.split('\x1f');
+      // --is-ancestor answers by exit code: 0 → '' (landed), 1 → null
+      const landed = base ? run(['merge-base', '--is-ancestor', hash, base], cwd) !== null : false;
+      return { hash, date, subject, landed };
+    });
+}

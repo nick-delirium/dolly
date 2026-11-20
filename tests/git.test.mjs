@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
-import { commonDir } from '../dist/core/git.js';
+import { commitsNaming, commonDir } from '../dist/core/git.js';
 
 function tmp(prefix) {
   return fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
@@ -70,4 +70,25 @@ test('commonDir is null outside a git repo', (t) => {
   const plain = tmp('dolly-plain-');
   t.after(() => fs.rmSync(plain, { recursive: true, force: true }));
   assert.equal(commonDir(plain), null);
+});
+
+test('commitsNaming finds commits that name a task, and says which landed on main', (t) => {
+  const repo = tmp('dolly-git-');
+  t.after(() => fs.rmSync(repo, { recursive: true, force: true }));
+  initRepo(repo);
+  execFileSync('git', ['branch', '-M', 'main'], { cwd: repo });
+  const commit = (msg) => {
+    fs.appendFileSync(path.join(repo, 'f'), `${msg}\n`);
+    execFileSync('git', ['commit', '-qam', msg], { cwd: repo });
+  };
+  commit('fix: token expiry\n\nDolly-Task: ab12cd34');
+  execFileSync('git', ['checkout', '-qb', 'feature'], { cwd: repo });
+  commit('wip on ab12cd34 follow-up');
+  commit('unrelated');
+
+  const hits = commitsNaming(repo, 'ab12cd34');
+  assert.deepEqual(hits.map((c) => c.subject), ['wip on ab12cd34 follow-up', 'fix: token expiry']);
+  assert.deepEqual(hits.map((c) => c.landed), [false, true]);
+  assert.deepEqual(commitsNaming(repo, 'zz99zz99'), []);
+  assert.deepEqual(commitsNaming(os.tmpdir(), 'ab12cd34'), [], 'outside a repo: nothing, no throw');
 });

@@ -221,7 +221,7 @@ test('rebuild re-imports the same session after a format change', (t) => {
   assert.equal(rebuilt.imported, 3, 'and imported again');
   assert.deepEqual(
     stepEntries(rebuilt.task.dir).map((e) => e.id),
-    ['0004', '0005', '0006'],
+    ['0004-tester', '0005-tester', '0006-tester'],
     'fresh entries, old blocks gone',
   );
   // the short log keeps its history — it is append-only — but the dead pointers

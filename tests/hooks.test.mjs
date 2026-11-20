@@ -35,7 +35,9 @@ function dollyStdin(cwd, args, stdin, env = {}) {
 function plantTranscript(root, cwd, sessionId, entries) {
   const dir = path.join(root, escapeCwd(cwd));
   fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, `${sessionId}.jsonl`), entries.join(''), 'utf8');
+  // turns record the project they ran in: edits outside it are not project work
+  const body = entries.join('').replaceAll('"cwd":"/unused"', `"cwd":${JSON.stringify(cwd)}`);
+  fs.writeFileSync(path.join(dir, `${sessionId}.jsonl`), body, 'utf8');
   return root;
 }
 
@@ -151,7 +153,7 @@ test('auto-log respects the config switches', (t) => {
 
   const tRoot = path.join(sb.dir, 'transcripts');
   plantTranscript(tRoot, sb.dir, 'sess-3', [
-    turn('t3', '2030-01-01T10:00:00.000Z', 'x', '2030-01-01T10:01:00.000Z', 'Finished the audit and wrote up the findings.'),
+    turn('t3', '2030-01-01T10:00:00.000Z', 'x', '2030-01-01T10:01:00.000Z', 'Finished the audit and wrote up the findings.', [path.join(sb.dir, 'AUDIT.md')]),
   ]);
   const env = { DOLLY_DIR: sb.store, DOLLY_TRANSCRIPT_DIR: tRoot };
 
@@ -165,8 +167,8 @@ test('auto-log respects the config switches', (t) => {
   // and autoLog=false disables it entirely
   dolly(sb.dir, ['config', 'set', 'reindex.autoLog', 'false'], env);
   plantTranscript(tRoot, sb.dir, 'sess-3', [
-    turn('t3', '2030-01-01T10:00:00.000Z', 'x', '2030-01-01T10:01:00.000Z', 'Finished the audit and wrote up the findings.'),
-    turn('t4', '2031-01-01T10:00:00.000Z', 'y', '2031-01-01T10:01:00.000Z', 'Also rewrote the migration to be idempotent.'),
+    turn('t3', '2030-01-01T10:00:00.000Z', 'x', '2030-01-01T10:01:00.000Z', 'Finished the audit and wrote up the findings.', [path.join(sb.dir, 'AUDIT.md')]),
+    turn('t4', '2031-01-01T10:00:00.000Z', 'y', '2031-01-01T10:01:00.000Z', 'Also rewrote the migration to be idempotent.', [path.join(sb.dir, 'migrate.ts')]),
   ]);
   assert.doesNotMatch(dollyStdin(sb.dir, ['hook', 'stop'], stopPayload('sess-3'), env), /auto-logged/);
   assert.equal(Store.open().loadTasks()[0].meta.steps, 1);
@@ -334,4 +336,28 @@ test('hook stop --from-stdin accepts zcode-shaped Stop payloads', (t) => {
   // garbage never throws, never logs
   dollyStdin(sb.dir, ['hook', 'stop', '--from-stdin'], 'not json at all', { DOLLY_DIR: sb.store });
   assert.equal(stepEntries(task.dir).length, 2);
+});
+
+test('a turn that changed no project file is not auto-logged', (t) => {
+  const sb = sandbox();
+  t.after(sb.cleanup);
+  const store = Store.open();
+  const task = createTask(store, { title: 'Floor' });
+  setStatus(store, task, 'working');
+  attach(task, 'sess-f');
+  const tRoot = path.join(sb.dir, 'transcripts');
+  const env = { DOLLY_DIR: sb.store, DOLLY_TRANSCRIPT_DIR: tRoot };
+  plantTranscript(tRoot, sb.dir, 'sess-f', [
+    turn('r1', '2030-01-01T10:00:00.000Z', 'what does x do?', '2030-01-01T10:01:00.000Z', 'It parses the log.'),
+    turn('r2', '2030-01-01T11:00:00.000Z', 'scratch only', '2030-01-01T11:01:00.000Z', 'Wrote a temp script.', ['/tmp/elsewhere.sh']),
+  ]);
+  assert.doesNotMatch(dollyStdin(sb.dir, ['hook', 'stop'], stopPayload('sess-f'), env), /auto-logged/);
+  assert.equal(Store.open().loadTasks()[0].meta.steps, 0, 'questions and scratch work leave no step');
+
+  // event-driven harnesses: files reported and empty → skip; never reported → old floor
+  const stdin = (payload) => dollyStdin(sb.dir, ['hook', 'stop', '--from-stdin'], JSON.stringify(payload), env);
+  stdin({ session: 'sess-f', turn: 1, text: 'Read some files.', tools: ['read'], files: [] });
+  assert.equal(Store.open().loadTasks()[0].meta.steps, 0);
+  stdin({ session_id: 'sess-f', last_response: 'Edited things (zcode reports no files).' });
+  assert.equal(Store.open().loadTasks()[0].meta.steps, 1);
 });

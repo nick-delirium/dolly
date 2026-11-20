@@ -48,6 +48,12 @@ export interface ReindexOpts {
   /** capture raw reasoning blocks — verbose, off unless asked */
   includeThinking?: boolean;
   /**
+   * Only segments that changed a project file. Auto-logging sets it: a turn
+   * that only read or answered produced nothing a later session needs, and
+   * logging it buried the steps that did ("files: none, tools: bash").
+   */
+  onlyWithFiles?: boolean;
+  /**
    * Only import segments that started after this timestamp. Used by auto-logging
    * so a turn the agent already logged itself is never duplicated.
    */
@@ -104,6 +110,7 @@ export function selectSegments(t: Transcript, opts: ReindexOpts): Segment[] {
     const floor = Date.parse(opts.onlyNewerThan);
     if (Number.isFinite(floor)) segs = segs.filter((s) => Date.parse(s.at) > floor);
   }
+  if (opts.onlyWithFiles) segs = segs.filter((s) => s.files.length > 0);
   if (opts.limit && opts.limit > 0) segs = segs.slice(-opts.limit);
   return segs;
 }

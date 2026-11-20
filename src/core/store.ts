@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fold, hasEventLog, readEvents } from './log.js';
 import { DEFAULT_CONFIG, STORE_VERSION, type Config, type Task, type TaskMeta } from './types.js';
 import {
   ensureDir,
@@ -79,7 +80,7 @@ function storeReadme(inRepo: boolean, project: string): string {
 knows what was decided and why.`
     : `This store sits outside the project it describes (${project}), because that
 is what was chosen at setup. It is private to you: there is nothing to commit,
-and a teammate cloning that repo gets their own. \`dolly setup\` moves it back
+and a teammate cloning that repo gets their own. \`dolly init\` moves it back
 into the repo if you want it shared.`;
   return STORE_README.replace('%OPENING%', opening);
 }
@@ -91,13 +92,15 @@ Written and read by coding agents via the \`dolly\` CLI (\`npm i -g dolly\`).
 
 - \`tasks/<id>-slug/task.md\` — short spec, success criteria, and a one-line-per-event
   log. Start here. Every line is stamped with the GitHub handle of whoever did it.
+  Generated from \`log.jsonl\` beside it (the append-only record), and rebuilt
+  by dolly whenever the two disagree — after a merge, say.
 - \`tasks/<id>-slug/context/spec.md\` — current full spec at the top, every
   superseded version below it under "Superseded versions".
 - \`tasks/<id>-slug/context/steps.md\` — full context of each step, append-only:
   decisions, rejected options, gotchas, what to do next.
 - \`tasks/<id>-slug/context/plan.md\` — the planning interview, when there was one.
 
-Read with \`dolly board\`, \`dolly show <ref>\`, \`dolly context <ref>\`.
+Read with \`dolly board\`, \`dolly context <ref>\`.
 Do not hand-edit these files — the CLI maintains frontmatter, spec versions and
 step counters.
 `;
@@ -535,6 +538,13 @@ export class Store {
       const base = readTextOr(ignore);
       writeText(ignore, `${base}${base && !base.endsWith('\n') ? '\n' : ''}${missing.join('\n')}\n`);
     }
+    const attrs = missingAttributes(this.root);
+    if (attrs.length) {
+      const file = path.join(this.root, '.gitattributes');
+      const base = readTextOr(file);
+      const head = base ? '' : '# dolly: append-only files merge as a union, so git never stops on them\n';
+      writeText(file, `${base}${base && !base.endsWith('\n') ? '\n' : ''}${head}${attrs.join('\n')}\n`);
+    }
     const readme = path.join(this.root, 'README.md');
     if (!exists(readme)) {
       writeText(readme, storeReadme(this.inProject, this.project));
@@ -597,7 +607,14 @@ export class Store {
 
     if (ref === 'current' || ref === '@' || ref === '.') {
       const active = currentTask(tasks, this.config, { session: currentSessionId(), user: this.user });
-      if (!active) throw new Error('no active task (none in working/validating/planning)');
+      if (!active) {
+        const idle = tasks.filter((t) => activeStatuses(this.config).includes(t.meta.status)).length;
+        throw new Error(
+          idle
+            ? `no current task — ${idle} open task(s) went idle over ${this.config.staleDays}d; name one by id, or \`dolly status <ref> working\` picks it up`
+            : 'no active task (none in working/validating/planning)',
+        );
+      }
       return active;
     }
 
@@ -630,7 +647,7 @@ export class Store {
 
   /**
    * Ranked candidate tasks for a reference that was not an exact hit.
-   * Multi-word needles are supported — `dolly show hash ids` should find
+   * Multi-word needles are supported — `dolly context hash ids` should find
    * "Hash task ids", and the separators make it possible. Empty when nothing
    * plausibly matches.
    */
@@ -680,6 +697,26 @@ function tierOf(score: number): number {
   return score >= LITERAL_TIER ? score : 0;
 }
 
+/**
+ * Merge rules the store's own .gitattributes must hold. The log, the step
+ * bodies and the dreams are append-only, so a union of both sides is the
+ * right merge; task.md is rendered from the log, so whatever a union makes of
+ * it is replaced on the next write.
+ */
+export const REQUIRED_ATTRIBUTES = [
+  'tasks/*/log.jsonl merge=union',
+  'tasks/*/task.md merge=union',
+  'tasks/*/context/steps.md merge=union',
+  'dreams/*.md merge=union',
+];
+
+export function missingAttributes(root: string): string[] {
+  const have = readTextOr(path.join(root, '.gitattributes'))
+    .split('\n')
+    .map((l) => l.trim());
+  return REQUIRED_ATTRIBUTES.filter((l) => !have.includes(l));
+}
+
 /** entries the store's own .gitignore must contain */
 export const REQUIRED_IGNORES = [LOCAL_CONFIG, '*.tmp-*', '.local/', '.claude/', '.cursor/', '.codex/'];
 
@@ -719,7 +756,7 @@ export function loadConfig(root: string): Config {
   return {
     ...DEFAULT_CONFIG,
     ...raw,
-    memo: { ...DEFAULT_CONFIG.memo, ...(raw.memo ?? {}) },
+    dream: { ...DEFAULT_CONFIG.dream, ...(raw.dream ?? {}) },
     install: { ...DEFAULT_CONFIG.install, ...(raw.install ?? {}) },
     reindex: { ...DEFAULT_CONFIG.reindex, ...(raw.reindex ?? {}) },
     statuses: raw.statuses?.length ? raw.statuses : DEFAULT_CONFIG.statuses,
@@ -735,6 +772,12 @@ export function sharedUserLeak(root: string): string | null {
 }
 
 export function readTaskDir(dir: string, rel: string): Task | null {
+  // a task with a log is read from the log: task.md is its rendering, never
+  // parsed back — a merge that garbled it, or a hand edit, changes nothing
+  if (hasEventLog(dir)) {
+    const f = fold(readEvents(dir));
+    if (f) return { meta: f.meta, dir, rel, body: f.body };
+  }
   const file = path.join(dir, 'task.md');
   if (!exists(file)) return null;
   const raw = readTextOr(file);
@@ -794,14 +837,14 @@ export interface CurrentContext {
  * landed on whichever task the other touched last.
  */
 export function currentTask(tasks: Task[], config: Config, ctx: CurrentContext = {}): Task | null {
-  const live = tasks.filter((t) => t.meta.status !== config.doneStatus);
   if (ctx.session) {
-    const linked = sessionTask(live, ctx.session);
+    const linked = sessionTask(tasks, ctx.session, config);
     if (linked) return linked;
   }
-  const priority = [...new Set(['working', config.reviewStatus, 'planning'])].filter((s) =>
-    config.statuses.includes(s),
-  );
+  const priority = activeStatuses(config);
+  // a task idle for weeks is not what a fresh conversation is "on" — offering
+  // it put a 3-month-old task in front of every new session
+  const live = tasks.filter((t) => priority.includes(t.meta.status) && !isStale(t, config));
   const mine = (t: Task) => !ctx.user || t.meta.owner === ctx.user || t.meta.collaborators.includes(ctx.user);
   for (const pool of ctx.user ? [live.filter(mine), live] : [live]) {
     for (const status of priority) {
@@ -812,9 +855,33 @@ export function currentTask(tasks: Task[], config: Config, ctx: CurrentContext =
   return null;
 }
 
-/** the most recently touched unfinished task this conversation has written to */
-export function sessionTask(tasks: Task[], session: string): Task | null {
-  return tasks.filter((t) => t.meta.sessions.includes(session)).sort(byRecency)[0] ?? null;
+/** a task in an active status nobody touched in `config.staleDays` days (a todo is a backlog, not idle) */
+export function isStale(task: Task, config: Config, now = Date.now()): boolean {
+  const days = Number(config.staleDays);
+  if (!(days > 0) || !activeStatuses(config).includes(task.meta.status)) return false;
+  const at = Date.parse(task.meta.updated || task.meta.created);
+  return Number.isFinite(at) && at < now - days * 86_400_000;
+}
+
+/** statuses a task is "being worked" in, most committed first */
+export function activeStatuses(config: Config): string[] {
+  return [...new Set(['working', config.reviewStatus, 'planning'])].filter((s) => config.statuses.includes(s));
+}
+
+/**
+ * The task this conversation is on: one it wrote to, in an active status — a
+ * `working` one first, else the most recently touched. A `todo` task never
+ * qualifies: `dolly new "follow-up"` mid-work attaches the conversation too,
+ * and letting that steal `current` sent every later `step current` to it.
+ */
+export function sessionTask(tasks: Task[], session: string, config: Config): Task | null {
+  const active = activeStatuses(config);
+  const rank = (t: Task) => (t.meta.status === 'working' ? 0 : 1);
+  return (
+    tasks
+      .filter((t) => t.meta.sessions.includes(session) && active.includes(t.meta.status))
+      .sort((a, b) => rank(a) - rank(b) || byRecency(a, b))[0] ?? null
+  );
 }
 
 export function slugify(s: string, max = 48): string {

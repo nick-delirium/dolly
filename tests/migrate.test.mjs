@@ -4,6 +4,7 @@ import path from 'node:path';
 import { test } from 'node:test';
 import { listBlocks } from '../dist/core/md.js';
 import { Store } from '../dist/core/store.js';
+import { STORE_VERSION } from '../dist/core/types.js';
 import { createTask, fullSpec, logSection, setStatus, specHistory, stepEntries } from '../dist/core/task.js';
 import { hasLegacyMarkers, legacyOrphan, migrate, rewriteMarkers, versionState } from '../dist/migrate.js';
 import { addStep } from '../dist/core/task.js';
@@ -13,6 +14,8 @@ const readText = (f) => fs.readFileSync(f, 'utf8');
 
 /** rewrite a current-format task into the pre-0.2 layout */
 function downgrade(task) {
+  // a pre-v8 task has no log: task.md is the record
+  fs.rmSync(path.join(task.dir, 'log.jsonl'), { force: true });
   const ctx = path.join(task.dir, 'context');
   fs.rmSync(path.join(ctx, 'steps.md'), { force: true });
 
@@ -433,7 +436,7 @@ test('v7 drops the dead housekeep config and an archive/ holding no files, unatt
   maybeAutoMigrate(Store.open());
   const after = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
   assert.equal('housekeep' in after, false);
-  assert.equal(after.version, 7);
+  assert.equal(after.version, STORE_VERSION, "stamped current once nothing is pending");
   assert.deepEqual(after.statuses, cfg.statuses, 'the rest of the config untouched');
   assert.equal(fs.existsSync(path.join(sb.store, 'archive')), false);
 });

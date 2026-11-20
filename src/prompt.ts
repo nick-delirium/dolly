@@ -403,13 +403,24 @@ export async function confirm(term: Term, opts: { question: string; value: boole
   }
 }
 
-export async function text(
-  term: Term,
-  opts: { question: string; value?: string; validate?: (s: string) => string | null },
-): Promise<string> {
+export interface TextOpts {
+  question: string;
+  /** what enter takes when nothing was typed */
+  value?: string;
+  /**
+   * Dim text standing in the empty input — "⏎ enter to use …", "Write your
+   * username" — gone with the first keystroke. The line path shows it beside
+   * the question instead.
+   */
+  placeholder?: string;
+  validate?: (s: string) => string | null;
+}
+
+export async function text(term: Term, opts: TextOpts): Promise<string> {
+  if (term.raw) return textRaw(term, opts);
   for (;;) {
-    const suffix = opts.value ? ` ${color.dim(`[${opts.value}]`)}` : '';
-    term.write(`${term.raw ? color.bold(opts.question) : opts.question}${suffix}\n> `);
+    const hint = opts.placeholder ?? (opts.value ? `[${opts.value}]` : '');
+    term.write(`${opts.question}${hint ? ` ${color.dim(hint)}` : ''}\n> `);
     const raw = (await term.line()).trim();
     const value = raw || opts.value || '';
     const err = opts.validate?.(value);
@@ -418,6 +429,54 @@ export async function text(
       continue;
     }
     return value;
+  }
+}
+
+/** visible width of a string once its ANSI styling is stripped */
+const visible = (s: string) => s.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '').length;
+
+/**
+ * A line of text edited in place: the placeholder sits in the empty input and
+ * the cursor waits in front of it; typing replaces it, backspace and ctrl-u
+ * edit, enter takes what was typed (or the default when nothing was).
+ */
+async function textRaw(term: Term, opts: TextOpts): Promise<string> {
+  const PROMPT = `${color.cyan('›')} `;
+  term.write(`${color.bold(opts.question)}\n`);
+  let buf = '';
+  let drawn = 1; // the question line; the input line is the one being edited
+  const draw = () => {
+    const ph = opts.placeholder ?? (opts.value ? `⏎ enter to use ${opts.value}` : '');
+    term.write(`\r\x1b[2K${PROMPT}${buf || color.dim(ph)}`);
+    if (!buf && ph) term.write(`\x1b[${visible(ph)}D`);
+  };
+  draw();
+  for (;;) {
+    const k = await term.key();
+    if (k.ctrl && k.name === 'c') throw new PromptCancelled();
+    if (k.name === 'return' || k.name === 'enter') {
+      const value = buf.trim() || opts.value || '';
+      const err = opts.validate?.(value);
+      if (err) {
+        term.write(`\n  ${color.yellow(err)}\n`);
+        drawn += 2;
+        buf = '';
+        draw();
+        continue;
+      }
+      term.write('\n');
+      eraseLines(term, drawn + 1);
+      term.write(answered(opts.question, value));
+      return value;
+    }
+    if (k.name === 'backspace') buf = buf.slice(0, -1);
+    else if (k.ctrl && k.name === 'u') buf = '';
+    else {
+      // readline names letters by themselves and leaves punctuation in `seq`
+      const ch = k.seq.length === 1 ? k.seq : k.name.length === 1 ? k.name : '';
+      if (ch && !k.ctrl && ch >= ' ' && ch !== '\x7f') buf += ch;
+    }
+    draw();
   }
 }
 

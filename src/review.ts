@@ -12,6 +12,7 @@
  *    held while a person thinks — a turn-end hook in another session must not
  *    wait on someone's coffee break.
  */
+import { commitsNaming, defaultBranch } from './core/git.js';
 import { withStoreLock } from './core/lock.js';
 import { filesOfTask } from './core/related.js';
 import { color } from './core/render.js';
@@ -47,7 +48,7 @@ function clipLines(s: string, max: number): string {
   return lines.length > max ? `${lines.slice(0, max).join('\n')}\n${color.dim(`… ${lines.length - max} more line(s)`)}` : lines.join('\n');
 }
 
-function screen(term: Term, task: Task, n: number, of: number, status: string): void {
+function screen(term: Term, task: Task, n: number, of: number, status: string, project?: string): void {
   const m = task.meta;
   term.write(`\n${color.bold(`── ${n}/${of} · ${m.id} ${m.title}`)}\n`);
   note(term, `${m.status} · @${m.owner} · ${m.steps} step(s) · updated ${humanAge(m.updated)}`);
@@ -58,6 +59,16 @@ function screen(term: Term, task: Task, n: number, of: number, status: string): 
   const files = filesOfTask(task);
   if (files.length) {
     term.write(`\n${color.dim(`files: ${files.slice(0, 8).join(', ')}${files.length > 8 ? ` +${files.length - 8} more` : ''}`)}\n`);
+  }
+  // did the work land? the commits that name this task, marked when they are
+  // on the default branch — the evidence that makes "done" one key
+  const commits = project ? commitsNaming(project, m.id, 3) : [];
+  if (commits.length) {
+    const base = defaultBranch(project!) ?? 'the default branch';
+    term.write(`\n${color.bold('Commits')}\n`);
+    for (const c of commits) {
+      term.write(`  ${c.hash} ${c.date} ${c.subject.slice(0, 80)}${c.landed ? color.green(` · on ${base}`) : color.dim(' · not on ' + base)}\n`);
+    }
   }
   const crit = criteriaList(task);
   term.write(`\n${color.bold('Criteria')}\n`);
@@ -100,7 +111,7 @@ export async function runReview(opts: ReviewOpts): Promise<ReviewResult> {
     const id = queued.meta.id;
     for (;;) {
       const task = opts.open().resolve(id);
-      screen(term, task, i, queue.length, status);
+      screen(term, task, i, queue.length, status, opts.open().project);
       const crit = criteriaList(task);
       const action = await select<Action>(term, {
         question: 'What now?',

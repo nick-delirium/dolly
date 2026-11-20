@@ -123,3 +123,20 @@ test('dolly_plan runs the whole interview through one tool, and rejects an unkno
   assert.match(text(7), /must be one of start, check, set, qa, finalize/);
   assert.equal(r.replies.find((x) => x.id === 7).result.isError, true);
 });
+
+test('MCP never closes a task, but done still works as a board filter', (t) => {
+  const sb = sandbox();
+  t.after(sb.cleanup);
+  const task = createTask(Store.open(), { title: 'Over MCP' });
+  const r = rpc(sb.dir, [
+    call(1, 'dolly_status_set', { ref: task.meta.id, status: 'done' }),
+    call(2, 'dolly_step_add', { ref: task.meta.id, summary: 'x', status: 'done' }),
+    call(3, 'dolly_board', { status: 'done' }),
+  ]);
+  const [set, step, board] = r.replies;
+  assert.equal(set.result.isError, true);
+  assert.match(set.result.content[0].text, /agents never set done/);
+  assert.equal(step.result.isError, true);
+  assert.notEqual(board.result.isError, true);
+  assert.equal(Store.open().loadTasks()[0].meta.status, 'todo');
+});

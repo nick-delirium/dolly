@@ -16,12 +16,11 @@ Your task is a SLICE of an ongoing codebase. Other tasks came before, made decis
 ```
 dolly project                      # what is true about this repo: architecture, conventions, invariants
 dolly board                        # what exists, what is in flight, what shipped
-dolly related --files a.ts,b.ts    # which tasks touched this code, and what they concluded
-dolly recall <words>               # search every step note, spec, plan answer, memo, the brief
-dolly why <file>                   # tasks, commits and prose behind one file
+dolly why a.ts b.ts                # which tasks touched this code, what they concluded, the commits
+dolly recall <words>               # search every step note, spec, plan answer, dream, the brief
 ```
 
-`dolly related` is the link nothing else gives you: dolly records the files every step touched. Read it before changing shared code — you may be about to undo a deliberate choice. Skipped it if you: reinvent an existing convention, edit a file against another task's direction, ask what the repo already answers.
+`dolly why` is the link nothing else gives you: dolly records the files every step touched, and ranks tasks by how rare the shared files are. Read it before changing shared code — you may be about to undo a deliberate choice. Skipped it if you: reinvent an existing convention, edit a file against another task's direction, ask what the repo already answers.
 
 `dolly recall` before re-deciding anything: the option may already be weighed or rejected. Hits print `path:line` — open there, don't re-grep. `--kind decision` = Decisions / Dead ends / Why sections + planning answers; narrow with `--status`, `--since 30d`, `--task <ref>`, `-n N`, `--all-projects`.
 
@@ -36,7 +35,7 @@ Code map in repo (`.codegraph/`, `graft/`, `.serena/`)? Use it before grep. Do n
 | orienting only | `dolly context <ref> --brief` |
 | archaeology: why is the code like this | `dolly why <file>` · `dolly recall <words>` · `dolly context <ref> -n 0` |
 
-`dolly context` = project brief, related tasks, spec, criteria, log, last 3 steps' full context. Log say *what* happened; step context say *why* — you need why before changing code. Session-start text is only the index.
+`dolly context` = the brief's Invariants + Conventions + newest Lessons, related tasks, full spec, criteria, log, last 3 steps' full context (`--brief`: short spec, criteria, recent log only). Log say *what* happened; step context say *why* — you need why before changing code. Session-start text is only the index.
 
 `<ref>` = 8-char id (`3pkndyj2`) · slug · unique substring · fuzzy title · `current` (default when omitted). Ambiguous → picker in a terminal, list otherwise.
 
@@ -62,7 +61,11 @@ Step without detail is half a step. `--auto-files` read changed files from git; 
 
 ## Compact — when asked, or when context says bodies are out of view
 
-`dolly compact <ref>` (one task) or `dolly compact --tasks a,b,c --title "<area>"` (one digest) prints the material, the rules and the exact `--save` command. You write the prose; dolly writes none and deletes nothing. Save with the printed `--through`.
+`dolly compact <ref>` prints one long task's old step bodies, the rules and the exact `--save` command. You write the rollup; dolly writes none and deletes nothing. Save with the printed `--through`.
+
+## Dream — when session start says one is due, or the user asks
+
+`/dolly:dream`, or `dolly dream` in a **subagent** (the material is large; keep it out of the working conversation). It prints everything since the last dream + the brief + rules; you write What happened · Decisions · Went wrong · Went well · Ideas · Lessons · Proposed brief edits, and save with the printed `--through`. Lessons are appended to the brief; **never `dolly project set` from a dream** — other brief edits are proposals the human applies. `dolly dream --week` rolls a finished week's days up. Read one: `dolly dream show [YYYY-MM-DD|YYYY-Www]`.
 
 ## Statuses
 
@@ -82,7 +85,7 @@ Never silently rewrite. Version it:
 dolly spec current --short "<2-5 line summary>" --file <new-full-spec.md> --reason "<why it changed>"
 ```
 
-Old spec moves to "Superseded versions" at the bottom of the same `context/spec.md`, with the reason. `--short` / `--criteria` alone = no version bump, still logged.
+Old spec moves to "Superseded versions" at the bottom of the same `context/spec.md`, with the reason. `--short` / `--criteria` alone = no version bump, still logged. `--criteria` REPLACES the whole list — pass every criterion, not just the new one. Rename: `dolly spec <ref> --title "<new title>"`.
 
 ## New task
 
@@ -96,7 +99,7 @@ One task = one feature. Scope grows → new task, link it in the step detail.
 
 ## Repo-level knowledge → `dolly project`
 
-`.dolly/project.md`: Overview, Architecture, Conventions, Invariants, Glossary — what is TRUE about the code (CLAUDE.md says how to BEHAVE). You maintain it: learn a boundary, a banned pattern, an invariant, why something is shaped weird → `dolly project set "<Section>" --text "..."`. Find it wrong → fix it; a stale brief is worse than none. Fact useful to a task that does not exist yet → brief. Fact about what THIS task did → step.
+`.dolly/project.md`: Overview, Architecture, Conventions, Invariants, Glossary, Lessons — what is TRUE about the code (CLAUDE.md says how to BEHAVE). You maintain it: learn a boundary, a banned pattern, an invariant, why something is shaped weird → `dolly project set "<Section>" --text "..."`. Find it wrong → fix it; a stale brief is worse than none. Fact useful to a task that does not exist yet → brief. Fact about what THIS task did → step.
 
 ## Conversation already started without dolly?
 
@@ -112,7 +115,7 @@ Then replace the imported spec (it only stitches raw requests together): `dolly 
 
 - Steps are append-only. Wrong step → a new step correcting it.
 - Committing work for a task: end the message with a `Dolly-Task: <id>` trailer. `dolly why` maps commits to tasks through it.
-- Step notes: `### Decisions` / `### Dead ends` headings make them findable with `dolly recall --kind decision`.
+- Step notes: `### Decisions` / `### Dead ends` headings make them findable with `dolly recall --kind decision` (dreams' Decisions / Went wrong / Lessons too).
 - Commit `.dolly/` with the code — unless `dolly whoami` says the store is `linked`/`global` (outside the repo, private, nothing to commit).
 - Every step is stamped with your handle (`DOLLY_USER` → `.dolly/local.json` → `gh` → git email → `$USER`).
 - Store newer than your dolly → writes refused. Do NOT work around it; upgrade dolly. Older store → lossless upgrades apply themselves; risky ones wait for `dolly migrate` (`--dry-run` first).

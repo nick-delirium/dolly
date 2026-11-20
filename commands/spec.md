@@ -6,7 +6,7 @@ allowed-tools: Bash(dolly:*), Read, Write
 
 Spec change requested: **$ARGUMENTS**
 
-!`dolly show $1 --full 2>&1 | head -50`
+!`dolly context $1 2>&1 | head -60`
 
 Follow the **dolly** skill. Write the new full spec to a temp file keeping every section the old one had, then:
 

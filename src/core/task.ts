@@ -5,17 +5,15 @@ import {
   appendBlock,
   appendToSection,
   getBlock,
-  countSections,
   demoteHeadings,
   getSection,
   neutralizeMarkers,
   removeBlock,
   setBlock,
   setSection,
-  stringifyFrontmatter,
   TBD_LINE,
-  type Front,
 } from './md.js';
+import { appendEvent, diffEvent, fold, hasEventLog, headerLine, readEvents, renderTaskMd } from './log.js';
 import { Store, readTaskDir, slugify } from './store.js';
 import type { Status, Task, TaskMeta } from './types.js';
 export type { Task };
@@ -57,45 +55,61 @@ function pad(n: number): string {
   return String(n).padStart(4, '0');
 }
 
-function metaToFront(meta: TaskMeta): Front {
-  const front: Front = {
-    id: meta.id,
-    slug: meta.slug,
-    title: meta.title,
-    status: meta.status,
-    owner: meta.owner,
-    collaborators: meta.collaborators,
-    tags: meta.tags,
-    steps: meta.steps,
-    spec_version: meta.spec_version,
-    created: meta.created,
-    updated: meta.updated,
-  };
-  if (meta.sessions.length) front.sessions = meta.sessions;
-  if (meta.digest) front.digest = meta.digest;
-  return front;
-}
-
-function headerLine(meta: TaskMeta): string {
-  const bits = [
-    `\`${meta.status}\``,
-    `spec v${meta.spec_version}`,
-    `@${meta.owner}`,
-    `${meta.steps} step${meta.steps === 1 ? '' : 's'}`,
-    `updated ${shortStamp(meta.updated)}`,
-  ];
-  return bits.join(' · ');
-}
-
-/** Rewrite task.md from meta + body. The header block is machine-owned. */
-export function saveTask(task: Task): void {
+/**
+ * Write a task. The header block is machine-owned.
+ *
+ * A task with a log (every task since store v8): the change is appended to
+ * `log.jsonl` as one event — a diff of what the writer built against what the
+ * log already says — and task.md is rendered from the log, never from the
+ * writer's copy. If the finer-grained diff would not reproduce the writer's
+ * body exactly, the event carries the whole body instead: the log is always
+ * the truth, and always what the writer meant.
+ *
+ * A task without one is a store the v8 migration has not reached (or left
+ * alone): written the old way.
+ */
+export function saveTask(task: Task, by?: string): void {
   const body = setBlock(task.body, 'header', headerLine(task.meta));
-  writeText(taskFile(task.dir), stringifyFrontmatter(metaToFront(task.meta)) + ensureLead(body));
-  task.body = body;
+  if (!hasEventLog(task.dir)) {
+    writeText(taskFile(task.dir), renderTaskMd(task.meta, body));
+    task.body = body;
+    return;
+  }
+  const events = readEvents(task.dir);
+  const prev = fold(events);
+  const author = by ?? task.meta.collaborators[task.meta.collaborators.length - 1] ?? task.meta.owner;
+  const at = task.meta.updated > (prev?.meta.updated ?? '') ? task.meta.updated : (prev?.meta.updated ?? task.meta.updated);
+  if (!prev) {
+    // a log with no base (truncated by hand): restart it from this state
+    appendEvent(task.dir, { v: 1, at, by: author, base: { meta: { ...task.meta }, body } });
+  } else {
+    const e = diffEvent(prev, { meta: task.meta, body }, at, author);
+    if (e) {
+      const blank = (b: string) => setBlock(b, 'header', '');
+      const after = fold([...events, e]);
+      if (!after || blank(after.body) !== blank(body)) {
+        delete e.lead;
+        delete e.sec;
+        delete e.log;
+        e.body = blank(body);
+      }
+      appendEvent(task.dir, e);
+    }
+  }
+  const now = fold(readEvents(task.dir))!;
+  writeText(taskFile(task.dir), renderTaskMd(now.meta, now.body));
+  task.meta = now.meta;
+  task.body = now.body;
 }
 
-function ensureLead(body: string): string {
-  return body.startsWith('\n') ? body : `\n${body}`;
+/** a new task's log: its first line is the whole starting state */
+function startEventLog(task: Task, by: string): void {
+  appendEvent(task.dir, {
+    v: 1,
+    at: task.meta.created,
+    by,
+    base: { meta: { ...task.meta }, body: setBlock(task.body, 'header', headerLine(task.meta)) },
+  });
 }
 
 export function touch(task: Task, user?: string): void {
@@ -130,28 +144,22 @@ function logLine(user: string, text: string, trailers: string[] = []): string {
 }
 
 function appendLog(task: Task, user: string, text: string, trailers: string[] = []): void {
-  assertOneSection(task, SEC_LOG);
   task.body = appendToSection(task.body, SEC_LOG, logLine(user, text, trailers), true);
 }
 
 /**
- * Guard against prose impersonating structure. Section lookup takes the first
- * match, so a second `## Log` — easily written by a spec that discusses the
- * format — would silently redirect every step into the spec section.
+ * A step's block id: its number and its author. Two teammates who each log
+ * step 13 offline produce `0013-alice` and `0013-bob` — after a merge both
+ * bodies stay addressable. Lookups take the bare number and resolve it against
+ * the current user when it is ambiguous.
  */
-function assertOneSection(task: Task, name: string): void {
-  const n = countSections(task.body, name);
-  if (n > 1) {
-    throw new Error(
-      `task ${task.meta.id} has ${n} "## ${name}" headings in task.md, so dolly cannot tell which one it owns. ` +
-        `Remove the duplicate from the prose (most likely inside the Spec section) and retry.`,
-    );
-  }
+export function stepId(n: number, user: string): string {
+  return `${pad(n)}-${user.replace(/[^A-Za-z0-9._-]+/g, '-')}`;
 }
 
 /** how the short log points at a step's full context */
-function stepRef(n: number): string {
-  return `full: \`steps.md#${pad(n)}\``;
+function stepRef(id: string): string {
+  return `full: \`steps.md#${id}\``;
 }
 
 function fileList(files: string[], max: number): string {
@@ -241,7 +249,8 @@ export function createTask(store: Store, opts: CreateOpts): Task {
 
   ensureDir(contextDir(dir));
   const task: Task = { meta, dir, rel: path.relative(store.root, dir), body };
-  saveTask(task);
+  startEventLog(task, user);
+  saveTask(task, user);
 
   const specBody = (opts.specFull ?? opts.specShort ?? '').trim() || '_Spec not written yet._';
   writeText(specFile(dir), renderSpecFile(meta, 1, now, user, specBody, ''));
@@ -342,9 +351,6 @@ export function updateSpec(store: Store, task: Task, up: SpecUpdate): number {
   if (!full && !short && !crit.length) throw new Error('nothing to change — pass a short spec, a full spec, or criteria');
   // every check before any write: a guard that throws after spec.md was already
   // rewritten left the two files disagreeing about the version
-  if (short) assertOneSection(task, SEC_SPEC);
-  if (crit.length) assertOneSection(task, SEC_CRITERIA);
-  assertOneSection(task, SEC_LOG);
   const reason = up.reason?.trim() ?? '';
 
   if (full) {
@@ -385,7 +391,7 @@ export function updateSpec(store: Store, task: Task, up: SpecUpdate): number {
     appendLog(task, user, `${what} updated.${reason ? ` ${reason}` : ''}`);
   }
   touch(task, user);
-  saveTask(task);
+  saveTask(task, user);
   return task.meta.spec_version;
 }
 
@@ -420,9 +426,9 @@ export function addStep(store: Store, task: Task, input: StepInput): number {
   if (input.status !== undefined && !store.config.statuses.includes(input.status)) {
     throw new Error(`unknown status "${input.status}" — allowed: ${store.config.statuses.join(', ')}`);
   }
-  assertOneSection(task, SEC_LOG);
   const raw = readTextOr(stepsFile(task.dir));
   const n = nextStepNumber(task);
+  const id = stepId(n, user);
   task.meta.steps = n;
 
   const files = normalizeFiles(store.project, input.files ?? []);
@@ -433,7 +439,7 @@ export function addStep(store: Store, task: Task, input: StepInput): number {
 
   const trailers: string[] = [];
   if (files.length) trailers.push(`files: ${fileList(files, LOG_FILES)}`);
-  if (detail) trailers.push(stepRef(n));
+  if (detail) trailers.push(stepRef(id));
   appendLog(task, user, input.summary, trailers);
 
   if (detail) {
@@ -446,7 +452,7 @@ export function addStep(store: Store, task: Task, input: StepInput): number {
       '',
       detail,
     ].join('\n');
-    writeText(stepsFile(task.dir), appendBlock(raw || stepsFileHeader(task.meta), `step ${pad(n)}`, entry));
+    writeText(stepsFile(task.dir), appendBlock(raw || stepsFileHeader(task.meta), `step ${id}`, entry));
   }
 
   if (input.status && input.status !== task.meta.status) {
@@ -454,7 +460,7 @@ export function addStep(store: Store, task: Task, input: StepInput): number {
     task.meta.status = input.status;
   }
   touch(task, user);
-  saveTask(task);
+  saveTask(task, user);
   return n;
 }
 
@@ -492,7 +498,7 @@ export function nextStepNumber(task: Task): number {
   let n = task.meta.steps;
   for (const raw of [readTextOr(stepsFile(task.dir)), readTextOr(compactedFile(task.dir))]) {
     for (const kind of ['step', 'rollup']) {
-      for (const b of allBlocks(raw, kind)) n = Math.max(n, Number(b.id) || 0);
+      for (const b of allBlocks(raw, kind)) n = Math.max(n, parseInt(b.id, 10) || 0);
     }
   }
   return n + 1;
@@ -568,9 +574,9 @@ export function addRollup(store: Store, task: Task, input: RollupInput): number 
   const prose = input.prose.trim();
   if (!prose) throw new Error('refusing to save an empty rollup');
   if (!input.covered.length) throw new Error('nothing to roll up');
-  assertOneSection(task, SEC_LOG);
   const raw = readTextOr(stepsFile(task.dir));
   const n = nextStepNumber(task);
+  const id = stepId(n, user);
 
   // document order, so the compacted file reads chronologically
   const moving = input.covered
@@ -603,29 +609,20 @@ export function addRollup(store: Store, task: Task, input: RollupInput): number 
   const entry = [
     `## ${pad(n)} · ${nowIso()} · @${user}`,
     '',
-    `- covers: steps ${input.from}–${input.through}`,
+    `- covers: steps ${input.from}–${input.through.replace(/-.*$/, '')}`,
     '- moved: `steps.compacted.md`',
     '',
     prose,
   ].join('\n');
-  writeText(stepsFile(task.dir), appendBlock(next || stepsFileHeader(task.meta), `rollup ${pad(n)}`, entry));
+  writeText(stepsFile(task.dir), appendBlock(next || stepsFileHeader(task.meta), `rollup ${id}`, entry));
 
   task.meta.steps = n;
-  appendLog(task, user, `rolled up steps ${input.from}–${input.through} into one note; their bodies moved verbatim to steps.compacted.md.`, [stepRef(n)]);
+  appendLog(task, user, `rolled up steps ${input.from}–${input.through.replace(/-.*$/, '')} into one note; their bodies moved verbatim to steps.compacted.md.`, [stepRef(id)]);
   touch(task, user);
-  saveTask(task);
+  saveTask(task, user);
   return n;
 }
 
-/** attach a task to the digest it was rolled into (`.dolly/digests/<slug>.md`) */
-export function setDigest(store: Store, task: Task, slug: string): void {
-  if (task.meta.digest === slug) return;
-  assertOneSection(task, SEC_LOG);
-  task.meta.digest = slug;
-  appendLog(task, store.user, `rolled into digest \`${slug}\` (\`digests/${slug}.md\`).`);
-  touch(task, store.user);
-  saveTask(task);
-}
 
 /* -------------------------------- retitle -------------------------------- */
 
@@ -646,7 +643,7 @@ export function retitle(store: Store, task: Task, title: string): Task {
   task.body = task.body.replace(/^#\s+.*$/m, () => `# ${task.meta.id} · ${next}`);
   appendLog(task, store.user, `retitled: "${from}" → "${next}".`);
   touch(task, store.user);
-  saveTask(task);
+  saveTask(task, store.user);
 
   const slug = slugify(next);
   if (slug === task.meta.slug) return task;
@@ -656,7 +653,7 @@ export function retitle(store: Store, task: Task, title: string): Task {
   const moved = readTaskDir(dest, path.relative(store.root, dest));
   if (!moved) throw new Error(`retitle failed for ${task.meta.id}`);
   moved.meta.slug = slug;
-  saveTask(moved);
+  saveTask(moved, store.user);
   return moved;
 }
 
@@ -673,7 +670,7 @@ export function setStatus(store: Store, task: Task, status: Status, note?: strin
     const session = currentSessionId();
     if (session && !task.meta.sessions.includes(session)) {
       touch(task, store.user);
-      saveTask(task);
+      saveTask(task, store.user);
     }
     return;
   }
@@ -684,7 +681,7 @@ export function setStatus(store: Store, task: Task, status: Status, note?: strin
     `status ${from} → ${status}.${note?.trim() ? ` ${note.trim()}` : ''}`,
   );
   touch(task, store.user);
-  saveTask(task);
+  saveTask(task, store.user);
 }
 
 /* -------------------------------- criteria ------------------------------- */
@@ -733,7 +730,6 @@ export function criteriaList(task: Task): Criterion[] {
  * it already had that state (nothing written).
  */
 export function setCriterion(store: Store, task: Task, index: number, checked: boolean): boolean {
-  assertOneSection(task, SEC_CRITERIA);
   const lines = task.body.split('\n');
   const r = criteriaRange(lines);
   let seen = 0;
@@ -747,7 +743,7 @@ export function setCriterion(store: Store, task: Task, index: number, checked: b
     // "criteria …" so the log reads it as a note, not as a step's outcome
     appendLog(task, store.user, `criteria: #${index} ${checked ? 'checked' : 'unchecked'} — ${text.length > 80 ? `${text.slice(0, 79)}…` : text}`);
     touch(task, store.user);
-    saveTask(task);
+    saveTask(task, store.user);
     return true;
   }
   throw new Error(`${task.meta.id} has no criterion #${index} (it has ${seen} checkbox${seen === 1 ? '' : 'es'})`);

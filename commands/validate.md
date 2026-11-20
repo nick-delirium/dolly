@@ -4,7 +4,7 @@ argument-hint: "[ref] (default: current)"
 allowed-tools: Bash(dolly:*), Bash(git:*), Read
 ---
 
-!`dolly show $ARGUMENTS 2>&1 | head -30`
+!`dolly context $ARGUMENTS --brief 2>&1 | head -40`
 
 Walk the Success Criteria one by one: is each met, and what proves it (test name, command output, file:line)? Anything unmet — say so plainly and do not move the task.
 
