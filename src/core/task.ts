@@ -192,7 +192,20 @@ export function cleanTitle(raw: string): string {
   return raw.replace(/\s+/g, ' ').trim();
 }
 
+/**
+ * Refuse a status the store's config does not list. Every reader — the session
+ * hook, auto-log, review, `current` — only knows configured statuses, so a task
+ * filed under a typo (`in-progress` for `working`) showed on the board and was
+ * invisible everywhere else. Checked before anything is written.
+ */
+export function assertStatus(store: Store, status: string): void {
+  if (!store.config.statuses.includes(status)) {
+    throw new Error(`unknown status "${status}" — allowed: ${store.config.statuses.join(', ')}`);
+  }
+}
+
 export function createTask(store: Store, opts: CreateOpts): Task {
+  if (opts.status !== undefined) assertStatus(store, opts.status);
   store.init();
   const title = cleanTitle(opts.title);
   if (!title) throw new Error('a task needs a title');
@@ -423,9 +436,7 @@ const LOG_FILES = 6;
 
 export function addStep(store: Store, task: Task, input: StepInput): number {
   const user = store.user;
-  if (input.status !== undefined && !store.config.statuses.includes(input.status)) {
-    throw new Error(`unknown status "${input.status}" — allowed: ${store.config.statuses.join(', ')}`);
-  }
+  if (input.status !== undefined) assertStatus(store, input.status);
   const raw = readTextOr(stepsFile(task.dir));
   const n = nextStepNumber(task);
   const id = stepId(n, user);
@@ -660,9 +671,7 @@ export function retitle(store: Store, task: Task, title: string): Task {
 /* --------------------------------- status -------------------------------- */
 
 export function setStatus(store: Store, task: Task, status: Status, note?: string): void {
-  if (!store.config.statuses.includes(status)) {
-    throw new Error(`unknown status "${status}" — allowed: ${store.config.statuses.join(', ')}`);
-  }
+  assertStatus(store, status);
   const from = task.meta.status;
   if (from === status && !note) {
     // `dolly status X working` on a task already working is how a new

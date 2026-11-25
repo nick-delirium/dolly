@@ -166,6 +166,20 @@ test('setStatus validates against config and logs the transition', (t) => {
   assert.throws(() => setStatus(store, task, 'nonsense'), /unknown status/);
 });
 
+test('createTask refuses a status the config does not list, and writes nothing', (t) => {
+  const sb = sandbox();
+  t.after(sb.cleanup);
+  const store = Store.open();
+  createTask(store, { title: 'Existing' });
+  const before = store.loadTasks().length;
+  assert.throws(
+    () => createTask(store, { title: 'Typo', status: 'in-progress' }),
+    /unknown status "in-progress" — allowed: todo, planning, working, validating, done/,
+  );
+  assert.equal(Store.open().loadTasks().length, before);
+  assert.equal(createTask(store, { title: 'Picked up', status: 'working' }).meta.status, 'working');
+});
+
 test('refs resolve by id, slug, substring, fuzzy and current', (t) => {
   const sb = sandbox();
   t.after(sb.cleanup);

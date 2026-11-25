@@ -96,6 +96,48 @@ test('`dolly status X working` on a working task attaches this conversation', (t
   assert.match(logSection(reload(store, task)), /Continued the work/);
 });
 
+test('inside opencode, OPENCODE_SESSION_ID attaches the task and the plugin turn is auto-logged', (t) => {
+  const sb = sandbox();
+  t.after(sb.cleanup);
+  const store = Store.open();
+  const task = createTask(store, { title: 'opencode pick up' });
+  // opencode started from a Claude Code terminal inherits Claude's id too: the
+  // innermost harness — opencode — is the conversation
+  run(sb.dir, ['status', task.meta.id, 'working'], {
+    env: { OPENCODE_SESSION_ID: 'ses_oc1', CLAUDE_CODE_SESSION_ID: 'outer-claude' },
+  });
+  assert.deepEqual(reload(store, task).meta.sessions, ['ses_oc1']);
+  // the payload the generated opencode plugin sends at the end of a turn
+  const turn = {
+    agent: 'opencode',
+    session: 'ses_oc1',
+    turn: 'msg_1',
+    turnStartMs: Date.now() + 2000,
+    text: 'Added the theme constant.',
+    tools: ['write'],
+    files: ['theme.ts'],
+  };
+  run(sb.dir, ['hook', 'stop', '--from-stdin'], { input: JSON.stringify(turn) });
+  const after = reload(store, task);
+  assert.equal(after.meta.steps, 1);
+  assert.match(logSection(after), /Added the theme constant/);
+});
+
+test('`dolly continue` reopens an opencode session in opencode, and refuses to fork it', (t) => {
+  const sb = sandbox();
+  t.after(sb.cleanup);
+  const store = Store.open();
+  const task = createTask(store, { title: 'Worked in opencode' });
+  attach(task, 'ses_oc2');
+  const r = run(sb.dir, ['continue', task.meta.id, '--print']);
+  assert.equal(r.code, 0, r.err);
+  assert.match(r.out, /^opencode --session ses_oc2$/m);
+  const fork = run(sb.dir, ['continue', task.meta.id, '--fork', '--print']);
+  assert.notEqual(fork.code, 0);
+  assert.match(fork.err, /opencode cannot fork/);
+  assert.doesNotMatch(fork.out, /claude --resume/);
+});
+
 test('without a start time, a step the agent logged mid-turn suppresses the auto-step', (t) => {
   const sb = sandbox();
   t.after(sb.cleanup);

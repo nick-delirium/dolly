@@ -10,6 +10,8 @@ export function sandbox() {
   // tests must not inherit the session of whatever agent is running them
   delete process.env.DOLLY_SESSION_ID;
   delete process.env.CLAUDE_CODE_SESSION_ID;
+  delete process.env.CLAUDE_SESSION_ID;
+  delete process.env.OPENCODE_SESSION_ID;
   return {
     dir,
     store: process.env.DOLLY_DIR,

@@ -99,6 +99,18 @@ test('finalize is blocked while gaps remain and forced only on demand', (t) => {
   assert.equal(task.meta.status, 'todo');
 });
 
+test('finalize refuses an unknown next status before touching the spec', (t) => {
+  const sb = sandbox();
+  t.after(sb.cleanup);
+  const store = Store.open();
+  const task = startPlan(store, 'Typo next', 'x');
+  fillAll(store, task);
+  assert.throws(() => finalizePlan(store, task, { nextStatus: 'in-progress' }), /unknown status "in-progress"/);
+  const after = reload(store, task);
+  assert.equal(after.meta.status, 'planning');
+  assert.equal(after.meta.spec_version, 1);
+});
+
 test('finalize derives spec, criteria and Q&A decisions from the plan', (t) => {
   const sb = sandbox();
   t.after(sb.cleanup);
