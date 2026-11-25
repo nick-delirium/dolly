@@ -53,7 +53,9 @@ test('git-init is idempotent and preserves an existing repo/history', (t) => {
   // drop a marker commit; a re-init must not wipe it
   const dir = projectsDir();
   execFileSync('git', ['add', '-A'], { cwd: dir });
-  execFileSync('git', ['commit', '-qm', 'first'], { cwd: dir });
+  // HOME is a throwaway (tests/isolate.mjs), so no global identity reaches this
+  // repo; without one, git on a host with no mail domain (CI, containers) refuses
+  execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@e.c', 'commit', '-qm', 'first'], { cwd: dir });
   const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf8' }).trim();
 
   recordProject(b, { store: mkStore(globalStoreFor(b)), local: false });

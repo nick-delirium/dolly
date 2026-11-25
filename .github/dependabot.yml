@@ -1,0 +1,19 @@
+version: 2
+updates:
+  # keeps the action majors in .github/workflows current
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ['*']
+
+  # dolly has no runtime dependencies; this only covers TypeScript and @types/node
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      dev-dependencies:
+        dependency-type: development

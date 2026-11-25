@@ -1,6 +1,6 @@
 {
   "name": "@dlrm/dolly",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Long-term memory and feature planning for coding agents. Git-tracked task board, step log, and full-context archive.",
   "keywords": [
     "ai",

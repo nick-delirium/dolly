@@ -1,0 +1,87 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# a new push to the same PR cancels the run it supersedes; main keeps every run
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  test:
+    name: test (node ${{ matrix.node }}, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        node: [20, 22, 24]
+        include:
+          # macOS: realpath'd tmpdirs and BSD userland have bitten path handling before
+          - os: macos-latest
+            node: 22
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      # no git identity on purpose: tests run under a throwaway HOME
+      # (tests/isolate.mjs), so each one that commits must set its own — this
+      # runner, which has no fallback identity, is what catches one that forgets
+      - name: Install (builds dist/ via prepare)
+        run: npm ci
+      - name: Build + test
+        run: npm test
+
+  package:
+    name: package smoke test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install (builds dist/ via prepare)
+        run: npm ci
+      - name: Pack
+        run: |
+          npm pack --pack-destination "$RUNNER_TEMP"
+          tar -tzf "$RUNNER_TEMP"/dlrm-dolly-*.tgz | sort | tee "$RUNNER_TEMP/files.txt"
+          # what `files` in package.json must keep shipping
+          for f in package/dist/cli.js package/bin/dolly-hook.mjs package/plugins/opencode.js \
+                   package/.claude-plugin/plugin.json package/README.md package/LICENSE; do
+            grep -qx "$f" "$RUNNER_TEMP/files.txt" || { echo "::error::missing from the package: $f"; exit 1; }
+          done
+          grep -q '^package/skills/.*/SKILL.md$' "$RUNNER_TEMP/files.txt" || { echo "::error::no skills in the package"; exit 1; }
+          grep -q '^package/commands/' "$RUNNER_TEMP/files.txt" || { echo "::error::no commands in the package"; exit 1; }
+          if grep -q '^package/\(src\|tests\|\.dolly\)/' "$RUNNER_TEMP/files.txt"; then
+            echo "::error::sources, tests or the task store leaked into the package"; exit 1
+          fi
+      - name: Install from the tarball and run it
+        run: |
+          npm install -g "$RUNNER_TEMP"/dlrm-dolly-*.tgz
+          expected="$(node -p "require('./package.json').version")"
+          test "$(dolly --version)" = "$expected" || { echo "::error::dolly --version is not $expected"; exit 1; }
+
+          repo="$RUNNER_TEMP/smoke" && mkdir -p "$repo" && cd "$repo"
+          git init -q
+          git -c user.name=ci -c user.email=ci@example.com commit -q --allow-empty -m init
+          dolly init --yes --no-agents --no-mcp --user ci
+          dolly new "Smoke task" --status working --criteria "it runs"
+          dolly step current -m "smoke step from CI"
+          dolly board | tee /dev/stderr | grep -q "Smoke task"
+          dolly context current --brief | grep -q "smoke step from CI"
+          if dolly new "Typo" --status in-progress 2>/dev/null; then
+            echo "::error::an unknown status was accepted"; exit 1
+          fi
