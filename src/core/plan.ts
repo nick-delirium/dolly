@@ -2,7 +2,7 @@ import { readTextOr, writeText } from './fsx.js';
 import { getSection, sectionNames, setSection, appendToSection, TBD_LINE } from './md.js';
 import type { Store } from './store.js';
 import type { Task } from './types.js';
-import { createTask, planFile, saveTask, touch, updateSpec, SEC_LOG } from './task.js';
+import { assertStatus, createTask, planFile, saveTask, touch, updateSpec, SEC_LOG } from './task.js';
 import { nowIso, shortStamp } from './time.js';
 
 
@@ -145,6 +145,7 @@ export interface FinalizeOpts {
 
 /** Turn a completed plan into the task's spec, then move it out of planning. */
 export function finalizePlan(store: Store, task: Task, opts: FinalizeOpts = {}): PlanCheck {
+  if (opts.nextStatus !== undefined) assertStatus(store, opts.nextStatus);
   const check = checkPlan(store, task);
   if (!check.ok && !opts.force) return check;
 

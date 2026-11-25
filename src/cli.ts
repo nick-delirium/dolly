@@ -51,6 +51,7 @@ import {
 } from './core/store.js';
 import {
   addStep,
+  assertStatus,
   createTask,
   criteria,
   fullSpec,
@@ -78,6 +79,7 @@ import { listSessions } from './core/transcript.js';
 import {
   currentSessionId,
   insideClaudeCode,
+  isOpencodeSession,
   markSessionBoundary,
   resumeCommand,
   sessionBoundary,
@@ -593,10 +595,13 @@ async function cmdContext(args: Args): Promise<void> {
 
 function cmdNew(args: Args): void {
   const store = openStore(false);
-  store.init();
   const title = args.positional.slice(1).join(' ').trim();
   if (!title) fail('usage: dolly new "<title>"');
-  guardDone(store, str(args, 'status'));
+  // before init: a typo'd status must not leave a fresh store behind
+  const status = str(args, 'status');
+  if (status !== undefined) assertStatus(store, status);
+  store.init();
+  guardDone(store, status);
   const short = textFrom(args, { inline: 'short' });
   const full = textFrom(args, { inline: 'full', file: 'file' });
   warnOverlap(store, title);
@@ -937,7 +942,7 @@ async function cmdReindex(args: Args): Promise<void> {
 }
 
 /**
- * Reopen the Claude Code conversation a task was worked in. Prints the command
+ * Reopen the Claude Code or opencode conversation a task was worked in. Prints the command
  * rather than executing it whenever exec would be wrong — inside Claude Code
  * (spawning an interactive TUI from a tool call) or with no terminal.
  */
@@ -947,7 +952,7 @@ async function cmdContinue(args: Args): Promise<void> {
   const sessions = task.meta.sessions;
   if (!sessions.length) {
     fail(
-      `no conversation recorded for ${task.meta.id} — steps logged from inside Claude Code capture the session automatically`,
+      `no conversation recorded for ${task.meta.id} — steps logged from inside Claude Code or opencode capture the session automatically`,
     );
   }
   const which = str(args, 'session');
@@ -955,6 +960,10 @@ async function cmdContinue(args: Args): Promise<void> {
   if (!id) fail(`no session matching "${which}" on ${task.meta.id} — has: ${sessions.join(', ')}`);
 
   const fork = bool(args, 'fork');
+  const opencode = isOpencodeSession(id);
+  if (fork && opencode) {
+    fail(`opencode cannot fork a session from its TUI — reopen it with \`opencode --session ${id}\`, or fork non-interactively with \`opencode run --session ${id} --fork "<prompt>"\``);
+  }
   const cmd = resumeCommand(id, fork);
 
   if (bool(args, 'json')) {
@@ -975,10 +984,10 @@ async function cmdContinue(args: Args): Promise<void> {
     return;
   }
   process.stdout.write(`${color.dim(`resuming ${id.slice(0, 8)} for ${task.meta.id}…`)}\n`);
-  const res = spawnSync('claude', fork ? ['--resume', id, '--fork-session'] : ['--resume', id], {
-    stdio: 'inherit',
-  });
-  if (res.error) fail(`could not launch claude — run manually: ${cmd}`);
+  const bin = opencode ? 'opencode' : 'claude';
+  const argv = opencode ? ['--session', id] : fork ? ['--resume', id, '--fork-session'] : ['--resume', id];
+  const res = spawnSync(bin, argv, { stdio: 'inherit' });
+  if (res.error) fail(`could not launch ${bin} — run manually: ${cmd}`);
   // killed by a signal: status is null, and 0 would report success
   process.exit(res.status ?? (res.signal ? 128 + (os.constants.signals[res.signal] ?? 0) : 1));
 }

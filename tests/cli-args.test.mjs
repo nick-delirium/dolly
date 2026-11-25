@@ -147,3 +147,15 @@ test('init --dry-run creates nothing', (t) => {
   assert.match(r.out, /would create/);
   assert.equal(fs.existsSync(sb.store), false);
 });
+
+test('`dolly new --status` with an unknown status fails and leaves no store behind', (t) => {
+  const sb = sandbox();
+  t.after(sb.cleanup);
+  const r = run(sb.dir, ['new', 'Typo status', '--status', 'in-progress']);
+  assert.notEqual(r.code, 0);
+  assert.match(r.err, /unknown status "in-progress" — allowed: todo, planning, working, validating, done/);
+  assert.equal(fs.existsSync(sb.store), false);
+  const ok = run(sb.dir, ['new', 'Real status', '--status', 'working']);
+  assert.equal(ok.code, 0, ok.err);
+  assert.match(ok.out, /Real status → working/);
+});

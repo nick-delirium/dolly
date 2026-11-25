@@ -8,15 +8,28 @@ import { localDir } from './lock.js';
  * Claude Code exports `CLAUDE_CODE_SESSION_ID`, and it is exactly the basename
  * of the session's transcript — so dolly can attribute a step to a
  * conversation, and later reopen it, without parsing anything. zcode injects
- * the same value as `CLAUDE_SESSION_ID` into hook processes.
+ * the same value as `CLAUDE_SESSION_ID` into hook processes. opencode exports
+ * `OPENCODE_SESSION_ID` (`ses_…`) to every shell its agent runs — the same id
+ * its plugin hands `dolly hook stop`, so without it a task the agent picked up
+ * in opencode was never attached and its turns were never auto-logged.
+ *
+ * opencode goes before the Claude names: opencode launched from inside Claude
+ * Code inherits `CLAUDE_CODE_SESSION_ID`, and the innermost harness is the one
+ * running this command.
  */
 export function currentSessionId(): string | null {
   const v =
     process.env.DOLLY_SESSION_ID?.trim() ||
     process.env.DOLLIE_SESSION_ID?.trim() || // pre-rename name, still honoured
+    process.env.OPENCODE_SESSION_ID?.trim() ||
     process.env.CLAUDE_CODE_SESSION_ID?.trim() ||
     process.env.CLAUDE_SESSION_ID?.trim(); // zcode hooks
   return v || null;
+}
+
+/** opencode session ids are `ses_…`; Claude Code's are UUIDs */
+export function isOpencodeSession(sessionId: string): boolean {
+  return sessionId.startsWith('ses_');
 }
 
 /** true when dolly is being run by Claude Code itself, not by a human shell */
@@ -24,8 +37,13 @@ export function insideClaudeCode(): boolean {
   return process.env.CLAUDECODE === '1' || Boolean(process.env.CLAUDE_CODE_ENTRYPOINT);
 }
 
-/** the command that reopens a conversation */
+/**
+ * The command that reopens a conversation, in the harness it ran in. opencode's
+ * TUI has no fork (only `opencode run --fork`), so a fork of an opencode
+ * session has no command: callers check `isOpencodeSession` first.
+ */
 export function resumeCommand(sessionId: string, fork = false): string {
+  if (isOpencodeSession(sessionId)) return `opencode --session ${sessionId}`;
   return `claude --resume ${sessionId}${fork ? ' --fork-session' : ''}`;
 }
 
